@@ -244,21 +244,34 @@ public static class ClipboardManager
 
 	private static string GetNextFilePath(string directoryPath, string extension)
 	{
-		int counter = 1;
-		string filePath;
-
 		// 拡張子が.で始まっていない場合は追加
 		if (!extension.StartsWith("."))
 		{
 			extension = "." + extension;
 		}
 
-		do
+		// ディレクトリ内のすべてのファイルから最大の番号を取得
+		int maxNumber = 0;
+		if (Directory.Exists(directoryPath))
 		{
-			string fileName = $"{counter:D4}{extension}";
-			filePath = Path.Combine(directoryPath, fileName);
-			counter++;
-		} while (File.Exists(filePath));
+			var files = Directory.GetFiles(directoryPath);
+			foreach (var file in files)
+			{
+				string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(file);
+				if (int.TryParse(fileNameWithoutExtension, out int number))
+				{
+					if (number > maxNumber)
+					{
+						maxNumber = number;
+					}
+				}
+			}
+		}
+
+		// 次の番号を使用
+		int nextNumber = maxNumber + 1;
+		string fileName = $"{nextNumber:D4}{extension}";
+		string filePath = Path.Combine(directoryPath, fileName);
 
 		return filePath;
 	}
