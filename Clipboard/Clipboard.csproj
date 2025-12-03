@@ -14,4 +14,11 @@
         </None>
     </ItemGroup>
 
+    <!-- Releaseビルド時の設定 -->
+    <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+        <DebugType>none</DebugType>
+        <DebugSymbols>false</DebugSymbols>
+        <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    </PropertyGroup>
+
 </Project>
