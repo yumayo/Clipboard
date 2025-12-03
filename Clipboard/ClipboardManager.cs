@@ -1,6 +1,8 @@
 using System;
+using System.Diagnostics;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
 
@@ -9,29 +11,119 @@ namespace Clipboard;
 public static class ClipboardManager
 {
 	private static ClipboardMonitorForm? _monitorForm;
+	private static string _concatenatedText = string.Empty;
+
+	// キーボードフック関連
+	private static IntPtr _hookID = IntPtr.Zero;
+	private static NativeMethods.LowLevelKeyboardProc? _proc;
+	private static bool _ctrlPressed = false;
 
 	public static void Start()
 	{
 		_monitorForm = new ClipboardMonitorForm();
 		_monitorForm.Show();
-		Logger.Debug("ClipboardManager: クリップボード監視を開始しました。");
+
+		// キーボードフックを設定
+		_proc = HookCallback;
+		_hookID = SetHook(_proc);
+
+		Logger.Debug("ClipboardManager: クリップボード監視とキーボードフックを開始しました。");
 	}
 
 	public static void Stop()
 	{
+		// キーボードフックを解除
+		if (_hookID != IntPtr.Zero)
+		{
+			NativeMethods.UnhookWindowsHookEx(_hookID);
+			_hookID = IntPtr.Zero;
+		}
+
 		if (_monitorForm != null)
 		{
 			_monitorForm.Close();
 			_monitorForm.Dispose();
 			_monitorForm = null;
-			Logger.Debug("ClipboardManager: クリップボード監視を停止しました。");
+			Logger.Debug("ClipboardManager: クリップボード監視とキーボードフックを停止しました。");
 		}
+	}
+
+	private static IntPtr SetHook(NativeMethods.LowLevelKeyboardProc proc)
+	{
+		using var curProcess = Process.GetCurrentProcess();
+		using var curModule = curProcess.MainModule;
+		return NativeMethods.SetWindowsHookEx(NativeMethods.WH_KEYBOARD_LL, proc, NativeMethods.GetModuleHandle(curModule?.ModuleName), 0);
+	}
+
+	private static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+	{
+		if (nCode >= 0)
+		{
+			int vkCode = Marshal.ReadInt32(lParam);
+
+			if (wParam == (IntPtr)NativeMethods.WM_KEYDOWN)
+			{
+				if (vkCode == NativeMethods.VK_LCONTROL || vkCode == NativeMethods.VK_RCONTROL)
+				{
+					if (!_ctrlPressed)
+					{
+						_ctrlPressed = true;
+						Logger.Debug("ClipboardManager: Ctrlキーが押されました。");
+					}
+				}
+			}
+			else if (wParam == (IntPtr)NativeMethods.WM_KEYUP)
+			{
+				if (vkCode == NativeMethods.VK_LCONTROL || vkCode == NativeMethods.VK_RCONTROL)
+				{
+					if (_ctrlPressed)
+					{
+						_ctrlPressed = false;
+						Logger.Debug("ClipboardManager: Ctrlキーが離されました。");
+						
+						// Ctrlが離されたときに連結テキストをクリア
+						if (!string.IsNullOrEmpty(_concatenatedText))
+						{
+							Logger.Debug("ClipboardManager: Ctrlキーが離されたため、連結テキストをクリアしました。");
+							_concatenatedText = string.Empty;
+						}
+					}
+				}
+			}
+		}
+
+		return NativeMethods.CallNextHookEx(_hookID, nCode, wParam, lParam);
 	}
 
 	public static void SaveClipboardToFile()
 	{
 		try
 		{
+			// Ctrl押下中でテキスト形式の場合は連結処理
+			if (_ctrlPressed && System.Windows.Forms.Clipboard.ContainsText())
+			{
+				string newText = System.Windows.Forms.Clipboard.GetText();
+				if (!string.IsNullOrEmpty(newText))
+				{
+					if (_concatenatedText != newText)
+					{
+						// 既存のテキストがある場合は改行して連結
+						if (!string.IsNullOrEmpty(_concatenatedText))
+						{
+							_concatenatedText += Environment.NewLine + newText;
+						}
+						else
+						{
+							_concatenatedText = newText;
+						}
+
+						// 連結したテキストをクリップボードに書き戻す
+						System.Windows.Forms.Clipboard.SetText(_concatenatedText);
+						Logger.Debug($"ClipboardManager: Ctrl押下中 - テキストを連結しました（{_concatenatedText.Length}文字）");
+					}
+				}
+			}
+
 			// ベースディレクトリパスを生成
 			string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
 			string dateFolder = DateTime.Now.ToString("yyyyMMdd");
