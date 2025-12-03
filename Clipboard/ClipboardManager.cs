@@ -2,11 +2,21 @@ using System;
 using System.Diagnostics;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
 
 namespace Clipboard;
+
+internal enum ClipboardDataType
+{
+	Image,
+	Html,
+	Rtf,
+	Text,
+	Unknown
+}
 
 public static class ClipboardManager
 {
@@ -17,6 +27,9 @@ public static class ClipboardManager
 	private static IntPtr _hookID = IntPtr.Zero;
 	private static NativeMethods.LowLevelKeyboardProc? _proc;
 	private static bool _ctrlPressed = false;
+
+	// 前回保存した内容を記憶
+	private static string _lastSavedContent = string.Empty;
 
 	public static void Start()
 	{
@@ -136,79 +149,97 @@ public static class ClipboardManager
 				Logger.Debug($"ClipboardManager: 出力先ディレクトリを作成しました: {directoryPath}");
 			}
 
-			// クリップボードの内容に応じて保存
-			if (System.Windows.Forms.Clipboard.ContainsImage())
+			var (bytes, extension) = GetClipboardContentAsBytesWithExtension();
+
+			// 現在のクリップボード内容を取得して識別用の文字列を生成
+			string currentContent = CalculateHash(bytes);
+
+			// 前回保存した内容と同じ場合はスキップ
+			if (currentContent == _lastSavedContent)
 			{
-				// 画像の場合
-				var image = System.Windows.Forms.Clipboard.GetImage();
-				if (image != null)
-				{
-					string filePath = GetNextFilePath(directoryPath, ".png");
-					image.Save(filePath, ImageFormat.Png);
-					Logger.Info($"ClipboardManager: 画像を保存しました: {filePath}");
-				}
+				Logger.Debug("ClipboardManager: 前回保存した内容と同じのため、保存をスキップします。");
+				return;
 			}
-			else if (System.Windows.Forms.Clipboard.ContainsFileDropList())
+
+			if (bytes.Length > 0 && !string.IsNullOrEmpty(extension))
 			{
-				// ファイルのリストの場合
-				var files = System.Windows.Forms.Clipboard.GetFileDropList();
-				foreach (string sourceFile in files)
-				{
-					if (File.Exists(sourceFile))
-					{
-						string extension = Path.GetExtension(sourceFile);
-						string filePath = GetNextFilePath(directoryPath, extension);
-						File.Copy(sourceFile, filePath, true);
-						Logger.Info($"ClipboardManager: ファイルをコピーしました: {filePath}");
-					}
-					else if (Directory.Exists(sourceFile))
-					{
-						Logger.Debug($"ClipboardManager: ディレクトリはスキップします: {sourceFile}");
-					}
-				}
-			}
-			else if (System.Windows.Forms.Clipboard.ContainsData(DataFormats.Html))
-			{
-				// HTML形式の場合
-				var htmlData = System.Windows.Forms.Clipboard.GetData(DataFormats.Html);
-				if (htmlData != null)
-				{
-					string filePath = GetNextFilePath(directoryPath, ".html");
-					File.WriteAllText(filePath, htmlData.ToString()!, Encoding.UTF8);
-					Logger.Info($"ClipboardManager: HTMLを保存しました: {filePath}");
-				}
-			}
-			else if (System.Windows.Forms.Clipboard.ContainsData(DataFormats.Rtf))
-			{
-				// RTF形式の場合
-				var rtfData = System.Windows.Forms.Clipboard.GetData(DataFormats.Rtf);
-				if (rtfData != null)
-				{
-					string filePath = GetNextFilePath(directoryPath, ".rtf");
-					File.WriteAllText(filePath, rtfData.ToString()!, Encoding.UTF8);
-					Logger.Info($"ClipboardManager: RTFを保存しました: {filePath}");
-				}
-			}
-			else if (System.Windows.Forms.Clipboard.ContainsText())
-			{
-				// テキストの場合
-				string clipboardText = System.Windows.Forms.Clipboard.GetText();
-				if (!string.IsNullOrEmpty(clipboardText))
-				{
-					string filePath = GetNextFilePath(directoryPath, ".txt");
-					File.WriteAllText(filePath, clipboardText, Encoding.UTF8);
-					Logger.Info($"ClipboardManager: テキストを保存しました: {filePath}");
-				}
-			}
-			else
-			{
-				Logger.Debug("ClipboardManager: サポートされていない形式のデータです。");
+				string filePath = GetNextFilePath(directoryPath, extension);
+				File.WriteAllBytes(filePath, bytes);
+				Logger.Info($"ClipboardManager: クリップボードの内容を保存しました: {filePath}");
+				_lastSavedContent = currentContent;
 			}
 		}
 		catch (Exception ex)
 		{
 			Logger.Error(ex, "ClipboardManager: クリップボードの保存中にエラーが発生しました。");
 		}
+	}
+
+	private static string CalculateHash(byte[] bytes)
+	{
+		using var sha256 = System.Security.Cryptography.SHA256.Create();
+		byte[] hash = sha256.ComputeHash(bytes);
+		return BitConverter.ToString(hash);
+	}
+
+	private static ClipboardDataType GetClipboardDataType()
+	{
+		if (System.Windows.Forms.Clipboard.ContainsImage())
+		{
+			return ClipboardDataType.Image;
+		}
+		else if (System.Windows.Forms.Clipboard.ContainsData(DataFormats.Html))
+		{
+			return ClipboardDataType.Html;
+		}
+		else if (System.Windows.Forms.Clipboard.ContainsData(DataFormats.Rtf))
+		{
+			return ClipboardDataType.Rtf;
+		}
+		else if (System.Windows.Forms.Clipboard.ContainsText())
+		{
+			return ClipboardDataType.Text;
+		}
+
+		return ClipboardDataType.Unknown;
+	}
+
+	private static (byte[] bytes, string extension) GetClipboardContentAsBytesWithExtension()
+	{
+		ClipboardDataType dataType = GetClipboardDataType();
+
+		switch (dataType)
+		{
+			case ClipboardDataType.Image:
+				var image = System.Windows.Forms.Clipboard.GetImage();
+				if (image != null)
+				{
+					using var ms = new MemoryStream();
+					image.Save(ms, ImageFormat.Png);
+					return (ms.ToArray(), ".png");
+				}
+				break;
+
+			case ClipboardDataType.Html:
+				if (System.Windows.Forms.Clipboard.TryGetData<string>(DataFormats.Html, out var htmlData))
+				{
+					return (Encoding.UTF8.GetBytes(htmlData), ".html");
+				}
+				break;
+
+			case ClipboardDataType.Rtf:
+				if (System.Windows.Forms.Clipboard.TryGetData<string>(DataFormats.Rtf, out var rtfData))
+				{
+					return (Encoding.UTF8.GetBytes(rtfData), ".rtf");
+				}
+				break;
+
+			case ClipboardDataType.Text:
+				string text = System.Windows.Forms.Clipboard.GetText();
+				return (Encoding.UTF8.GetBytes(text), ".txt");
+		}
+
+		return (Array.Empty<byte>(), "");
 	}
 
 	private static string GetNextFilePath(string directoryPath, string extension)
