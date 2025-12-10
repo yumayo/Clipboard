@@ -22,6 +22,7 @@ public static class ClipboardManager
 {
 	private static ClipboardMonitorForm? _monitorForm;
 	private static string _concatenatedText = string.Empty;
+	private static int _concatenationCount = 0;
 
 	// キーボードフック関連
 	private static IntPtr _hookID = IntPtr.Zero;
@@ -93,12 +94,13 @@ public static class ClipboardManager
 					{
 						_ctrlPressed = false;
 						Logger.Debug("ClipboardManager: Ctrlキーが離されました。");
-						
-						// Ctrlが離されたときに連結テキストをクリア
+
+						// Ctrlが離されたときに連結テキストとカウンターをクリア
 						if (!string.IsNullOrEmpty(_concatenatedText))
 						{
 							Logger.Debug("ClipboardManager: Ctrlキーが離されたため、連結テキストをクリアしました。");
 							_concatenatedText = string.Empty;
+							_concatenationCount = 0;
 						}
 					}
 				}
@@ -123,16 +125,25 @@ public static class ClipboardManager
 						// 既存のテキストがある場合は改行して連結
 						if (!string.IsNullOrEmpty(_concatenatedText))
 						{
-							_concatenatedText += Environment.NewLine + newText;
+							_concatenatedText += "\n\n\n" + newText;
+							_concatenationCount++;
 						}
 						else
 						{
 							_concatenatedText = newText;
+							_concatenationCount = 1;
 						}
 
-						// 連結したテキストをクリップボードに書き戻す
-						System.Windows.Forms.Clipboard.SetText(_concatenatedText);
-						Logger.Debug($"ClipboardManager: Ctrl押下中 - テキストを連結しました（{_concatenatedText.Length}文字）");
+						// 2回目以降のみクリップボードに書き戻す（1回目はリッチテキスト等を保持するため書き戻さない）
+						if (_concatenationCount >= 2)
+						{
+							System.Windows.Forms.Clipboard.SetText(_concatenatedText);
+							Logger.Debug($"ClipboardManager: Ctrl押下中 - テキストを連結してクリップボードに書き戻しました（{_concatenatedText.Length}文字、{_concatenationCount}回目）");
+						}
+						else
+						{
+							Logger.Debug($"ClipboardManager: Ctrl押下中 - テキストを連結しました（{_concatenatedText.Length}文字、1回目のため書き戻しなし）");
+						}
 					}
 				}
 			}
