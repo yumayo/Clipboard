@@ -62,6 +62,13 @@ public static class ClipboardManager
 		}
 	}
 
+	public static string GetSaveDirectoryPath()
+	{
+		string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+		string dateFolder = DateTime.Now.ToString("yyyyMMdd");
+		return Path.Combine(appData, "yumayo", "clipboard", dateFolder);
+	}
+
 	private static IntPtr SetHook(NativeMethods.LowLevelKeyboardProc proc)
 	{
 		using var curProcess = Process.GetCurrentProcess();
@@ -149,9 +156,7 @@ public static class ClipboardManager
 			}
 
 			// ベースディレクトリパスを生成
-			string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-			string dateFolder = DateTime.Now.ToString("yyyyMMdd");
-			string directoryPath = Path.Combine(appData, "yumayo", "clipboard", dateFolder);
+			string directoryPath = GetSaveDirectoryPath();
 
 			// ディレクトリが存在しない場合は作成
 			if (!Directory.Exists(directoryPath))
