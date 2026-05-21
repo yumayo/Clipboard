@@ -64,9 +64,8 @@ public static class ClipboardManager
 
 	public static string GetSaveDirectoryPath()
 	{
-		string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
 		string dateFolder = DateTime.Now.ToString("yyyyMMdd");
-		return Path.Combine(appData, "yumayo", "clipboard", dateFolder);
+		return Path.Combine(ClipboardSettings.BaseDirectoryPath, dateFolder);
 	}
 
 	private static IntPtr SetHook(NativeMethods.LowLevelKeyboardProc proc)
@@ -132,7 +131,7 @@ public static class ClipboardManager
 						// 既存のテキストがある場合は改行して連結
 						if (!string.IsNullOrEmpty(_concatenatedText))
 						{
-							_concatenatedText += "\n\n\n" + newText;
+							_concatenatedText += ClipboardSettings.ConcatenationSeparator + newText;
 							_concatenationCount++;
 						}
 						else

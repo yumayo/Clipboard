@@ -15,6 +15,7 @@ static class Program
 		CreateNotifyIcon();
 		
 		Logger.Setup();
+		ClipboardSettings.Load();
 
 		Logger.Debug("Clipboardを起動しました。");
 
@@ -40,9 +41,24 @@ static class Program
 	{
 		var menu = new ContextMenuStrip();
 		menu.Items.Add("保存先を開く", null, (s, e) => { OpenSaveDirectory(); });
+		menu.Items.Add("設定", null, (s, e) => { OpenSettings(); });
 		menu.Items.Add(new ToolStripSeparator());
 		menu.Items.Add("終了", null, (s, e) => { Application.Exit(); });
 		return menu;
+	}
+
+	private static void OpenSettings()
+	{
+		try
+		{
+			using var settingsForm = new SettingsForm();
+			settingsForm.ShowDialog();
+		}
+		catch (Exception ex)
+		{
+			Logger.Error(ex, "設定画面を開けませんでした。");
+			MessageBox.Show("設定画面を開けませんでした。", "Clipboard", MessageBoxButtons.OK, MessageBoxIcon.Error);
+		}
 	}
 
 	private static void OpenSaveDirectory()
