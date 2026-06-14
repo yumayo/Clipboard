@@ -8,6 +8,7 @@ internal static class NativeMethods
 	public const int WM_HOTKEY = 0x0312;
 	public const int WM_QUIT = 0x0012;
 	public const int WM_APP = 0x8000;
+	public const int WM_USER = 0x0400;
 	public const int WM_CONTEXTMENU = 0x007B;
 	public const int WM_LBUTTONUP = 0x0202;
 	public const int WM_RBUTTONUP = 0x0205;
@@ -41,12 +42,21 @@ internal static class NativeMethods
 	public const uint NIF_ICON = 0x00000002;
 	public const uint NIF_TIP = 0x00000004;
 	public const uint NOTIFYICON_VERSION_4 = 4;
+	public const int NIN_SELECT = WM_USER;
+	public const int NIN_KEYSELECT = WM_USER + 1;
 
 	public const uint IMAGE_ICON = 1;
 	public const uint LR_LOADFROMFILE = 0x00000010;
 	public const uint LR_DEFAULTSIZE = 0x00000040;
 
 	public const uint MONITOR_DEFAULTTONEAREST = 0x00000002;
+	public const int GWL_STYLE = -16;
+	public const int WS_MAXIMIZEBOX = 0x00010000;
+	public const int WS_MINIMIZEBOX = 0x00020000;
+	public const uint SWP_NOSIZE = 0x0001;
+	public const uint SWP_NOMOVE = 0x0002;
+	public const uint SWP_NOZORDER = 0x0004;
+	public const uint SWP_FRAMECHANGED = 0x0020;
 
 	[StructLayout(LayoutKind.Sequential)]
 	public struct KbdLlHookStruct
@@ -249,6 +259,16 @@ internal static class NativeMethods
 	[DllImport("user32.dll", SetLastError = true)]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MonitorInfo lpmi);
+
+	[DllImport("user32.dll", SetLastError = true)]
+	public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+	[DllImport("user32.dll", SetLastError = true)]
+	public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+	[DllImport("user32.dll", SetLastError = true)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
 
 	[DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
 	[return: MarshalAs(UnmanagedType.Bool)]

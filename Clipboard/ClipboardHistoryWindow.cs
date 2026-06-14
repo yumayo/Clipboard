@@ -42,6 +42,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		MinHeight = 320;
 		ShowInTaskbar = false;
 		Icon = LoadIcon();
+		SourceInitialized += (_, _) => HideMinimizeAndMaximizeButtons();
 
 		_listPanel = new StackPanel
 		{
@@ -231,23 +232,27 @@ internal sealed class ClipboardHistoryWindow : Window
 
 	private void MoveNearTextInput(IntPtr targetWindow)
 	{
-		bool hasTextInputBounds = TryGetTextInputBounds(targetWindow, out Rect textInputBounds, out string textInputSource);
-		Rect anchorBounds;
+		bool hasTextInputBounds = TryGetTextInputBounds(targetWindow, out Rect textInputBoundsDevice, out string textInputSource);
+		Rect anchorBoundsDevice;
 		if (hasTextInputBounds)
 		{
-			anchorBounds = textInputBounds;
-			Logger.Debug($"ClipboardHistoryWindow: テキスト入力座標を取得しました。Source={textInputSource} TargetWindow={FormatHandle(targetWindow)} Bounds={anchorBounds}");
+			anchorBoundsDevice = textInputBoundsDevice;
+			Logger.Debug($"ClipboardHistoryWindow: テキスト入力座標を取得しました。Source={textInputSource} TargetWindow={FormatHandle(targetWindow)} BoundsDevice={anchorBoundsDevice}");
 		}
 		else
 		{
 			Point cursorPoint = GetCursorPoint();
-			anchorBounds = new Rect(cursorPoint, new Size(0, 0));
+			anchorBoundsDevice = new Rect(cursorPoint, new Size(0, 0));
 			Logger.Debug($"ClipboardHistoryWindow: テキスト入力座標を取得できなかったためマウス座標にフォールバックします。TargetWindow={FormatHandle(targetWindow)} Cursor={cursorPoint}");
 		}
 
-		Rect workingArea = GetWorkingArea(anchorBounds.Location);
-		double windowWidth = Width;
-		double windowHeight = Height;
+		Matrix transformFromDevice = GetTransformFromDevice();
+		Rect anchorBounds = TransformRect(anchorBoundsDevice, transformFromDevice);
+		Rect workingArea = TryGetWorkingAreaDevice(anchorBoundsDevice.Location, out Rect workingAreaDevice)
+			? TransformRect(workingAreaDevice, transformFromDevice)
+			: SystemParameters.WorkArea;
+		double windowWidth = ActualWidth > 0 ? ActualWidth : Width;
+		double windowHeight = ActualHeight > 0 ? ActualHeight : Height;
 		double x = anchorBounds.Left;
 		double y = anchorBounds.Bottom + 8;
 
@@ -260,7 +265,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		y = Math.Max(workingArea.Top, Math.Min(y, workingArea.Bottom - windowHeight));
 		Left = x;
 		Top = y;
-		Logger.Debug($"ClipboardHistoryWindow: 履歴画面の表示位置を決定しました。Anchor={anchorBounds} WorkingArea={workingArea} Location=({Left},{Top}) Size=({windowWidth},{windowHeight})");
+		Logger.Debug($"ClipboardHistoryWindow: 履歴画面の表示位置を決定しました。AnchorDevice={anchorBoundsDevice} Anchor={anchorBounds} WorkingArea={workingArea} Location=({Left},{Top}) Size=({windowWidth},{windowHeight})");
 	}
 
 	private static bool TryGetTextInputBounds(IntPtr targetWindow, out Rect bounds, out string source)
@@ -475,7 +480,26 @@ internal sealed class ClipboardHistoryWindow : Window
 		return new Point(0, 0);
 	}
 
-	private static Rect GetWorkingArea(Point point)
+	private Matrix GetTransformFromDevice()
+	{
+		IntPtr handle = new WindowInteropHelper(this).EnsureHandle();
+		HwndSource? source = HwndSource.FromHwnd(handle);
+		return source?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
+	}
+
+	private static Rect TransformRect(Rect rect, Matrix transform)
+	{
+		if (rect.IsEmpty)
+		{
+			return rect;
+		}
+
+		Point topLeft = transform.Transform(new Point(rect.Left, rect.Top));
+		Point bottomRight = transform.Transform(new Point(rect.Right, rect.Bottom));
+		return new Rect(topLeft, bottomRight);
+	}
+
+	private static bool TryGetWorkingAreaDevice(Point point, out Rect workingArea)
 	{
 		var nativePoint = new NativeMethods.NativePoint
 		{
@@ -491,11 +515,13 @@ internal sealed class ClipboardHistoryWindow : Window
 			};
 			if (NativeMethods.GetMonitorInfo(monitor, ref monitorInfo))
 			{
-				return ToRect(monitorInfo.RcWork);
+				workingArea = ToRect(monitorInfo.RcWork);
+				return true;
 			}
 		}
 
-		return SystemParameters.WorkArea;
+		workingArea = Rect.Empty;
+		return false;
 	}
 
 	private static Rect ToRect(NativeMethods.NativeRect rect)
@@ -538,6 +564,35 @@ internal sealed class ClipboardHistoryWindow : Window
 			DwFlags = NativeMethods.FLASHW_STOP
 		};
 		NativeMethods.FlashWindowEx(ref flashWindowInfo);
+	}
+
+	private void HideMinimizeAndMaximizeButtons()
+	{
+		IntPtr handle = new WindowInteropHelper(this).Handle;
+		if (handle == IntPtr.Zero)
+		{
+			return;
+		}
+
+		int style = NativeMethods.GetWindowLong(handle, NativeMethods.GWL_STYLE);
+		int newStyle = style & ~NativeMethods.WS_MINIMIZEBOX & ~NativeMethods.WS_MAXIMIZEBOX;
+		if (newStyle == style)
+		{
+			return;
+		}
+
+		NativeMethods.SetWindowLong(handle, NativeMethods.GWL_STYLE, newStyle);
+		NativeMethods.SetWindowPos(
+			handle,
+			IntPtr.Zero,
+			0,
+			0,
+			0,
+			0,
+			NativeMethods.SWP_NOMOVE |
+			NativeMethods.SWP_NOSIZE |
+			NativeMethods.SWP_NOZORDER |
+			NativeMethods.SWP_FRAMECHANGED);
 	}
 
 	private static List<ClipboardHistoryEntry> LoadHistoryEntries(CancellationToken cancellationToken)

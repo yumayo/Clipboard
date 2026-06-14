@@ -204,8 +204,14 @@ internal sealed class WpfNotifyIcon : IDisposable
 	{
 		if (msg == CallbackMessage)
 		{
-			int mouseMessage = lParam.ToInt32();
-			if (mouseMessage is NativeMethods.WM_LBUTTONUP or NativeMethods.WM_RBUTTONUP or NativeMethods.WM_CONTEXTMENU)
+			int notifyEvent = GetLowWord(lParam);
+			int iconId = GetHighWord(lParam);
+			if ((iconId == 0 || iconId == (int)NotifyIconId) &&
+				notifyEvent is NativeMethods.WM_LBUTTONUP or
+					NativeMethods.WM_RBUTTONUP or
+					NativeMethods.WM_CONTEXTMENU or
+					NativeMethods.NIN_SELECT or
+					NativeMethods.NIN_KEYSELECT)
 			{
 				ShowContextMenu();
 				handled = true;
@@ -217,8 +223,23 @@ internal sealed class WpfNotifyIcon : IDisposable
 
 	private void ShowContextMenu()
 	{
+		if (_contextMenu.IsOpen)
+		{
+			_contextMenu.IsOpen = false;
+		}
+
 		NativeMethods.SetForegroundWindow(_source.Handle);
 		_contextMenu.IsOpen = true;
+	}
+
+	private static int GetLowWord(IntPtr value)
+	{
+		return unchecked((int)((long)value & 0xFFFF));
+	}
+
+	private static int GetHighWord(IntPtr value)
+	{
+		return unchecked((int)(((long)value >> 16) & 0xFFFF));
 	}
 
 	private static string ResolveIconPath()
