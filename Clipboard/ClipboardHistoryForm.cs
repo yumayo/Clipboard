@@ -57,7 +57,7 @@ internal sealed class ClipboardHistoryForm : Form
 	public void ShowHistory(IntPtr targetWindow)
 	{
 		_targetWindow = targetWindow;
-		MoveNearCursor();
+		MoveNearTextInput(targetWindow);
 
 		TopMost = true;
 		Show();
@@ -262,15 +262,105 @@ internal sealed class ClipboardHistoryForm : Form
 		return Math.Max(260, _listPanel.ClientSize.Width - _listPanel.Padding.Horizontal - scrollbarWidth - 4);
 	}
 
-	private void MoveNearCursor()
+	private void MoveNearTextInput(IntPtr targetWindow)
 	{
-		Rectangle workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
-		int x = Cursor.Position.X - Width / 2;
-		int y = Cursor.Position.Y - 40 + GetTitleBarHeightOffset() * 2;
+		bool hasTextInputBounds = TryGetTextInputBounds(targetWindow, out var textInputBounds);
+		Rectangle anchorBounds;
+		if (hasTextInputBounds)
+		{
+			anchorBounds = textInputBounds;
+			Logger.Debug($"ClipboardHistoryForm: テキスト入力座標を取得しました。TargetWindow={FormatHandle(targetWindow)} Bounds={anchorBounds}");
+		}
+		else
+		{
+			anchorBounds = new Rectangle(Cursor.Position, Size.Empty);
+			Logger.Debug($"ClipboardHistoryForm: テキスト入力座標を取得できなかったためマウス座標にフォールバックします。TargetWindow={FormatHandle(targetWindow)} Cursor={Cursor.Position}");
+		}
+
+		Rectangle workingArea = Screen.FromPoint(anchorBounds.Location).WorkingArea;
+		int x = anchorBounds.Left;
+		int y = anchorBounds.Bottom + 8;
 
 		x = Math.Max(workingArea.Left, Math.Min(x, workingArea.Right - Width));
+		if (y + Height > workingArea.Bottom && anchorBounds.Top - Height - 8 >= workingArea.Top)
+		{
+			y = anchorBounds.Top - Height - 8;
+		}
+
 		y = Math.Max(workingArea.Top, Math.Min(y, workingArea.Bottom - Height));
 		Location = new Point(x, y);
+		Logger.Debug($"ClipboardHistoryForm: 履歴画面の表示位置を決定しました。Anchor={anchorBounds} WorkingArea={workingArea} Location={Location} Size={Size}");
+	}
+
+	private static bool TryGetTextInputBounds(IntPtr targetWindow, out Rectangle bounds)
+	{
+		bounds = Rectangle.Empty;
+		if (targetWindow == IntPtr.Zero || !NativeMethods.IsWindow(targetWindow))
+		{
+			Logger.Debug($"ClipboardHistoryForm: テキスト入力座標の取得に失敗しました。対象ウィンドウが無効です。TargetWindow={FormatHandle(targetWindow)}");
+			return false;
+		}
+
+		uint threadId = NativeMethods.GetWindowThreadProcessId(targetWindow, out _);
+		if (threadId == 0)
+		{
+			Logger.Debug($"ClipboardHistoryForm: テキスト入力座標の取得に失敗しました。GetWindowThreadProcessId が失敗しました。TargetWindow={FormatHandle(targetWindow)} Win32Error={System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
+			return false;
+		}
+
+		var guiThreadInfo = new NativeMethods.GuiThreadInfo
+		{
+			CbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.GuiThreadInfo>()
+		};
+		if (!NativeMethods.GetGUIThreadInfo(threadId, ref guiThreadInfo))
+		{
+			Logger.Debug($"ClipboardHistoryForm: テキスト入力座標の取得に失敗しました。GetGUIThreadInfo が失敗しました。TargetWindow={FormatHandle(targetWindow)} ThreadId={threadId} Win32Error={System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
+			return false;
+		}
+
+		Logger.Debug($"ClipboardHistoryForm: GUI thread 情報を取得しました。TargetWindow={FormatHandle(targetWindow)} ThreadId={threadId} Active={FormatHandle(guiThreadInfo.HWndActive)} Focus={FormatHandle(guiThreadInfo.HWndFocus)} Caret={FormatHandle(guiThreadInfo.HWndCaret)} CaretRect=({guiThreadInfo.RcCaret.Left},{guiThreadInfo.RcCaret.Top})-({guiThreadInfo.RcCaret.Right},{guiThreadInfo.RcCaret.Bottom})");
+		if (guiThreadInfo.HWndCaret == IntPtr.Zero)
+		{
+			Logger.Debug($"ClipboardHistoryForm: テキスト入力座標の取得に失敗しました。キャレット HWND が 0 です。TargetWindow={FormatHandle(targetWindow)} ThreadId={threadId} Focus={FormatHandle(guiThreadInfo.HWndFocus)}");
+			return false;
+		}
+
+		var topLeft = new NativeMethods.NativePoint
+		{
+			X = guiThreadInfo.RcCaret.Left,
+			Y = guiThreadInfo.RcCaret.Top
+		};
+		var bottomRight = new NativeMethods.NativePoint
+		{
+			X = guiThreadInfo.RcCaret.Right,
+			Y = guiThreadInfo.RcCaret.Bottom
+		};
+
+		if (!NativeMethods.ClientToScreen(guiThreadInfo.HWndCaret, ref topLeft))
+		{
+			Logger.Debug($"ClipboardHistoryForm: テキスト入力座標の取得に失敗しました。ClientToScreen(topLeft) が失敗しました。Caret={FormatHandle(guiThreadInfo.HWndCaret)} Win32Error={System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
+			return false;
+		}
+
+		if (!NativeMethods.ClientToScreen(guiThreadInfo.HWndCaret, ref bottomRight))
+		{
+			Logger.Debug($"ClipboardHistoryForm: テキスト入力座標の取得に失敗しました。ClientToScreen(bottomRight) が失敗しました。Caret={FormatHandle(guiThreadInfo.HWndCaret)} Win32Error={System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
+			return false;
+		}
+
+		bounds = Rectangle.FromLTRB(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
+		if (bounds.IsEmpty)
+		{
+			Logger.Debug($"ClipboardHistoryForm: テキスト入力座標の取得に失敗しました。画面座標変換後のキャレット矩形が空です。Caret={FormatHandle(guiThreadInfo.HWndCaret)} Bounds={bounds}");
+			return false;
+		}
+
+		return true;
+	}
+
+	private static string FormatHandle(IntPtr handle)
+	{
+		return $"0x{handle.ToInt64():X}";
 	}
 
 	private void StopWindowFlash()
@@ -287,16 +377,6 @@ internal sealed class ClipboardHistoryForm : Form
 			DwFlags = NativeMethods.FLASHW_STOP
 		};
 		NativeMethods.FlashWindowEx(ref flashWindowInfo);
-	}
-
-	private int GetTitleBarHeightOffset()
-	{
-		if (IsHandleCreated)
-		{
-			return Math.Max(0, RectangleToScreen(ClientRectangle).Top - Top);
-		}
-
-		return SystemInformation.CaptionHeight;
 	}
 
 	private static List<ClipboardHistoryEntry> LoadHistoryEntries(CancellationToken cancellationToken)

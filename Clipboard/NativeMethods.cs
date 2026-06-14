@@ -94,6 +94,29 @@ internal static class NativeMethods
 	}
 
 	[StructLayout(LayoutKind.Sequential)]
+	public struct NativeRect
+	{
+		public int Left;
+		public int Top;
+		public int Right;
+		public int Bottom;
+	}
+
+	[StructLayout(LayoutKind.Sequential)]
+	public struct GuiThreadInfo
+	{
+		public uint CbSize;
+		public uint Flags;
+		public IntPtr HWndActive;
+		public IntPtr HWndFocus;
+		public IntPtr HWndCapture;
+		public IntPtr HWndMenuOwner;
+		public IntPtr HWndMoveSize;
+		public IntPtr HWndCaret;
+		public NativeRect RcCaret;
+	}
+
+	[StructLayout(LayoutKind.Sequential)]
 	public struct FlashWindowInfo
 	{
 		public uint CbSize;
@@ -157,4 +180,15 @@ internal static class NativeMethods
 	[DllImport("user32.dll")]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static extern bool FlashWindowEx(ref FlashWindowInfo pfwi);
+
+	[DllImport("user32.dll", SetLastError = true)]
+	public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+	[DllImport("user32.dll", SetLastError = true)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	public static extern bool GetGUIThreadInfo(uint idThread, ref GuiThreadInfo lpgui);
+
+	[DllImport("user32.dll")]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	public static extern bool ClientToScreen(IntPtr hWnd, ref NativePoint lpPoint);
 }

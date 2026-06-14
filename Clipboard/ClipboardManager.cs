@@ -507,6 +507,7 @@ public static class ClipboardManager
 	private static void ShowHistoryFromHotKey()
 	{
 		IntPtr targetWindow = NativeMethods.GetForegroundWindow();
+		Logger.Debug($"ClipboardManager: Win+V 対象ウィンドウを取得しました。TargetWindow={FormatHandle(targetWindow)}");
 		if (_monitorForm != null && _monitorForm.IsHandleCreated)
 		{
 			_monitorForm.BeginInvoke((Action)(() => ShowHistoryWindow(targetWindow)));
@@ -514,6 +515,11 @@ public static class ClipboardManager
 		}
 
 		ShowHistoryWindow(targetWindow);
+	}
+
+	private static string FormatHandle(IntPtr handle)
+	{
+		return $"0x{handle.ToInt64():X}";
 	}
 
 	private static void ShowHistoryWindow(IntPtr targetWindow)
