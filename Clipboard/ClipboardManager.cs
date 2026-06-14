@@ -44,6 +44,7 @@ public static class ClipboardManager
 	private static bool _swallowWinVKeyUp = false;
 	private static int _suppressedWinKeyCode = 0;
 	private static uint _hookThreadId = 0;
+	private static int _historyConsumedKeyUpCode = 0;
 	private static volatile bool _historyWindowVisible = false;
 
 	private static string _lastSavedContent = string.Empty;
@@ -229,7 +230,7 @@ public static class ClipboardManager
 			bool isKeyUp = wParam == (IntPtr)NativeMethods.WM_KEYUP || wParam == (IntPtr)NativeMethods.WM_SYSKEYUP;
 			bool isWindowsKey = IsWindowsKey(vkCode);
 
-			if (TryHandleHistoryNavigationKey(vkCode, isKeyDown, isKeyUp))
+			if (TryHandleHistoryKey(vkCode, isKeyDown, isKeyUp))
 			{
 				return (IntPtr)1;
 			}
@@ -689,20 +690,42 @@ public static class ClipboardManager
 		return vkCode == NativeMethods.VK_LWIN || vkCode == NativeMethods.VK_RWIN;
 	}
 
-	private static bool TryHandleHistoryNavigationKey(int vkCode, bool isKeyDown, bool isKeyUp)
+	private static bool TryHandleHistoryKey(int vkCode, bool isKeyDown, bool isKeyUp)
 	{
-		if (!_historyWindowVisible || !IsHistoryNavigationKey(vkCode) || IsModifierKeyDown())
+		if (isKeyUp && vkCode == _historyConsumedKeyUpCode)
+		{
+			_historyConsumedKeyUpCode = 0;
+			return true;
+		}
+
+		if (!_historyWindowVisible || !isKeyDown || IsModifierKeyDown())
 		{
 			return false;
 		}
 
-		if (isKeyDown)
+		if (IsHistoryNavigationKey(vkCode))
 		{
+			_historyConsumedKeyUpCode = vkCode;
 			int offset = vkCode == NativeMethods.VK_DOWN ? 1 : -1;
 			DispatchToUi(() => _historyWindow?.MoveSelectionFromKeyboard(offset));
+			return true;
 		}
 
-		return isKeyDown || isKeyUp;
+		if (vkCode == NativeMethods.VK_RETURN)
+		{
+			_historyConsumedKeyUpCode = vkCode;
+			DispatchToUi(() => _historyWindow?.ActivateSelectedItemFromKeyboard());
+			return true;
+		}
+
+		if (vkCode == NativeMethods.VK_ESCAPE)
+		{
+			_historyConsumedKeyUpCode = vkCode;
+			DispatchToUi(() => _historyWindow?.HideFromKeyboard());
+			return true;
+		}
+
+		return false;
 	}
 
 	private static bool IsHistoryNavigationKey(int vkCode)

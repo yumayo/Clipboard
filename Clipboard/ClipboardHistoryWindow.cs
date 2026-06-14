@@ -117,6 +117,19 @@ internal sealed class ClipboardHistoryWindow : Window
 		return IsVisible && MoveSelection(offset);
 	}
 
+	public bool ActivateSelectedItemFromKeyboard()
+	{
+		return IsVisible && ActivateSelectedItem();
+	}
+
+	public void HideFromKeyboard()
+	{
+		if (IsVisible)
+		{
+			Hide();
+		}
+	}
+
 	protected override void OnPreviewKeyDown(KeyEventArgs e)
 	{
 		if (e.Key == Key.Down)
@@ -283,6 +296,18 @@ internal sealed class ClipboardHistoryWindow : Window
 		int nextIndex = _selectedItemIndex < 0 ? 0 : _selectedItemIndex + offset;
 		nextIndex = Math.Max(0, Math.Min(nextIndex, items.Count - 1));
 		return SelectHistoryItem(nextIndex, items);
+	}
+
+	private bool ActivateSelectedItem()
+	{
+		var items = GetHistoryItems();
+		if (_selectedItemIndex < 0 || _selectedItemIndex >= items.Count)
+		{
+			return false;
+		}
+
+		items[_selectedItemIndex].Activate();
+		return true;
 	}
 
 	private bool SelectHistoryItem(int index)
