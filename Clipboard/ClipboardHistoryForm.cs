@@ -64,6 +64,8 @@ internal sealed class ClipboardHistoryForm : Form
 		Activate();
 		BringToFront();
 		TopMost = false;
+		StopWindowFlash();
+		BeginInvoke((Action)StopWindowFlash);
 
 		if (_isLoadingHistory && _loadHistoryCancellation?.IsCancellationRequested == true)
 		{
@@ -269,6 +271,22 @@ internal sealed class ClipboardHistoryForm : Form
 		x = Math.Max(workingArea.Left, Math.Min(x, workingArea.Right - Width));
 		y = Math.Max(workingArea.Top, Math.Min(y, workingArea.Bottom - Height));
 		Location = new Point(x, y);
+	}
+
+	private void StopWindowFlash()
+	{
+		if (!IsHandleCreated)
+		{
+			return;
+		}
+
+		var flashWindowInfo = new NativeMethods.FlashWindowInfo
+		{
+			CbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.FlashWindowInfo>(),
+			HWnd = Handle,
+			DwFlags = NativeMethods.FLASHW_STOP
+		};
+		NativeMethods.FlashWindowEx(ref flashWindowInfo);
 	}
 
 	private int GetTitleBarHeightOffset()

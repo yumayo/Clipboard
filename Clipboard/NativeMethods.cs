@@ -39,6 +39,7 @@ internal static class NativeMethods
 
 	public const int INPUT_KEYBOARD = 1;
 	public const uint KEYEVENTF_KEYUP = 0x0002;
+	public const uint FLASHW_STOP = 0;
 
 	[StructLayout(LayoutKind.Sequential)]
 	public struct KbdLlHookStruct
@@ -92,6 +93,16 @@ internal static class NativeMethods
 		public NativePoint Point;
 	}
 
+	[StructLayout(LayoutKind.Sequential)]
+	public struct FlashWindowInfo
+	{
+		public uint CbSize;
+		public IntPtr HWnd;
+		public uint DwFlags;
+		public uint UCount;
+		public uint DwTimeout;
+	}
+
 	public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 
 	[DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
@@ -142,4 +153,8 @@ internal static class NativeMethods
 	[DllImport("user32.dll")]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static extern bool PeekMessage(out NativeMessage lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
+
+	[DllImport("user32.dll")]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	public static extern bool FlashWindowEx(ref FlashWindowInfo pfwi);
 }
