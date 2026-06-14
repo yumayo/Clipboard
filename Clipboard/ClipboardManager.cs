@@ -703,6 +703,11 @@ public static class ClipboardManager
 			return false;
 		}
 
+		if (_historyWindow?.IsForegroundWindow() == true)
+		{
+			return false;
+		}
+
 		if (IsHistoryNavigationKey(vkCode))
 		{
 			_historyConsumedKeyUpCode = vkCode;

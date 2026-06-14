@@ -21,12 +21,16 @@ namespace Clipboard;
 
 internal sealed class ClipboardHistoryWindow : Window
 {
-	private const int MaxHistoryItems = 100;
 	private const int PreviewTextLength = 180;
+	private const int SearchFilterDelayMilliseconds = 150;
+	private readonly TextBox _searchBox;
 	private readonly ScrollViewer _scrollViewer;
 	private readonly StackPanel _listPanel;
+	private readonly List<ClipboardHistoryEntry> _historyEntries = new();
 	private CancellationTokenSource? _loadHistoryCancellation;
+	private CancellationTokenSource? _filterHistoryCancellation;
 	private IntPtr _targetWindow;
+	private IntPtr _windowHandle;
 	private int _selectedItemIndex = -1;
 	private bool _isLoadingHistory;
 	private bool _hasLoadedHistory;
@@ -48,9 +52,52 @@ internal sealed class ClipboardHistoryWindow : Window
 		Icon = LoadIcon();
 		SourceInitialized += (_, _) =>
 		{
+			_windowHandle = new WindowInteropHelper(this).Handle;
 			HideMinimizeAndMaximizeButtons();
-			PreventWindowActivation();
 		};
+
+		var rootPanel = new DockPanel
+		{
+			Background = new SolidColorBrush(Color.FromRgb(245, 246, 248))
+		};
+
+		var searchPanel = new Grid
+		{
+			Margin = new Thickness(10, 10, 10, 0)
+		};
+		searchPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+		searchPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+		searchPanel.Children.Add(new TextBlock
+		{
+			Text = "検索",
+			VerticalAlignment = VerticalAlignment.Center,
+			Margin = new Thickness(0, 0, 8, 0),
+			Foreground = new SolidColorBrush(Color.FromRgb(64, 64, 64)),
+			FontWeight = FontWeights.Bold
+		});
+
+		_searchBox = new TextBox
+		{
+			MinHeight = 32,
+			Padding = new Thickness(8, 5, 8, 5),
+			VerticalContentAlignment = VerticalAlignment.Center,
+			BorderBrush = new SolidColorBrush(Color.FromRgb(188, 194, 204)),
+			Background = Brushes.White,
+			ToolTip = "履歴を検索"
+		};
+		_searchBox.TextChanged += (_, _) =>
+		{
+			if (_hasLoadedHistory || _historyEntries.Count > 0)
+			{
+				BeginApplyHistoryFilter(delay: true);
+			}
+		};
+		Grid.SetColumn(_searchBox, 1);
+		searchPanel.Children.Add(_searchBox);
+
+		DockPanel.SetDock(searchPanel, Dock.Top);
+		rootPanel.Children.Add(searchPanel);
 
 		_listPanel = new StackPanel
 		{
@@ -64,12 +111,14 @@ internal sealed class ClipboardHistoryWindow : Window
 			HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
 			Background = new SolidColorBrush(Color.FromRgb(245, 246, 248))
 		};
-		Content = _scrollViewer;
+		rootPanel.Children.Add(_scrollViewer);
+		Content = rootPanel;
 		IsVisibleChanged += (_, _) =>
 		{
 			if (!IsVisible)
 			{
 				CancelHistoryLoad();
+				CancelHistoryFilter();
 			}
 
 			VisibleStateChanged?.Invoke(IsVisible);
@@ -78,10 +127,19 @@ internal sealed class ClipboardHistoryWindow : Window
 
 	public event Action<bool>? VisibleStateChanged;
 
+	public bool IsForegroundWindow()
+	{
+		return _windowHandle != IntPtr.Zero && NativeMethods.GetForegroundWindow() == _windowHandle;
+	}
+
 	public void ShowHistory(IntPtr targetWindow)
 	{
 		_targetWindow = targetWindow;
 		MoveNearTextInput(targetWindow);
+		if (!IsVisible && _searchBox.Text.Length > 0)
+		{
+			_searchBox.Clear();
+		}
 
 		Topmost = true;
 		Show();
@@ -148,6 +206,14 @@ internal sealed class ClipboardHistoryWindow : Window
 				return;
 			}
 		}
+		else if (e.Key == Key.Return)
+		{
+			if (ActivateSelectedItem())
+			{
+				e.Handled = true;
+				return;
+			}
+		}
 
 		base.OnPreviewKeyDown(e);
 	}
@@ -173,6 +239,8 @@ internal sealed class ClipboardHistoryWindow : Window
 			return;
 		}
 
+		CancelHistoryLoad();
+		CancelHistoryFilter();
 		IsClosed = true;
 		base.OnClosing(e);
 	}
@@ -237,10 +305,80 @@ internal sealed class ClipboardHistoryWindow : Window
 
 	private void PopulateHistory(List<ClipboardHistoryEntry> entries)
 	{
+		_historyEntries.Clear();
+		_historyEntries.AddRange(entries);
+		BeginApplyHistoryFilter(delay: false);
+	}
+
+	private void BeginApplyHistoryFilter(bool delay)
+	{
+		CancelHistoryFilter();
+		var cancellationTokenSource = new CancellationTokenSource();
+		_filterHistoryCancellation = cancellationTokenSource;
+
+		string searchText = _searchBox.Text;
+		var entriesSnapshot = _historyEntries.ToList();
+		_ = ApplyHistoryFilterAsync(entriesSnapshot, searchText, delay, cancellationTokenSource);
+	}
+
+	private async Task ApplyHistoryFilterAsync(
+		List<ClipboardHistoryEntry> entriesSnapshot,
+		string searchText,
+		bool delay,
+		CancellationTokenSource cancellationTokenSource)
+	{
+		try
+		{
+			CancellationToken cancellationToken = cancellationTokenSource.Token;
+			if (delay)
+			{
+				await Task.Delay(SearchFilterDelayMilliseconds, cancellationToken);
+			}
+
+			List<ClipboardHistoryEntry> entries = await Task.Run(
+				() => FilterHistoryEntries(entriesSnapshot, searchText, cancellationToken),
+				cancellationToken);
+
+			if (cancellationToken.IsCancellationRequested || _filterHistoryCancellation != cancellationTokenSource)
+			{
+				return;
+			}
+
+			ShowHistoryEntries(entries, entriesSnapshot.Count);
+		}
+		catch (OperationCanceledException)
+		{
+		}
+		catch (Exception ex)
+		{
+			Logger.Error(ex, "ClipboardHistoryWindow: 履歴の検索に失敗しました。");
+			if (_filterHistoryCancellation == cancellationTokenSource)
+			{
+				ClearHistoryControls();
+				AddMessage("検索に失敗しました");
+			}
+		}
+		finally
+		{
+			if (_filterHistoryCancellation == cancellationTokenSource)
+			{
+				_filterHistoryCancellation = null;
+			}
+		}
+	}
+
+	private void ShowHistoryEntries(List<ClipboardHistoryEntry> entries, int totalEntryCount)
+	{
 		ClearHistoryControls();
-		if (entries.Count == 0)
+		if (totalEntryCount == 0)
 		{
 			AddMessage("履歴がありません");
+			return;
+		}
+
+		if (entries.Count == 0)
+		{
+			AddMessage("一致する履歴がありません");
 			return;
 		}
 
@@ -252,6 +390,45 @@ internal sealed class ClipboardHistoryWindow : Window
 		}
 
 		SelectFirstHistoryItem();
+	}
+
+	private static List<ClipboardHistoryEntry> FilterHistoryEntries(
+		List<ClipboardHistoryEntry> entries,
+		string searchText,
+		CancellationToken cancellationToken)
+	{
+		cancellationToken.ThrowIfCancellationRequested();
+		searchText = searchText.Trim();
+		if (string.IsNullOrWhiteSpace(searchText))
+		{
+			return entries;
+		}
+
+		var searchTerms = SplitSearchTerms(searchText);
+		var filteredEntries = new List<ClipboardHistoryEntry>();
+		foreach (var entry in entries)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			if (searchTerms.All(term => ContainsSearchTerm(entry.SearchText, term)))
+			{
+				filteredEntries.Add(entry);
+			}
+		}
+
+		return filteredEntries;
+	}
+
+	private static List<string> SplitSearchTerms(string searchText)
+	{
+		return Regex.Matches(searchText, @"\S+")
+			.Cast<Match>()
+			.Select(match => match.Value)
+			.ToList();
+	}
+
+	private static bool ContainsSearchTerm(string searchText, string term)
+	{
+		return searchText.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0;
 	}
 
 	private void PasteEntry(ClipboardHistoryEntry entry)
@@ -344,6 +521,14 @@ internal sealed class ClipboardHistoryWindow : Window
 		if (_loadHistoryCancellation is { IsCancellationRequested: false })
 		{
 			_loadHistoryCancellation.Cancel();
+		}
+	}
+
+	private void CancelHistoryFilter()
+	{
+		if (_filterHistoryCancellation is { IsCancellationRequested: false })
+		{
+			_filterHistoryCancellation.Cancel();
 		}
 	}
 
@@ -712,36 +897,6 @@ internal sealed class ClipboardHistoryWindow : Window
 			NativeMethods.SWP_FRAMECHANGED);
 	}
 
-	private void PreventWindowActivation()
-	{
-		IntPtr handle = new WindowInteropHelper(this).Handle;
-		if (handle == IntPtr.Zero)
-		{
-			return;
-		}
-
-		int extendedStyle = NativeMethods.GetWindowLong(handle, NativeMethods.GWL_EXSTYLE);
-		int newExtendedStyle = extendedStyle | NativeMethods.WS_EX_NOACTIVATE;
-		if (newExtendedStyle == extendedStyle)
-		{
-			return;
-		}
-
-		NativeMethods.SetWindowLong(handle, NativeMethods.GWL_EXSTYLE, newExtendedStyle);
-		NativeMethods.SetWindowPos(
-			handle,
-			IntPtr.Zero,
-			0,
-			0,
-			0,
-			0,
-			NativeMethods.SWP_NOMOVE |
-			NativeMethods.SWP_NOSIZE |
-			NativeMethods.SWP_NOZORDER |
-			NativeMethods.SWP_NOACTIVATE |
-			NativeMethods.SWP_FRAMECHANGED);
-	}
-
 	private static List<ClipboardHistoryEntry> LoadHistoryEntries(CancellationToken cancellationToken)
 	{
 		try
@@ -776,7 +931,7 @@ internal sealed class ClipboardHistoryWindow : Window
 	private static List<ClipboardHistoryCandidate> LoadHistoryCandidates(CancellationToken cancellationToken)
 	{
 		var baseDirectory = new DirectoryInfo(ClipboardSettings.BaseDirectoryPath);
-		var candidates = new List<ClipboardHistoryCandidate>(MaxHistoryItems);
+		var candidates = new List<ClipboardHistoryCandidate>();
 
 		AddDirectoryCandidates(baseDirectory, SearchOption.TopDirectoryOnly, candidates, cancellationToken);
 
@@ -797,34 +952,22 @@ internal sealed class ClipboardHistoryWindow : Window
 			cancellationToken.ThrowIfCancellationRequested();
 			datedDirectoryPaths.Add(item.Directory.FullName);
 			AddDirectoryCandidates(item.Directory, SearchOption.TopDirectoryOnly, candidates, cancellationToken);
-			if (candidates.Count >= MaxHistoryItems)
-			{
-				break;
-			}
 		}
 
-		if (candidates.Count < MaxHistoryItems)
-		{
-			var fallbackDirectories = baseDirectory
-				.EnumerateDirectories()
-				.Where(directory => !datedDirectoryPaths.Contains(directory.FullName))
-				.OrderByDescending(directory => directory.LastWriteTime);
+		var fallbackDirectories = baseDirectory
+			.EnumerateDirectories()
+			.Where(directory => !datedDirectoryPaths.Contains(directory.FullName))
+			.OrderByDescending(directory => directory.LastWriteTime);
 
-			foreach (var directory in fallbackDirectories)
-			{
-				cancellationToken.ThrowIfCancellationRequested();
-				AddDirectoryCandidates(directory, SearchOption.AllDirectories, candidates, cancellationToken);
-				if (candidates.Count >= MaxHistoryItems)
-				{
-					break;
-				}
-			}
+		foreach (var directory in fallbackDirectories)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			AddDirectoryCandidates(directory, SearchOption.AllDirectories, candidates, cancellationToken);
 		}
 
 		return candidates
 			.OrderByDescending(candidate => candidate.LastWriteTime)
 			.ThenByDescending(candidate => candidate.FilePath)
-			.Take(MaxHistoryItems)
 			.ToList();
 	}
 
@@ -858,6 +1001,7 @@ internal sealed class ClipboardHistoryWindow : Window
 	private static ClipboardHistoryEntry CreateHistoryEntry(ClipboardHistoryCandidate candidate)
 	{
 		string previewText;
+		string searchableContent = string.Empty;
 		ImageSource? thumbnail = null;
 
 		if (candidate.Kind == ClipboardHistoryKind.Image)
@@ -866,7 +1010,8 @@ internal sealed class ClipboardHistoryWindow : Window
 		}
 		else
 		{
-			previewText = CreatePreviewText(candidate.FilePath, candidate.Kind);
+			searchableContent = CreateSearchableText(candidate.FilePath, candidate.Kind);
+			previewText = CreatePreviewText(searchableContent, candidate.FilePath);
 		}
 
 		return new ClipboardHistoryEntry
@@ -875,6 +1020,7 @@ internal sealed class ClipboardHistoryWindow : Window
 			Kind = candidate.Kind,
 			LastWriteTime = candidate.LastWriteTime,
 			PreviewText = previewText,
+			SearchText = CreateEntrySearchText(candidate, previewText, searchableContent),
 			Thumbnail = thumbnail
 		};
 	}
@@ -906,11 +1052,11 @@ internal sealed class ClipboardHistoryWindow : Window
 		};
 	}
 
-	private static string CreatePreviewText(string filePath, ClipboardHistoryKind kind)
+	private static string CreateSearchableText(string filePath, ClipboardHistoryKind kind)
 	{
 		try
 		{
-			string text = ReadTextStart(filePath, 4096);
+			string text = ReadAllText(filePath);
 			if (kind == ClipboardHistoryKind.Html)
 			{
 				text = ConvertHtmlToPlainText(text);
@@ -920,26 +1066,47 @@ internal sealed class ClipboardHistoryWindow : Window
 				text = ConvertRtfToPlainText(text);
 			}
 
-			text = NormalizePreviewText(text);
-			if (text.Length > PreviewTextLength)
-			{
-				text = text[..PreviewTextLength] + "...";
-			}
-
-			return string.IsNullOrWhiteSpace(text) ? Path.GetFileName(filePath) : text;
+			return NormalizePreviewText(text);
 		}
 		catch
 		{
-			return Path.GetFileName(filePath);
+			return string.Empty;
 		}
 	}
 
-	private static string ReadTextStart(string filePath, int maxChars)
+	private static string CreatePreviewText(string text, string filePath)
 	{
-		using var reader = new StreamReader(filePath, Encoding.UTF8, true);
-		char[] buffer = new char[maxChars];
-		int read = reader.ReadBlock(buffer, 0, buffer.Length);
-		return new string(buffer, 0, read);
+		if (text.Length > PreviewTextLength)
+		{
+			text = text[..PreviewTextLength] + "...";
+		}
+
+		return string.IsNullOrWhiteSpace(text) ? Path.GetFileName(filePath) : text;
+	}
+
+	private static string ReadAllText(string filePath)
+	{
+		using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+		using var reader = new StreamReader(stream, Encoding.UTF8, true);
+		return reader.ReadToEnd();
+	}
+
+	private static string CreateEntrySearchText(
+		ClipboardHistoryCandidate candidate,
+		string previewText,
+		string searchableContent)
+	{
+		return string.Join(
+			"\n",
+			new[]
+			{
+				Path.GetFileName(candidate.FilePath),
+				candidate.FilePath,
+				candidate.LastWriteTime.ToString("yyyy/MM/dd HH:mm:ss", CultureInfo.InvariantCulture),
+				candidate.Kind.ToString(),
+				previewText,
+				searchableContent
+			}.Where(text => !string.IsNullOrWhiteSpace(text)));
 	}
 
 	private static string NormalizePreviewText(string text)
@@ -1026,6 +1193,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		public required ClipboardHistoryKind Kind { get; init; }
 		public required DateTime LastWriteTime { get; init; }
 		public required string PreviewText { get; init; }
+		public required string SearchText { get; init; }
 		public ImageSource? Thumbnail { get; init; }
 	}
 
