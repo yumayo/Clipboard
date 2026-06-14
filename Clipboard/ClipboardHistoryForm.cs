@@ -27,6 +27,8 @@ internal sealed class ClipboardHistoryForm : Form
 		StartPosition = FormStartPosition.Manual;
 		Size = new Size(520, 640);
 		MinimumSize = new Size(380, 320);
+		MaximizeBox = false;
+		MinimizeBox = false;
 		ShowInTaskbar = false;
 		KeyPreview = true;
 
