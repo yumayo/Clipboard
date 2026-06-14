@@ -40,6 +40,10 @@ internal static class NativeMethods
 	public const int INPUT_KEYBOARD = 1;
 	public const uint KEYEVENTF_KEYUP = 0x0002;
 	public const uint FLASHW_STOP = 0;
+	public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+	public const uint EVENT_OBJECT_FOCUS = 0x8005;
+	public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+	public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
 
 	public const uint NIM_ADD = 0x00000000;
 	public const uint NIM_DELETE = 0x00000002;
@@ -66,6 +70,7 @@ internal static class NativeMethods
 	public const uint SWP_NOZORDER = 0x0004;
 	public const uint SWP_NOACTIVATE = 0x0010;
 	public const uint SWP_FRAMECHANGED = 0x0020;
+	public const uint GA_ROOT = 2;
 
 	[StructLayout(LayoutKind.Sequential)]
 	public struct KbdLlHookStruct
@@ -211,6 +216,16 @@ internal static class NativeMethods
 
 	public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 
+	[UnmanagedFunctionPointer(CallingConvention.Winapi)]
+	public delegate void WinEventProc(
+		IntPtr hWinEventHook,
+		uint eventType,
+		IntPtr hwnd,
+		int idObject,
+		int idChild,
+		uint dwEventThread,
+		uint dwmsEventTime);
+
 	[DllImport("user32.dll", SetLastError = true)]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static extern bool AddClipboardFormatListener(IntPtr hwnd);
@@ -225,6 +240,20 @@ internal static class NativeMethods
 	[DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+	[DllImport("user32.dll", SetLastError = true)]
+	public static extern IntPtr SetWinEventHook(
+		uint eventMin,
+		uint eventMax,
+		IntPtr hmodWinEventProc,
+		WinEventProc lpfnWinEventProc,
+		uint idProcess,
+		uint idThread,
+		uint dwFlags);
+
+	[DllImport("user32.dll", SetLastError = true)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	public static extern bool UnhookWinEvent(IntPtr hWinEventHook);
 
 	[DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
 	public static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
@@ -250,6 +279,9 @@ internal static class NativeMethods
 	[DllImport("user32.dll")]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static extern bool IsWindow(IntPtr hWnd);
+
+	[DllImport("user32.dll")]
+	public static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
 
 	[DllImport("user32.dll", SetLastError = true)]
 	public static extern uint SendInput(uint nInputs, Input[] pInputs, int cbSize);

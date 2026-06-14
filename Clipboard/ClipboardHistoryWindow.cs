@@ -27,8 +27,11 @@ internal sealed class ClipboardHistoryWindow : Window
 	private readonly ScrollViewer _scrollViewer;
 	private readonly StackPanel _listPanel;
 	private readonly List<ClipboardHistoryEntry> _historyEntries = new();
+	private readonly NativeMethods.WinEventProc _externalFocusChangedProc;
 	private CancellationTokenSource? _loadHistoryCancellation;
 	private CancellationTokenSource? _filterHistoryCancellation;
+	private IntPtr _foregroundWindowChangedHook;
+	private IntPtr _focusChangedHook;
 	private IntPtr _targetWindow;
 	private IntPtr _windowHandle;
 	private int _selectedItemIndex = -1;
@@ -40,6 +43,7 @@ internal sealed class ClipboardHistoryWindow : Window
 
 	public ClipboardHistoryWindow()
 	{
+		_externalFocusChangedProc = OnExternalFocusChanged;
 		Title = "クリップボード履歴";
 		WindowStartupLocation = WindowStartupLocation.Manual;
 		Width = 520;
@@ -118,6 +122,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		{
 			if (!IsVisible)
 			{
+				StopDismissOnExternalFocus();
 				CancelHistoryLoad();
 				CancelHistoryFilter();
 			}
@@ -148,6 +153,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		Topmost = false;
 		StopWindowFlash();
 		Dispatcher.BeginInvoke((Action)StopWindowFlash);
+		BeginDismissOnExternalFocus();
 
 		if (_isLoadingHistory && _loadHistoryCancellation?.IsCancellationRequested == true)
 		{
@@ -252,10 +258,135 @@ internal sealed class ClipboardHistoryWindow : Window
 			return;
 		}
 
+		StopDismissOnExternalFocus();
 		CancelHistoryLoad();
 		CancelHistoryFilter();
 		IsClosed = true;
 		base.OnClosing(e);
+	}
+
+	private void BeginDismissOnExternalFocus()
+	{
+		StopDismissOnExternalFocus();
+		_foregroundWindowChangedHook = SetDismissWinEventHook(
+			NativeMethods.EVENT_SYSTEM_FOREGROUND,
+			nameof(NativeMethods.EVENT_SYSTEM_FOREGROUND));
+		_focusChangedHook = SetDismissWinEventHook(
+			NativeMethods.EVENT_OBJECT_FOCUS,
+			nameof(NativeMethods.EVENT_OBJECT_FOCUS));
+	}
+
+	private IntPtr SetDismissWinEventHook(uint eventType, string eventName)
+	{
+		IntPtr hook = NativeMethods.SetWinEventHook(
+			eventType,
+			eventType,
+			IntPtr.Zero,
+			_externalFocusChangedProc,
+			0,
+			0,
+			NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
+		if (hook == IntPtr.Zero)
+		{
+			Logger.Warning($"ClipboardHistoryWindow: 外部フォーカス監視の開始に失敗しました。Event={eventName} Win32Error={System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
+		}
+
+		return hook;
+	}
+
+	private void StopDismissOnExternalFocus()
+	{
+		UnhookDismissWinEvent(ref _foregroundWindowChangedHook, nameof(NativeMethods.EVENT_SYSTEM_FOREGROUND));
+		UnhookDismissWinEvent(ref _focusChangedHook, nameof(NativeMethods.EVENT_OBJECT_FOCUS));
+	}
+
+	private static void UnhookDismissWinEvent(ref IntPtr hook, string eventName)
+	{
+		if (hook == IntPtr.Zero)
+		{
+			return;
+		}
+
+		if (!NativeMethods.UnhookWinEvent(hook))
+		{
+			Logger.Warning($"ClipboardHistoryWindow: 外部フォーカス監視の解除に失敗しました。Event={eventName} Win32Error={System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
+		}
+
+		hook = IntPtr.Zero;
+	}
+
+	private void OnExternalFocusChanged(
+		IntPtr hWinEventHook,
+		uint eventType,
+		IntPtr hwnd,
+		int idObject,
+		int idChild,
+		uint dwEventThread,
+		uint dwmsEventTime)
+	{
+		if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+		{
+			return;
+		}
+
+		Dispatcher.BeginInvoke((Action)(() => HideIfExternalFocusMoved(eventType, hwnd)));
+	}
+
+	private void HideIfExternalFocusMoved(uint eventType, IntPtr eventWindow)
+	{
+		if (!IsVisible || IsClosed)
+		{
+			return;
+		}
+
+		IntPtr windowHandle = GetWindowHandle();
+		if (IsSameRootWindow(eventWindow, windowHandle))
+		{
+			return;
+		}
+
+		IntPtr foregroundWindow = NativeMethods.GetForegroundWindow();
+		if (eventType == NativeMethods.EVENT_OBJECT_FOCUS &&
+			eventWindow != IntPtr.Zero &&
+			foregroundWindow != IntPtr.Zero &&
+			!IsSameRootWindow(eventWindow, foregroundWindow))
+		{
+			return;
+		}
+
+		if (IsSameRootWindow(foregroundWindow, windowHandle))
+		{
+			return;
+		}
+
+		Logger.Debug($"ClipboardHistoryWindow: 外部へフォーカスが移動したため履歴画面を閉じます。Event=0x{eventType:X} EventWindow={FormatHandle(eventWindow)} ForegroundWindow={FormatHandle(foregroundWindow)}");
+		Hide();
+	}
+
+	private IntPtr GetWindowHandle()
+	{
+		if (_windowHandle == IntPtr.Zero)
+		{
+			_windowHandle = new WindowInteropHelper(this).EnsureHandle();
+		}
+
+		return _windowHandle;
+	}
+
+	private static bool IsSameRootWindow(IntPtr window, IntPtr rootWindow)
+	{
+		if (window == IntPtr.Zero || rootWindow == IntPtr.Zero)
+		{
+			return false;
+		}
+
+		if (window == rootWindow)
+		{
+			return true;
+		}
+
+		IntPtr root = NativeMethods.GetAncestor(window, NativeMethods.GA_ROOT);
+		return root == rootWindow;
 	}
 
 	private async void BeginLoadHistory(bool preserveExistingItems)
