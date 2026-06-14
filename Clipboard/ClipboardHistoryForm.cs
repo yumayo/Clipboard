@@ -7,6 +7,8 @@ using System.Linq;
 using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace Clipboard;
@@ -16,6 +18,7 @@ internal sealed class ClipboardHistoryForm : Form
 	private const int MaxHistoryItems = 100;
 	private const int PreviewTextLength = 180;
 	private readonly FlowLayoutPanel _listPanel;
+	private CancellationTokenSource? _loadHistoryCancellation;
 	private IntPtr _targetWindow;
 
 	public ClipboardHistoryForm()
@@ -49,7 +52,6 @@ internal sealed class ClipboardHistoryForm : Form
 	public void ShowHistory(IntPtr targetWindow)
 	{
 		_targetWindow = targetWindow;
-		LoadHistory();
 		MoveNearCursor();
 
 		TopMost = true;
@@ -57,6 +59,8 @@ internal sealed class ClipboardHistoryForm : Form
 		Activate();
 		BringToFront();
 		TopMost = false;
+
+		BeginLoadHistory();
 	}
 
 	protected override void OnKeyDown(KeyEventArgs e)
@@ -83,14 +87,72 @@ internal sealed class ClipboardHistoryForm : Form
 		base.OnFormClosing(e);
 	}
 
-	private void LoadHistory()
+	protected override void OnVisibleChanged(EventArgs e)
+	{
+		base.OnVisibleChanged(e);
+
+		if (!Visible)
+		{
+			CancelHistoryLoad();
+		}
+	}
+
+	protected override void Dispose(bool disposing)
+	{
+		if (disposing)
+		{
+			CancelHistoryLoad();
+			_loadHistoryCancellation?.Dispose();
+		}
+
+		base.Dispose(disposing);
+	}
+
+	private async void BeginLoadHistory()
+	{
+		CancelHistoryLoad();
+		var cancellationTokenSource = new CancellationTokenSource();
+		_loadHistoryCancellation = cancellationTokenSource;
+
+		ClearHistoryControls();
+		AddMessage("読み込み中...");
+
+		List<ClipboardHistoryEntry> entries;
+		try
+		{
+			entries = await Task.Run(() => LoadHistoryEntries(cancellationTokenSource.Token), cancellationTokenSource.Token);
+		}
+		catch (OperationCanceledException)
+		{
+			return;
+		}
+		catch (Exception ex)
+		{
+			Logger.Error(ex, "ClipboardHistoryForm: 履歴の読み込みに失敗しました。");
+			if (!IsDisposed && _loadHistoryCancellation == cancellationTokenSource)
+			{
+				ClearHistoryControls();
+				AddMessage("履歴を読み込めませんでした");
+			}
+
+			return;
+		}
+
+		if (IsDisposed || cancellationTokenSource.IsCancellationRequested || _loadHistoryCancellation != cancellationTokenSource)
+		{
+			DisposeEntryImages(entries);
+			return;
+		}
+
+		PopulateHistory(entries);
+	}
+
+	private void PopulateHistory(List<ClipboardHistoryEntry> entries)
 	{
 		ClearHistoryControls();
-
-		var entries = LoadHistoryEntries();
 		if (entries.Count == 0)
 		{
-			AddEmptyMessage();
+			AddMessage("履歴がありません");
 			return;
 		}
 
@@ -111,11 +173,11 @@ internal sealed class ClipboardHistoryForm : Form
 		ClipboardManager.PasteHistoryFile(entry.FilePath, _targetWindow);
 	}
 
-	private void AddEmptyMessage()
+	private void AddMessage(string text)
 	{
 		_listPanel.Controls.Add(new Label
 		{
-			Text = "履歴がありません",
+			Text = text,
 			AutoSize = false,
 			TextAlign = ContentAlignment.MiddleCenter,
 			ForeColor = Color.FromArgb(96, 96, 96),
@@ -132,6 +194,14 @@ internal sealed class ClipboardHistoryForm : Form
 		}
 
 		_listPanel.Controls.Clear();
+	}
+
+	private void CancelHistoryLoad()
+	{
+		if (_loadHistoryCancellation is { IsCancellationRequested: false })
+		{
+			_loadHistoryCancellation.Cancel();
+		}
 	}
 
 	private void ResizeHistoryItems()
@@ -160,7 +230,7 @@ internal sealed class ClipboardHistoryForm : Form
 		Location = new Point(x, y);
 	}
 
-	private static List<ClipboardHistoryEntry> LoadHistoryEntries()
+	private static List<ClipboardHistoryEntry> LoadHistoryEntries(CancellationToken cancellationToken)
 	{
 		try
 		{
@@ -169,15 +239,35 @@ internal sealed class ClipboardHistoryForm : Form
 				return new List<ClipboardHistoryEntry>();
 			}
 
-			return Directory
+			var candidates = Directory
 				.EnumerateFiles(ClipboardSettings.BaseDirectoryPath, "*.*", SearchOption.AllDirectories)
-				.Select(CreateHistoryEntry)
-				.Where(entry => entry != null)
-				.Cast<ClipboardHistoryEntry>()
-				.OrderByDescending(entry => entry.LastWriteTime)
-				.ThenByDescending(entry => entry.FilePath)
+				.Select(filePath => CreateHistoryCandidate(filePath, cancellationToken))
+				.Where(candidate => candidate != null)
+				.Cast<ClipboardHistoryCandidate>()
+				.OrderByDescending(candidate => candidate.LastWriteTime)
+				.ThenByDescending(candidate => candidate.FilePath)
 				.Take(MaxHistoryItems)
 				.ToList();
+
+			var entries = new List<ClipboardHistoryEntry>(candidates.Count);
+			foreach (var candidate in candidates)
+			{
+				cancellationToken.ThrowIfCancellationRequested();
+				entries.Add(new ClipboardHistoryEntry
+				{
+					FilePath = candidate.FilePath,
+					Kind = candidate.Kind,
+					LastWriteTime = candidate.LastWriteTime,
+					PreviewText = CreatePreviewText(candidate.FilePath, candidate.Kind),
+					Thumbnail = candidate.Kind == ClipboardHistoryKind.Image ? CreateThumbnail(candidate.FilePath) : null
+				});
+			}
+
+			return entries;
+		}
+		catch (OperationCanceledException)
+		{
+			throw;
 		}
 		catch (Exception ex)
 		{
@@ -186,8 +276,10 @@ internal sealed class ClipboardHistoryForm : Form
 		}
 	}
 
-	private static ClipboardHistoryEntry? CreateHistoryEntry(string filePath)
+	private static ClipboardHistoryCandidate? CreateHistoryCandidate(string filePath, CancellationToken cancellationToken)
 	{
+		cancellationToken.ThrowIfCancellationRequested();
+
 		string extension = Path.GetExtension(filePath).ToLowerInvariant();
 		ClipboardHistoryKind kind = extension switch
 		{
@@ -203,13 +295,20 @@ internal sealed class ClipboardHistoryForm : Form
 			return null;
 		}
 
-		return new ClipboardHistoryEntry
+		return new ClipboardHistoryCandidate
 		{
 			FilePath = filePath,
 			Kind = kind,
-			LastWriteTime = File.GetLastWriteTime(filePath),
-			PreviewText = CreatePreviewText(filePath, kind)
+			LastWriteTime = File.GetLastWriteTime(filePath)
 		};
+	}
+
+	private static void DisposeEntryImages(IEnumerable<ClipboardHistoryEntry> entries)
+	{
+		foreach (var entry in entries)
+		{
+			entry.Thumbnail?.Dispose();
+		}
 	}
 
 	private static string CreatePreviewText(string filePath, ClipboardHistoryKind kind)
@@ -279,16 +378,52 @@ internal sealed class ClipboardHistoryForm : Form
 
 	private static string ConvertRtfToPlainText(string rtf)
 	{
+		string text = Regex.Replace(rtf, @"\\'[0-9a-fA-F]{2}", " ");
+		text = Regex.Replace(text, @"\\[a-zA-Z]+\d* ?", " ");
+		text = text.Replace(@"\par", " ");
+		text = text.Replace(@"\tab", " ");
+		text = Regex.Replace(text, @"[{}]", " ");
+		return text;
+	}
+
+	private static Image? CreateThumbnail(string filePath)
+	{
 		try
 		{
-			using var richTextBox = new RichTextBox();
-			richTextBox.Rtf = rtf;
-			return richTextBox.Text;
+			using var stream = new MemoryStream(File.ReadAllBytes(filePath));
+			using var image = Image.FromStream(stream);
+			var thumbnail = new Bitmap(86, 66);
+			using var graphics = Graphics.FromImage(thumbnail);
+			graphics.Clear(Color.FromArgb(238, 238, 238));
+			graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+
+			Rectangle bounds = GetContainBounds(image.Size, thumbnail.Size);
+			graphics.DrawImage(image, bounds);
+			return thumbnail;
 		}
 		catch
 		{
-			return string.Empty;
+			return null;
 		}
+	}
+
+	private static Rectangle GetContainBounds(Size sourceSize, Size targetSize)
+	{
+		double scale = Math.Min(
+			(double)targetSize.Width / sourceSize.Width,
+			(double)targetSize.Height / sourceSize.Height);
+		int width = Math.Max(1, (int)Math.Round(sourceSize.Width * scale));
+		int height = Math.Max(1, (int)Math.Round(sourceSize.Height * scale));
+		int x = (targetSize.Width - width) / 2;
+		int y = (targetSize.Height - height) / 2;
+		return new Rectangle(x, y, width, height);
+	}
+
+	private sealed class ClipboardHistoryCandidate
+	{
+		public required string FilePath { get; init; }
+		public required ClipboardHistoryKind Kind { get; init; }
+		public required DateTime LastWriteTime { get; init; }
 	}
 
 	private sealed class ClipboardHistoryEntry
@@ -297,6 +432,7 @@ internal sealed class ClipboardHistoryForm : Form
 		public required ClipboardHistoryKind Kind { get; init; }
 		public required DateTime LastWriteTime { get; init; }
 		public required string PreviewText { get; init; }
+		public Image? Thumbnail { get; init; }
 	}
 
 	private enum ClipboardHistoryKind
@@ -353,7 +489,7 @@ internal sealed class ClipboardHistoryForm : Form
 				{
 					SizeMode = PictureBoxSizeMode.Zoom,
 					BackColor = Color.FromArgb(238, 238, 238),
-					Image = LoadThumbnail(entry.FilePath)
+					Image = entry.Thumbnail
 				};
 				Controls.Add(_thumbnailBox);
 			}
@@ -423,37 +559,5 @@ internal sealed class ClipboardHistoryForm : Form
 			}
 		}
 
-		private static Image? LoadThumbnail(string filePath)
-		{
-			try
-			{
-				using var stream = new MemoryStream(File.ReadAllBytes(filePath));
-				using var image = Image.FromStream(stream);
-				var thumbnail = new Bitmap(86, 66);
-				using var graphics = Graphics.FromImage(thumbnail);
-				graphics.Clear(Color.FromArgb(238, 238, 238));
-				graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-
-				Rectangle bounds = GetContainBounds(image.Size, thumbnail.Size);
-				graphics.DrawImage(image, bounds);
-				return thumbnail;
-			}
-			catch
-			{
-				return null;
-			}
-		}
-
-		private static Rectangle GetContainBounds(Size sourceSize, Size targetSize)
-		{
-			double scale = Math.Min(
-				(double)targetSize.Width / sourceSize.Width,
-				(double)targetSize.Height / sourceSize.Height);
-			int width = Math.Max(1, (int)Math.Round(sourceSize.Width * scale));
-			int height = Math.Max(1, (int)Math.Round(sourceSize.Height * scale));
-			int x = (targetSize.Width - width) / 2;
-			int y = (targetSize.Height - height) / 2;
-			return new Rectangle(x, y, width, height);
-		}
 	}
 }

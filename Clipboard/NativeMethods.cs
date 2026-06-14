@@ -29,6 +29,7 @@ internal static class NativeMethods
 	public const int VK_LWIN = 0x5B;
 	public const int VK_RWIN = 0x5C;
 	public const int VK_V = 0x56;
+	public const int VK_CONTROL = 0x11;
 
 	public const int HOTKEY_ID_WIN_V = 0x5601;
 	public const uint MOD_WIN = 0x0008;
@@ -107,4 +108,7 @@ internal static class NativeMethods
 
 	[DllImport("user32.dll", SetLastError = true)]
 	public static extern uint SendInput(uint nInputs, Input[] pInputs, int cbSize);
+
+	[DllImport("user32.dll")]
+	public static extern short GetAsyncKeyState(int vKey);
 }

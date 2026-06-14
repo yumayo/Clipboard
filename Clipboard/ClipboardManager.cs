@@ -141,6 +141,23 @@ public static class ClipboardManager
 
 			if (isKeyDown)
 			{
+				if (vkCode == NativeMethods.VK_V && !_winVHotkeyRegistered && (_winKeySuppressed || IsPhysicalWindowsKeyDown()))
+				{
+					if (!_swallowWinVKeyUp)
+					{
+						_swallowWinVKeyUp = true;
+						_winComboHandled = true;
+						if (!_winKeySuppressed)
+						{
+							NeutralizeWindowsKey();
+						}
+
+						ShowHistoryFromHotKey();
+					}
+
+					return (IntPtr)1;
+				}
+
 				if (vkCode == NativeMethods.VK_LCONTROL || vkCode == NativeMethods.VK_RCONTROL)
 				{
 					if (!_ctrlPressed)
@@ -153,26 +170,18 @@ public static class ClipboardManager
 				{
 					if (!_winVHotkeyRegistered)
 					{
-						_winKeySuppressed = true;
-						_winComboHandled = false;
-						_suppressedWinKeyCode = vkCode;
+						if (!_winKeySuppressed)
+						{
+							_winKeySuppressed = true;
+							_winComboHandled = false;
+							_suppressedWinKeyCode = vkCode;
+						}
+
 						return (IntPtr)1;
 					}
 				}
 				else if (_winKeySuppressed && !_winVHotkeyRegistered)
 				{
-					if (vkCode == NativeMethods.VK_V)
-					{
-						if (!_swallowWinVKeyUp)
-						{
-							_swallowWinVKeyUp = true;
-							_winComboHandled = true;
-							ShowHistoryFromHotKey();
-						}
-
-						return (IntPtr)1;
-					}
-
 					ReplaySuppressedWindowsKeyDown();
 				}
 			}
@@ -557,6 +566,21 @@ public static class ClipboardManager
 	private static bool IsWindowsKey(int vkCode)
 	{
 		return vkCode == NativeMethods.VK_LWIN || vkCode == NativeMethods.VK_RWIN;
+	}
+
+	private static bool IsPhysicalWindowsKeyDown()
+	{
+		return IsKeyDown(NativeMethods.VK_LWIN) || IsKeyDown(NativeMethods.VK_RWIN);
+	}
+
+	private static bool IsKeyDown(int vkCode)
+	{
+		return (NativeMethods.GetAsyncKeyState(vkCode) & unchecked((short)0x8000)) != 0;
+	}
+
+	private static void NeutralizeWindowsKey()
+	{
+		SendKeyPress(NativeMethods.VK_CONTROL);
 	}
 
 	private static void ReplaySuppressedWindowsKeyDown()
