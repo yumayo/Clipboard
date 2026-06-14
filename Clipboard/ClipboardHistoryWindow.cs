@@ -23,9 +23,11 @@ internal sealed class ClipboardHistoryWindow : Window
 {
 	private const int MaxHistoryItems = 100;
 	private const int PreviewTextLength = 180;
+	private readonly ScrollViewer _scrollViewer;
 	private readonly StackPanel _listPanel;
 	private CancellationTokenSource? _loadHistoryCancellation;
 	private IntPtr _targetWindow;
+	private int _selectedItemIndex = -1;
 	private bool _isLoadingHistory;
 	private bool _hasLoadedHistory;
 	private bool _allowClose;
@@ -41,6 +43,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		MinWidth = 380;
 		MinHeight = 320;
 		ShowInTaskbar = false;
+		Focusable = true;
 		Icon = LoadIcon();
 		SourceInitialized += (_, _) => HideMinimizeAndMaximizeButtons();
 
@@ -49,13 +52,14 @@ internal sealed class ClipboardHistoryWindow : Window
 			Margin = new Thickness(10)
 		};
 
-		Content = new ScrollViewer
+		_scrollViewer = new ScrollViewer
 		{
 			Content = _listPanel,
 			VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
 			HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
 			Background = new SolidColorBrush(Color.FromRgb(245, 246, 248))
 		};
+		Content = _scrollViewer;
 		IsVisibleChanged += (_, _) =>
 		{
 			if (!IsVisible)
@@ -73,9 +77,17 @@ internal sealed class ClipboardHistoryWindow : Window
 		Topmost = true;
 		Show();
 		Activate();
+		Focus();
+		Keyboard.Focus(this);
+		SelectFirstHistoryItem();
 		Topmost = false;
 		StopWindowFlash();
-		Dispatcher.BeginInvoke((Action)StopWindowFlash);
+		Dispatcher.BeginInvoke((Action)(() =>
+		{
+			Focus();
+			Keyboard.Focus(this);
+			StopWindowFlash();
+		}));
 
 		if (_isLoadingHistory && _loadHistoryCancellation?.IsCancellationRequested == true)
 		{
@@ -97,6 +109,36 @@ internal sealed class ClipboardHistoryWindow : Window
 
 		_allowClose = true;
 		Close();
+	}
+
+	protected override void OnPreviewKeyDown(KeyEventArgs e)
+	{
+		if (e.Key == Key.Down)
+		{
+			if (MoveSelection(1))
+			{
+				e.Handled = true;
+				return;
+			}
+		}
+		else if (e.Key == Key.Up)
+		{
+			if (MoveSelection(-1))
+			{
+				e.Handled = true;
+				return;
+			}
+		}
+		else if (e.Key == Key.Return)
+		{
+			if (ActivateSelectedItem())
+			{
+				e.Handled = true;
+				return;
+			}
+		}
+
+		base.OnPreviewKeyDown(e);
 	}
 
 	protected override void OnKeyDown(KeyEventArgs e)
@@ -197,6 +239,8 @@ internal sealed class ClipboardHistoryWindow : Window
 			item.Activated += (_, _) => PasteEntry(entry);
 			_listPanel.Children.Add(item);
 		}
+
+		SelectFirstHistoryItem();
 	}
 
 	private void PasteEntry(ClipboardHistoryEntry entry)
@@ -220,6 +264,68 @@ internal sealed class ClipboardHistoryWindow : Window
 	private void ClearHistoryControls()
 	{
 		_listPanel.Children.Clear();
+		_selectedItemIndex = -1;
+		_scrollViewer.ScrollToTop();
+	}
+
+	private bool SelectFirstHistoryItem()
+	{
+		return SelectHistoryItem(0);
+	}
+
+	private bool MoveSelection(int offset)
+	{
+		var items = GetHistoryItems();
+		if (items.Count == 0)
+		{
+			_selectedItemIndex = -1;
+			return false;
+		}
+
+		int nextIndex = _selectedItemIndex < 0 ? 0 : _selectedItemIndex + offset;
+		nextIndex = Math.Max(0, Math.Min(nextIndex, items.Count - 1));
+		return SelectHistoryItem(nextIndex, items);
+	}
+
+	private bool ActivateSelectedItem()
+	{
+		var items = GetHistoryItems();
+		if (_selectedItemIndex < 0 || _selectedItemIndex >= items.Count)
+		{
+			return false;
+		}
+
+		items[_selectedItemIndex].Activate();
+		return true;
+	}
+
+	private bool SelectHistoryItem(int index)
+	{
+		return SelectHistoryItem(index, GetHistoryItems());
+	}
+
+	private bool SelectHistoryItem(int index, List<HistoryItemControl> items)
+	{
+		if (items.Count == 0)
+		{
+			_selectedItemIndex = -1;
+			return false;
+		}
+
+		index = Math.Max(0, Math.Min(index, items.Count - 1));
+		for (int i = 0; i < items.Count; i++)
+		{
+			items[i].IsSelected = i == index;
+		}
+
+		_selectedItemIndex = index;
+		items[index].BringIntoView();
+		return true;
+	}
+
+	private List<HistoryItemControl> GetHistoryItems()
+	{
+		return _listPanel.Children.OfType<HistoryItemControl>().ToList();
 	}
 
 	private void CancelHistoryLoad()
@@ -895,24 +1001,54 @@ internal sealed class ClipboardHistoryWindow : Window
 	{
 		private static readonly Brush NormalBackground = Brushes.White;
 		private static readonly Brush HoverBackground = new SolidColorBrush(Color.FromRgb(232, 240, 254));
+		private static readonly Brush SelectedBackground = new SolidColorBrush(Color.FromRgb(220, 232, 255));
+		private static readonly Brush NormalBorderBrush = new SolidColorBrush(Color.FromRgb(216, 220, 226));
+		private static readonly Brush SelectedBorderBrush = new SolidColorBrush(Color.FromRgb(70, 116, 218));
+		private bool _isSelected;
 
 		public event EventHandler? Activated;
+
+		public bool IsSelected
+		{
+			get => _isSelected;
+			set
+			{
+				if (_isSelected == value)
+				{
+					return;
+				}
+
+				_isSelected = value;
+				UpdateVisualState();
+			}
+		}
 
 		public HistoryItemControl(ClipboardHistoryEntry entry)
 		{
 			Margin = new Thickness(0, 0, 0, 8);
 			Padding = new Thickness(10);
 			Background = NormalBackground;
-			BorderBrush = new SolidColorBrush(Color.FromRgb(216, 220, 226));
+			BorderBrush = NormalBorderBrush;
 			BorderThickness = new Thickness(1);
 			Cursor = Cursors.Hand;
 			Height = entry.Kind == ClipboardHistoryKind.Image ? 92 : 78;
 			HorizontalAlignment = HorizontalAlignment.Stretch;
 			Child = CreateContent(entry);
 
-			MouseEnter += (_, _) => Background = HoverBackground;
-			MouseLeave += (_, _) => Background = NormalBackground;
-			MouseLeftButtonUp += (_, _) => Activated?.Invoke(this, EventArgs.Empty);
+			MouseEnter += (_, _) => UpdateVisualState();
+			MouseLeave += (_, _) => UpdateVisualState();
+			MouseLeftButtonUp += (_, _) => Activate();
+		}
+
+		public void Activate()
+		{
+			Activated?.Invoke(this, EventArgs.Empty);
+		}
+
+		private void UpdateVisualState()
+		{
+			Background = IsSelected ? SelectedBackground : IsMouseOver ? HoverBackground : NormalBackground;
+			BorderBrush = IsSelected ? SelectedBorderBrush : NormalBorderBrush;
 		}
 
 		private static Grid CreateContent(ClipboardHistoryEntry entry)
