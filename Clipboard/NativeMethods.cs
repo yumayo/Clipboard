@@ -8,6 +8,8 @@ internal static class NativeMethods
 	// クリップボード関連
 	public const int WM_CLIPBOARDUPDATE = 0x031D;
 	public const int WM_HOTKEY = 0x0312;
+	public const int WM_QUIT = 0x0012;
+	public const uint PM_NOREMOVE = 0x0000;
 
 	[DllImport("user32.dll", SetLastError = true)]
 	[return: MarshalAs(UnmanagedType.Bool)]
@@ -72,6 +74,24 @@ internal static class NativeMethods
 		public UIntPtr DwExtraInfo;
 	}
 
+	[StructLayout(LayoutKind.Sequential)]
+	public struct NativePoint
+	{
+		public int X;
+		public int Y;
+	}
+
+	[StructLayout(LayoutKind.Sequential)]
+	public struct NativeMessage
+	{
+		public IntPtr HWnd;
+		public uint Message;
+		public UIntPtr WParam;
+		public IntPtr LParam;
+		public uint Time;
+		public NativePoint Point;
+	}
+
 	public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 
 	[DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
@@ -111,4 +131,15 @@ internal static class NativeMethods
 
 	[DllImport("user32.dll")]
 	public static extern short GetAsyncKeyState(int vKey);
+
+	[DllImport("kernel32.dll")]
+	public static extern uint GetCurrentThreadId();
+
+	[DllImport("user32.dll", SetLastError = true)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	public static extern bool PostThreadMessage(uint idThread, int msg, IntPtr wParam, IntPtr lParam);
+
+	[DllImport("user32.dll")]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	public static extern bool PeekMessage(out NativeMessage lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
 }

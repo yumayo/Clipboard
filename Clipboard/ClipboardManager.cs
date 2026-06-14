@@ -28,16 +28,20 @@ public static class ClipboardManager
 	private static ClipboardHistoryForm? _historyForm;
 	private static string _concatenatedText = string.Empty;
 	private static int _concatenationCount = 0;
+	private static readonly object _concatenationLock = new();
 
 	// キーボードフック関連
 	private static IntPtr _hookID = IntPtr.Zero;
 	private static NativeMethods.LowLevelKeyboardProc? _proc;
-	private static bool _ctrlPressed = false;
-	private static bool _winVHotkeyRegistered = false;
+	private static Thread? _hookThread;
+	private static readonly ManualResetEventSlim _hookThreadReady = new(false);
+	private static readonly object _hookLock = new();
+	private static volatile bool _ctrlPressed = false;
 	private static bool _winKeySuppressed = false;
 	private static bool _winComboHandled = false;
 	private static bool _swallowWinVKeyUp = false;
 	private static int _suppressedWinKeyCode = 0;
+	private static uint _hookThreadId = 0;
 
 	// 前回保存した内容を記憶
 	private static string _lastSavedContent = string.Empty;
@@ -51,7 +55,7 @@ public static class ClipboardManager
 
 		// キーボードフックを設定
 		_proc = HookCallback;
-		_hookID = SetHook(_proc);
+		StartKeyboardHookThread();
 
 		Logger.Debug("ClipboardManager: クリップボード監視とキーボードフックを開始しました。");
 	}
@@ -59,11 +63,7 @@ public static class ClipboardManager
 	public static void Stop()
 	{
 		// キーボードフックを解除
-		if (_hookID != IntPtr.Zero)
-		{
-			NativeMethods.UnhookWindowsHookEx(_hookID);
-			_hookID = IntPtr.Zero;
-		}
+		StopKeyboardHookThread();
 
 		if (_monitorForm != null)
 		{
@@ -124,6 +124,97 @@ public static class ClipboardManager
 		return NativeMethods.SetWindowsHookEx(NativeMethods.WH_KEYBOARD_LL, proc, NativeMethods.GetModuleHandle(curModule?.ModuleName), 0);
 	}
 
+	private static void StartKeyboardHookThread()
+	{
+		if (_hookThread != null)
+		{
+			return;
+		}
+
+		_hookThreadReady.Reset();
+		_hookThread = new Thread(KeyboardHookThreadMain)
+		{
+			IsBackground = true,
+			Name = "Clipboard Keyboard Hook"
+		};
+		_hookThread.SetApartmentState(ApartmentState.STA);
+		_hookThread.Start();
+
+		if (!_hookThreadReady.Wait(TimeSpan.FromSeconds(3)))
+		{
+			Logger.Warning("ClipboardManager: キーボードフックスレッドの開始がタイムアウトしました。");
+		}
+	}
+
+	private static void StopKeyboardHookThread()
+	{
+		uint hookThreadId = _hookThreadId;
+		if (hookThreadId != 0 &&
+			!NativeMethods.PostThreadMessage(hookThreadId, NativeMethods.WM_QUIT, IntPtr.Zero, IntPtr.Zero))
+		{
+			Logger.Warning($"ClipboardManager: キーボードフックスレッドの終了通知に失敗しました。Win32Error={Marshal.GetLastWin32Error()}");
+		}
+
+		if (_hookThread is { IsAlive: true } hookThread && !hookThread.Join(TimeSpan.FromSeconds(2)))
+		{
+			Logger.Warning("ClipboardManager: キーボードフックスレッドが時間内に終了しませんでした。");
+		}
+
+		lock (_hookLock)
+		{
+			if (_hookID != IntPtr.Zero)
+			{
+				NativeMethods.UnhookWindowsHookEx(_hookID);
+				_hookID = IntPtr.Zero;
+			}
+		}
+
+		_hookThread = null;
+		_hookThreadId = 0;
+		_hookThreadReady.Reset();
+		ResetSuppressedWindowsKeyState();
+		_swallowWinVKeyUp = false;
+	}
+
+	private static void KeyboardHookThreadMain()
+	{
+		_hookThreadId = NativeMethods.GetCurrentThreadId();
+		NativeMethods.PeekMessage(out _, IntPtr.Zero, 0, 0, NativeMethods.PM_NOREMOVE);
+
+		IntPtr hookID = _proc == null ? IntPtr.Zero : SetHook(_proc);
+		lock (_hookLock)
+		{
+			_hookID = hookID;
+		}
+
+		if (hookID == IntPtr.Zero)
+		{
+			Logger.Warning($"ClipboardManager: キーボードフックの設定に失敗しました。Win32Error={Marshal.GetLastWin32Error()}");
+		}
+
+		_hookThreadReady.Set();
+
+		try
+		{
+			Application.Run();
+		}
+		finally
+		{
+			lock (_hookLock)
+			{
+				if (_hookID != IntPtr.Zero)
+				{
+					NativeMethods.UnhookWindowsHookEx(_hookID);
+					_hookID = IntPtr.Zero;
+				}
+			}
+
+			_hookThreadId = 0;
+			ResetSuppressedWindowsKeyState();
+			_swallowWinVKeyUp = false;
+		}
+	}
+
 	private static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
 	{
 		if (nCode >= 0)
@@ -141,7 +232,7 @@ public static class ClipboardManager
 
 			if (isKeyDown)
 			{
-				if (vkCode == NativeMethods.VK_V && !_winVHotkeyRegistered && (_winKeySuppressed || IsPhysicalWindowsKeyDown()))
+				if (vkCode == NativeMethods.VK_V && (_winKeySuppressed || IsPhysicalWindowsKeyDown()))
 				{
 					if (!_swallowWinVKeyUp)
 					{
@@ -168,19 +259,16 @@ public static class ClipboardManager
 				}
 				else if (isWindowsKey)
 				{
-					if (!_winVHotkeyRegistered)
+					if (!_winKeySuppressed)
 					{
-						if (!_winKeySuppressed)
-						{
-							_winKeySuppressed = true;
-							_winComboHandled = false;
-							_suppressedWinKeyCode = vkCode;
-						}
-
-						return (IntPtr)1;
+						_winKeySuppressed = true;
+						_winComboHandled = false;
+						_suppressedWinKeyCode = vkCode;
 					}
+
+					return (IntPtr)1;
 				}
-				else if (_winKeySuppressed && !_winVHotkeyRegistered)
+				else if (_winKeySuppressed)
 				{
 					ReplaySuppressedWindowsKeyDown();
 				}
@@ -195,11 +283,14 @@ public static class ClipboardManager
 						Logger.Debug("ClipboardManager: Ctrlキーが離されました。");
 
 						// Ctrlが離されたときに連結テキストとカウンターをクリア
-						if (!string.IsNullOrEmpty(_concatenatedText))
+						lock (_concatenationLock)
 						{
-							Logger.Debug("ClipboardManager: Ctrlキーが離されたため、連結テキストをクリアしました。");
-							_concatenatedText = string.Empty;
-							_concatenationCount = 0;
+							if (!string.IsNullOrEmpty(_concatenatedText))
+							{
+								Logger.Debug("ClipboardManager: Ctrlキーが離されたため、連結テキストをクリアしました。");
+								_concatenatedText = string.Empty;
+								_concatenationCount = 0;
+							}
 						}
 					}
 				}
@@ -245,29 +336,32 @@ public static class ClipboardManager
 				string newText = System.Windows.Forms.Clipboard.GetText();
 				if (!string.IsNullOrEmpty(newText))
 				{
-					if (_concatenatedText != newText)
+					lock (_concatenationLock)
 					{
-						// 既存のテキストがある場合は改行して連結
-						if (!string.IsNullOrEmpty(_concatenatedText))
+						if (_concatenatedText != newText)
 						{
-							_concatenatedText += ClipboardSettings.ConcatenationSeparator + newText;
-							_concatenationCount++;
-						}
-						else
-						{
-							_concatenatedText = newText;
-							_concatenationCount = 1;
-						}
+							// 既存のテキストがある場合は改行して連結
+							if (!string.IsNullOrEmpty(_concatenatedText))
+							{
+								_concatenatedText += ClipboardSettings.ConcatenationSeparator + newText;
+								_concatenationCount++;
+							}
+							else
+							{
+								_concatenatedText = newText;
+								_concatenationCount = 1;
+							}
 
-						// 2回目以降のみクリップボードに書き戻す（1回目はリッチテキスト等を保持するため書き戻さない）
-						if (_concatenationCount >= 2)
-						{
-							System.Windows.Forms.Clipboard.SetText(_concatenatedText);
-							Logger.Debug($"ClipboardManager: Ctrl押下中 - テキストを連結してクリップボードに書き戻しました（{_concatenatedText.Length}文字、{_concatenationCount}回目）");
-						}
-						else
-						{
-							Logger.Debug($"ClipboardManager: Ctrl押下中 - テキストを連結しました（{_concatenatedText.Length}文字、1回目のため書き戻しなし）");
+							// 2回目以降のみクリップボードに書き戻す（1回目はリッチテキスト等を保持するため書き戻さない）
+							if (_concatenationCount >= 2)
+							{
+								System.Windows.Forms.Clipboard.SetText(_concatenatedText);
+								Logger.Debug($"ClipboardManager: Ctrl押下中 - テキストを連結してクリップボードに書き戻しました（{_concatenatedText.Length}文字、{_concatenationCount}回目）");
+							}
+							else
+							{
+								Logger.Debug($"ClipboardManager: Ctrl押下中 - テキストを連結しました（{_concatenatedText.Length}文字、1回目のため書き戻しなし）");
+							}
 						}
 					}
 				}
@@ -600,7 +694,6 @@ public static class ClipboardManager
 	{
 		_winKeySuppressed = false;
 		_winComboHandled = false;
-		_swallowWinVKeyUp = false;
 		_suppressedWinKeyCode = 0;
 	}
 
@@ -681,7 +774,6 @@ public static class ClipboardManager
 				NativeMethods.HOTKEY_ID_WIN_V,
 				NativeMethods.MOD_WIN | NativeMethods.MOD_NOREPEAT,
 				NativeMethods.VK_V);
-			_winVHotkeyRegistered = _registeredWinVHotkey;
 
 			if (_registeredWinVHotkey)
 			{
@@ -699,7 +791,6 @@ public static class ClipboardManager
 			{
 				NativeMethods.UnregisterHotKey(Handle, NativeMethods.HOTKEY_ID_WIN_V);
 				_registeredWinVHotkey = false;
-				_winVHotkeyRegistered = false;
 			}
 
 			// クリップボード変更通知を解除
