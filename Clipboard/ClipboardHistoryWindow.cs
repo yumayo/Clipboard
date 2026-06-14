@@ -93,6 +93,7 @@ internal sealed class ClipboardHistoryWindow : Window
 				BeginApplyHistoryFilter(delay: true);
 			}
 		};
+		_searchBox.LostKeyboardFocus += (_, _) => ClearSearchInputState();
 		Grid.SetColumn(_searchBox, 1);
 		searchPanel.Children.Add(_searchBox);
 
@@ -190,6 +191,18 @@ internal sealed class ClipboardHistoryWindow : Window
 
 	protected override void OnPreviewKeyDown(KeyEventArgs e)
 	{
+		if (_searchBox.IsKeyboardFocusWithin)
+		{
+			if (e.Key == Key.Down && FocusSelectedHistoryItem())
+			{
+				e.Handled = true;
+				return;
+			}
+
+			base.OnPreviewKeyDown(e);
+			return;
+		}
+
 		if (e.Key == Key.Down)
 		{
 			if (MoveSelection(1))
@@ -470,9 +483,52 @@ internal sealed class ClipboardHistoryWindow : Window
 			return false;
 		}
 
+		if (offset < 0 && _selectedItemIndex <= 0)
+		{
+			return FocusSearchBox();
+		}
+
 		int nextIndex = _selectedItemIndex < 0 ? 0 : _selectedItemIndex + offset;
 		nextIndex = Math.Max(0, Math.Min(nextIndex, items.Count - 1));
 		return SelectHistoryItem(nextIndex, items);
+	}
+
+	private bool FocusSearchBox()
+	{
+		Activate();
+		_searchBox.Focus();
+		Keyboard.Focus(_searchBox);
+		_searchBox.CaretIndex = _searchBox.Text.Length;
+		return _searchBox.IsKeyboardFocusWithin;
+	}
+
+	private void ClearSearchInputState()
+	{
+		_searchBox.SelectionLength = 0;
+		_searchBox.CaretIndex = Math.Min(_searchBox.CaretIndex, _searchBox.Text.Length);
+
+		try
+		{
+			InputMethod.SetIsInputMethodEnabled(_searchBox, false);
+			InputMethod.SetIsInputMethodEnabled(_searchBox, true);
+		}
+		catch (Exception ex) when (ex is InvalidOperationException || ex is System.Runtime.InteropServices.COMException)
+		{
+			Logger.Debug($"ClipboardHistoryWindow: 検索欄の入力状態解除に失敗しました。{ex.Message}");
+		}
+	}
+
+	private bool FocusSelectedHistoryItem()
+	{
+		var items = GetHistoryItems();
+		if (items.Count == 0)
+		{
+			_selectedItemIndex = -1;
+			return false;
+		}
+
+		int index = _selectedItemIndex < 0 ? 0 : Math.Min(_selectedItemIndex, items.Count - 1);
+		return SelectHistoryItem(index, items, focusItem: true);
 	}
 
 	private bool ActivateSelectedItem()
@@ -492,7 +548,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		return SelectHistoryItem(index, GetHistoryItems());
 	}
 
-	private bool SelectHistoryItem(int index, List<HistoryItemControl> items)
+	private bool SelectHistoryItem(int index, List<HistoryItemControl> items, bool focusItem = false)
 	{
 		if (items.Count == 0)
 		{
@@ -508,6 +564,12 @@ internal sealed class ClipboardHistoryWindow : Window
 
 		_selectedItemIndex = index;
 		items[index].BringIntoView();
+		if (focusItem)
+		{
+			items[index].Focus();
+			Keyboard.Focus(items[index]);
+		}
+
 		return true;
 	}
 
@@ -1242,6 +1304,7 @@ internal sealed class ClipboardHistoryWindow : Window
 			Cursor = Cursors.Hand;
 			Height = entry.Kind == ClipboardHistoryKind.Image ? 92 : 78;
 			HorizontalAlignment = HorizontalAlignment.Stretch;
+			Focusable = true;
 			Child = CreateContent(entry);
 
 			MouseEnter += (_, _) => UpdateVisualState();
