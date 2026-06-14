@@ -319,7 +319,6 @@ internal sealed class ClipboardHistoryForm : Form
 
 		public HistoryItemControl(ClipboardHistoryEntry entry)
 		{
-			Height = entry.Kind == ClipboardHistoryKind.Image ? 92 : 78;
 			Margin = new Padding(0, 0, 0, 8);
 			Padding = new Padding(10);
 			BackColor = Color.White;
@@ -371,6 +370,7 @@ internal sealed class ClipboardHistoryForm : Form
 			Controls.Add(_dateLabel);
 			Controls.Add(_previewLabel);
 
+			Height = entry.Kind == ClipboardHistoryKind.Image ? 92 : 78;
 			WireMouseEvents(this);
 			LayoutChildren();
 		}
@@ -393,6 +393,11 @@ internal sealed class ClipboardHistoryForm : Form
 
 		private void LayoutChildren()
 		{
+			if (_kindLabel == null || _dateLabel == null || _previewLabel == null)
+			{
+				return;
+			}
+
 			int x = Padding.Left;
 			if (_thumbnailBox != null)
 			{

@@ -33,9 +33,11 @@ public static class ClipboardManager
 	private static IntPtr _hookID = IntPtr.Zero;
 	private static NativeMethods.LowLevelKeyboardProc? _proc;
 	private static bool _ctrlPressed = false;
-	private static bool _winPressed = false;
 	private static bool _winVHotkeyRegistered = false;
+	private static bool _winKeySuppressed = false;
+	private static bool _winComboHandled = false;
 	private static bool _swallowWinVKeyUp = false;
+	private static int _suppressedWinKeyCode = 0;
 
 	// 前回保存した内容を記憶
 	private static string _lastSavedContent = string.Empty;
@@ -127,9 +129,15 @@ public static class ClipboardManager
 		if (nCode >= 0)
 		{
 			var keyboard = Marshal.PtrToStructure<NativeMethods.KbdLlHookStruct>(lParam);
+			if ((keyboard.Flags & NativeMethods.LLKHF_INJECTED) != 0)
+			{
+				return NativeMethods.CallNextHookEx(_hookID, nCode, wParam, lParam);
+			}
+
 			int vkCode = keyboard.VkCode;
 			bool isKeyDown = wParam == (IntPtr)NativeMethods.WM_KEYDOWN || wParam == (IntPtr)NativeMethods.WM_SYSKEYDOWN;
 			bool isKeyUp = wParam == (IntPtr)NativeMethods.WM_KEYUP || wParam == (IntPtr)NativeMethods.WM_SYSKEYUP;
+			bool isWindowsKey = IsWindowsKey(vkCode);
 
 			if (isKeyDown)
 			{
@@ -141,20 +149,31 @@ public static class ClipboardManager
 						Logger.Debug("ClipboardManager: Ctrlキーが押されました。");
 					}
 				}
-				else if (vkCode == NativeMethods.VK_LWIN || vkCode == NativeMethods.VK_RWIN)
+				else if (isWindowsKey)
 				{
-					_winPressed = true;
-				}
-				else if (vkCode == NativeMethods.VK_V && _winPressed && !_winVHotkeyRegistered)
-				{
-					if (!_swallowWinVKeyUp)
+					if (!_winVHotkeyRegistered)
 					{
-						_swallowWinVKeyUp = true;
-						NeutralizeWindowsKey();
-						ShowHistoryFromHotKey();
+						_winKeySuppressed = true;
+						_winComboHandled = false;
+						_suppressedWinKeyCode = vkCode;
+						return (IntPtr)1;
+					}
+				}
+				else if (_winKeySuppressed && !_winVHotkeyRegistered)
+				{
+					if (vkCode == NativeMethods.VK_V)
+					{
+						if (!_swallowWinVKeyUp)
+						{
+							_swallowWinVKeyUp = true;
+							_winComboHandled = true;
+							ShowHistoryFromHotKey();
+						}
+
+						return (IntPtr)1;
 					}
 
-					return (IntPtr)1;
+					ReplaySuppressedWindowsKeyDown();
 				}
 			}
 			else if (isKeyUp)
@@ -175,9 +194,19 @@ public static class ClipboardManager
 						}
 					}
 				}
-				else if (vkCode == NativeMethods.VK_LWIN || vkCode == NativeMethods.VK_RWIN)
+				else if (isWindowsKey)
 				{
-					_winPressed = false;
+					if (_winKeySuppressed && vkCode == _suppressedWinKeyCode)
+					{
+						bool shouldOpenStart = !_winComboHandled;
+						ResetSuppressedWindowsKeyState();
+						if (shouldOpenStart)
+						{
+							SendKeyPress(vkCode);
+						}
+
+						return (IntPtr)1;
+					}
 				}
 				else if (vkCode == NativeMethods.VK_V && _swallowWinVKeyUp)
 				{
@@ -525,7 +554,33 @@ public static class ClipboardManager
 		}
 	}
 
-	private static void NeutralizeWindowsKey()
+	private static bool IsWindowsKey(int vkCode)
+	{
+		return vkCode == NativeMethods.VK_LWIN || vkCode == NativeMethods.VK_RWIN;
+	}
+
+	private static void ReplaySuppressedWindowsKeyDown()
+	{
+		if (!_winKeySuppressed)
+		{
+			return;
+		}
+
+		int vkCode = _suppressedWinKeyCode == 0 ? NativeMethods.VK_LWIN : _suppressedWinKeyCode;
+		_winKeySuppressed = false;
+		_winComboHandled = false;
+		SendKeyDown(vkCode);
+	}
+
+	private static void ResetSuppressedWindowsKeyState()
+	{
+		_winKeySuppressed = false;
+		_winComboHandled = false;
+		_swallowWinVKeyUp = false;
+		_suppressedWinKeyCode = 0;
+	}
+
+	private static void SendKeyPress(int vkCode)
 	{
 		var inputs = new[]
 		{
@@ -536,7 +591,7 @@ public static class ClipboardManager
 				{
 					Ki = new NativeMethods.KeyboardInput
 					{
-						WVk = NativeMethods.VK_CONTROL
+						WVk = (ushort)vkCode
 					}
 				}
 			},
@@ -547,8 +602,28 @@ public static class ClipboardManager
 				{
 					Ki = new NativeMethods.KeyboardInput
 					{
-						WVk = NativeMethods.VK_CONTROL,
+						WVk = (ushort)vkCode,
 						DwFlags = NativeMethods.KEYEVENTF_KEYUP
+					}
+				}
+			}
+		};
+
+		NativeMethods.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<NativeMethods.Input>());
+	}
+
+	private static void SendKeyDown(int vkCode)
+	{
+		var inputs = new[]
+		{
+			new NativeMethods.Input
+			{
+				Type = NativeMethods.INPUT_KEYBOARD,
+				U = new NativeMethods.InputUnion
+				{
+					Ki = new NativeMethods.KeyboardInput
+					{
+						WVk = (ushort)vkCode
 					}
 				}
 			}

@@ -19,6 +19,7 @@ internal static class NativeMethods
 
 	// キーボードフック関連
 	public const int WH_KEYBOARD_LL = 13;
+	public const int LLKHF_INJECTED = 0x00000010;
 	public const int WM_KEYDOWN = 0x0100;
 	public const int WM_KEYUP = 0x0101;
 	public const int WM_SYSKEYDOWN = 0x0104;
@@ -28,7 +29,6 @@ internal static class NativeMethods
 	public const int VK_LWIN = 0x5B;
 	public const int VK_RWIN = 0x5C;
 	public const int VK_V = 0x56;
-	public const int VK_CONTROL = 0x11;
 
 	public const int HOTKEY_ID_WIN_V = 0x5601;
 	public const uint MOD_WIN = 0x0008;
