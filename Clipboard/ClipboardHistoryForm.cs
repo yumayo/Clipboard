@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -20,6 +21,8 @@ internal sealed class ClipboardHistoryForm : Form
 	private readonly FlowLayoutPanel _listPanel;
 	private CancellationTokenSource? _loadHistoryCancellation;
 	private IntPtr _targetWindow;
+	private bool _isLoadingHistory;
+	private bool _hasLoadedHistory;
 
 	public ClipboardHistoryForm()
 	{
@@ -62,7 +65,15 @@ internal sealed class ClipboardHistoryForm : Form
 		BringToFront();
 		TopMost = false;
 
-		BeginLoadHistory();
+		if (_isLoadingHistory && _loadHistoryCancellation?.IsCancellationRequested == true)
+		{
+			_isLoadingHistory = false;
+		}
+
+		if (!_isLoadingHistory)
+		{
+			BeginLoadHistory(_hasLoadedHistory && _listPanel.Controls.Count > 0);
+		}
 	}
 
 	protected override void OnKeyDown(KeyEventArgs e)
@@ -110,14 +121,18 @@ internal sealed class ClipboardHistoryForm : Form
 		base.Dispose(disposing);
 	}
 
-	private async void BeginLoadHistory()
+	private async void BeginLoadHistory(bool preserveExistingItems)
 	{
 		CancelHistoryLoad();
 		var cancellationTokenSource = new CancellationTokenSource();
 		_loadHistoryCancellation = cancellationTokenSource;
+		_isLoadingHistory = true;
 
-		ClearHistoryControls();
-		AddMessage("読み込み中...");
+		if (!preserveExistingItems)
+		{
+			ClearHistoryControls();
+			AddMessage("読み込み中...");
+		}
 
 		List<ClipboardHistoryEntry> entries;
 		try
@@ -126,6 +141,11 @@ internal sealed class ClipboardHistoryForm : Form
 		}
 		catch (OperationCanceledException)
 		{
+			if (_loadHistoryCancellation == cancellationTokenSource)
+			{
+				_isLoadingHistory = false;
+			}
+
 			return;
 		}
 		catch (Exception ex)
@@ -133,8 +153,12 @@ internal sealed class ClipboardHistoryForm : Form
 			Logger.Error(ex, "ClipboardHistoryForm: 履歴の読み込みに失敗しました。");
 			if (!IsDisposed && _loadHistoryCancellation == cancellationTokenSource)
 			{
-				ClearHistoryControls();
-				AddMessage("履歴を読み込めませんでした");
+				_isLoadingHistory = false;
+				if (!preserveExistingItems)
+				{
+					ClearHistoryControls();
+					AddMessage("履歴を読み込めませんでした");
+				}
 			}
 
 			return;
@@ -142,30 +166,45 @@ internal sealed class ClipboardHistoryForm : Form
 
 		if (IsDisposed || cancellationTokenSource.IsCancellationRequested || _loadHistoryCancellation != cancellationTokenSource)
 		{
+			if (_loadHistoryCancellation == cancellationTokenSource)
+			{
+				_isLoadingHistory = false;
+			}
+
 			DisposeEntryImages(entries);
 			return;
 		}
 
+		_isLoadingHistory = false;
+		_hasLoadedHistory = true;
 		PopulateHistory(entries);
 	}
 
 	private void PopulateHistory(List<ClipboardHistoryEntry> entries)
 	{
-		ClearHistoryControls();
-		if (entries.Count == 0)
+		_listPanel.SuspendLayout();
+		try
 		{
-			AddMessage("履歴がありません");
-			return;
-		}
-
-		foreach (var entry in entries)
-		{
-			var item = new HistoryItemControl(entry)
+			ClearHistoryControls();
+			if (entries.Count == 0)
 			{
-				Width = GetItemWidth()
-			};
-			item.Activated += (_, _) => PasteEntry(entry);
-			_listPanel.Controls.Add(item);
+				AddMessage("履歴がありません");
+				return;
+			}
+
+			foreach (var entry in entries)
+			{
+				var item = new HistoryItemControl(entry)
+				{
+					Width = GetItemWidth()
+				};
+				item.Activated += (_, _) => PasteEntry(entry);
+				_listPanel.Controls.Add(item);
+			}
+		}
+		finally
+		{
+			_listPanel.ResumeLayout();
 		}
 	}
 
@@ -225,11 +264,21 @@ internal sealed class ClipboardHistoryForm : Form
 	{
 		Rectangle workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
 		int x = Cursor.Position.X - Width / 2;
-		int y = Cursor.Position.Y - 40;
+		int y = Cursor.Position.Y - 40 + GetTitleBarHeightOffset() * 2;
 
 		x = Math.Max(workingArea.Left, Math.Min(x, workingArea.Right - Width));
 		y = Math.Max(workingArea.Top, Math.Min(y, workingArea.Bottom - Height));
 		Location = new Point(x, y);
+	}
+
+	private int GetTitleBarHeightOffset()
+	{
+		if (IsHandleCreated)
+		{
+			return Math.Max(0, RectangleToScreen(ClientRectangle).Top - Top);
+		}
+
+		return SystemInformation.CaptionHeight;
 	}
 
 	private static List<ClipboardHistoryEntry> LoadHistoryEntries(CancellationToken cancellationToken)
@@ -241,28 +290,13 @@ internal sealed class ClipboardHistoryForm : Form
 				return new List<ClipboardHistoryEntry>();
 			}
 
-			var candidates = Directory
-				.EnumerateFiles(ClipboardSettings.BaseDirectoryPath, "*.*", SearchOption.AllDirectories)
-				.Select(filePath => CreateHistoryCandidate(filePath, cancellationToken))
-				.Where(candidate => candidate != null)
-				.Cast<ClipboardHistoryCandidate>()
-				.OrderByDescending(candidate => candidate.LastWriteTime)
-				.ThenByDescending(candidate => candidate.FilePath)
-				.Take(MaxHistoryItems)
-				.ToList();
+			var candidates = LoadHistoryCandidates(cancellationToken);
 
 			var entries = new List<ClipboardHistoryEntry>(candidates.Count);
 			foreach (var candidate in candidates)
 			{
 				cancellationToken.ThrowIfCancellationRequested();
-				entries.Add(new ClipboardHistoryEntry
-				{
-					FilePath = candidate.FilePath,
-					Kind = candidate.Kind,
-					LastWriteTime = candidate.LastWriteTime,
-					PreviewText = CreatePreviewText(candidate.FilePath, candidate.Kind),
-					Thumbnail = candidate.Kind == ClipboardHistoryKind.Image ? CreateThumbnail(candidate.FilePath) : null
-				});
+				entries.Add(CreateHistoryEntry(candidate));
 			}
 
 			return entries;
@@ -278,11 +312,117 @@ internal sealed class ClipboardHistoryForm : Form
 		}
 	}
 
-	private static ClipboardHistoryCandidate? CreateHistoryCandidate(string filePath, CancellationToken cancellationToken)
+	private static List<ClipboardHistoryCandidate> LoadHistoryCandidates(CancellationToken cancellationToken)
+	{
+		var baseDirectory = new DirectoryInfo(ClipboardSettings.BaseDirectoryPath);
+		var candidates = new List<ClipboardHistoryCandidate>(MaxHistoryItems);
+
+		AddDirectoryCandidates(baseDirectory, SearchOption.TopDirectoryOnly, candidates, cancellationToken);
+
+		var datedDirectories = baseDirectory
+			.EnumerateDirectories()
+			.Select(directory => new
+			{
+				Directory = directory,
+				Date = TryGetHistoryDirectoryDate(directory.Name, out var date) ? date : (DateTime?)null
+			})
+			.Where(item => item.Date.HasValue)
+			.OrderByDescending(item => item.Date.GetValueOrDefault())
+			.ToList();
+
+		var datedDirectoryPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var item in datedDirectories)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			datedDirectoryPaths.Add(item.Directory.FullName);
+			AddDirectoryCandidates(item.Directory, SearchOption.TopDirectoryOnly, candidates, cancellationToken);
+			if (candidates.Count >= MaxHistoryItems)
+			{
+				break;
+			}
+		}
+
+		if (candidates.Count < MaxHistoryItems)
+		{
+			var fallbackDirectories = baseDirectory
+				.EnumerateDirectories()
+				.Where(directory => !datedDirectoryPaths.Contains(directory.FullName))
+				.OrderByDescending(directory => directory.LastWriteTime);
+
+			foreach (var directory in fallbackDirectories)
+			{
+				cancellationToken.ThrowIfCancellationRequested();
+				AddDirectoryCandidates(directory, SearchOption.AllDirectories, candidates, cancellationToken);
+				if (candidates.Count >= MaxHistoryItems)
+				{
+					break;
+				}
+			}
+		}
+
+		return candidates
+			.OrderByDescending(candidate => candidate.LastWriteTime)
+			.ThenByDescending(candidate => candidate.FilePath)
+			.Take(MaxHistoryItems)
+			.ToList();
+	}
+
+	private static void AddDirectoryCandidates(
+		DirectoryInfo directory,
+		SearchOption searchOption,
+		List<ClipboardHistoryCandidate> candidates,
+		CancellationToken cancellationToken)
+	{
+		foreach (var fileInfo in directory.EnumerateFiles("*.*", searchOption))
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var candidate = CreateHistoryCandidate(fileInfo, cancellationToken);
+			if (candidate != null)
+			{
+				candidates.Add(candidate);
+			}
+		}
+	}
+
+	private static bool TryGetHistoryDirectoryDate(string directoryName, out DateTime date)
+	{
+		return DateTime.TryParseExact(
+			directoryName,
+			"yyyyMMdd",
+			CultureInfo.InvariantCulture,
+			DateTimeStyles.None,
+			out date);
+	}
+
+	private static ClipboardHistoryEntry CreateHistoryEntry(ClipboardHistoryCandidate candidate)
+	{
+		string previewText;
+		Image? thumbnail = null;
+
+		if (candidate.Kind == ClipboardHistoryKind.Image)
+		{
+			(previewText, thumbnail) = CreateImagePreview(candidate.FilePath);
+		}
+		else
+		{
+			previewText = CreatePreviewText(candidate.FilePath, candidate.Kind);
+		}
+
+		return new ClipboardHistoryEntry
+		{
+			FilePath = candidate.FilePath,
+			Kind = candidate.Kind,
+			LastWriteTime = candidate.LastWriteTime,
+			PreviewText = previewText,
+			Thumbnail = thumbnail
+		};
+	}
+
+	private static ClipboardHistoryCandidate? CreateHistoryCandidate(FileInfo fileInfo, CancellationToken cancellationToken)
 	{
 		cancellationToken.ThrowIfCancellationRequested();
 
-		string extension = Path.GetExtension(filePath).ToLowerInvariant();
+		string extension = fileInfo.Extension.ToLowerInvariant();
 		ClipboardHistoryKind kind = extension switch
 		{
 			".png" => ClipboardHistoryKind.Image,
@@ -299,9 +439,9 @@ internal sealed class ClipboardHistoryForm : Form
 
 		return new ClipboardHistoryCandidate
 		{
-			FilePath = filePath,
+			FilePath = fileInfo.FullName,
 			Kind = kind,
-			LastWriteTime = File.GetLastWriteTime(filePath)
+			LastWriteTime = fileInfo.LastWriteTime
 		};
 	}
 
@@ -317,13 +457,6 @@ internal sealed class ClipboardHistoryForm : Form
 	{
 		try
 		{
-			if (kind == ClipboardHistoryKind.Image)
-			{
-				using var stream = new MemoryStream(File.ReadAllBytes(filePath));
-				using var image = Image.FromStream(stream);
-				return $"{Path.GetFileName(filePath)} / {image.Width} x {image.Height}";
-			}
-
 			string text = ReadTextStart(filePath, 4096);
 			if (kind == ClipboardHistoryKind.Html)
 			{
@@ -388,11 +521,11 @@ internal sealed class ClipboardHistoryForm : Form
 		return text;
 	}
 
-	private static Image? CreateThumbnail(string filePath)
+	private static (string PreviewText, Image? Thumbnail) CreateImagePreview(string filePath)
 	{
 		try
 		{
-			using var stream = new MemoryStream(File.ReadAllBytes(filePath));
+			using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
 			using var image = Image.FromStream(stream);
 			var thumbnail = new Bitmap(86, 66);
 			using var graphics = Graphics.FromImage(thumbnail);
@@ -401,11 +534,11 @@ internal sealed class ClipboardHistoryForm : Form
 
 			Rectangle bounds = GetContainBounds(image.Size, thumbnail.Size);
 			graphics.DrawImage(image, bounds);
-			return thumbnail;
+			return ($"{Path.GetFileName(filePath)} / {image.Width} x {image.Height}", thumbnail);
 		}
 		catch
 		{
-			return null;
+			return (Path.GetFileName(filePath), null);
 		}
 	}
 
