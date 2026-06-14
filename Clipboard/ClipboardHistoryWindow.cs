@@ -23,6 +23,7 @@ internal sealed class ClipboardHistoryWindow : Window
 {
 	private const int PreviewTextLength = 180;
 	private const int SearchFilterDelayMilliseconds = 150;
+	private const int SearchResultBatchSize = 16;
 	private readonly TextBox _searchBox;
 	private readonly ScrollViewer _scrollViewer;
 	private readonly StackPanel _listPanel;
@@ -479,8 +480,17 @@ internal sealed class ClipboardHistoryWindow : Window
 				await Task.Delay(SearchFilterDelayMilliseconds, cancellationToken);
 			}
 
-			List<ClipboardHistoryEntry> entries = await Task.Run(
-				() => FilterHistoryEntries(entriesSnapshot, searchText, cancellationToken),
+			await RunCurrentFilterOnUiAsync(
+				cancellationTokenSource,
+				() => BeginHistoryFilterDisplay(entriesSnapshot.Count));
+
+			if (entriesSnapshot.Count == 0)
+			{
+				return;
+			}
+
+			int matchedEntryCount = await Task.Run(
+				() => FilterHistoryEntriesProgressivelyAsync(entriesSnapshot, searchText, cancellationTokenSource),
 				cancellationToken);
 
 			if (cancellationToken.IsCancellationRequested || _filterHistoryCancellation != cancellationTokenSource)
@@ -488,7 +498,9 @@ internal sealed class ClipboardHistoryWindow : Window
 				return;
 			}
 
-			ShowHistoryEntries(entries, entriesSnapshot.Count);
+			await RunCurrentFilterOnUiAsync(
+				cancellationTokenSource,
+				() => CompleteHistoryFilterDisplay(entriesSnapshot.Count, matchedEntryCount));
 		}
 		catch (OperationCanceledException)
 		{
@@ -511,21 +523,31 @@ internal sealed class ClipboardHistoryWindow : Window
 		}
 	}
 
-	private void ShowHistoryEntries(List<ClipboardHistoryEntry> entries, int totalEntryCount)
+	private Task RunCurrentFilterOnUiAsync(CancellationTokenSource cancellationTokenSource, Action action)
+	{
+		return Dispatcher.InvokeAsync(() =>
+		{
+			if (cancellationTokenSource.IsCancellationRequested || _filterHistoryCancellation != cancellationTokenSource)
+			{
+				return;
+			}
+
+			action();
+		}).Task;
+	}
+
+	private void BeginHistoryFilterDisplay(int totalEntryCount)
 	{
 		ClearHistoryControls();
 		if (totalEntryCount == 0)
 		{
 			AddMessage("履歴がありません");
-			return;
 		}
+	}
 
-		if (entries.Count == 0)
-		{
-			AddMessage("一致する履歴がありません");
-			return;
-		}
-
+	private void AddMatchedHistoryEntries(List<ClipboardHistoryEntry> entries)
+	{
+		bool shouldSelectFirstItem = _selectedItemIndex < 0 && !_listPanel.Children.OfType<HistoryItemControl>().Any();
 		foreach (var entry in entries)
 		{
 			var item = new HistoryItemControl(entry);
@@ -533,33 +555,77 @@ internal sealed class ClipboardHistoryWindow : Window
 			_listPanel.Children.Add(item);
 		}
 
-		SelectFirstHistoryItem();
+		if (shouldSelectFirstItem)
+		{
+			SelectFirstHistoryItem();
+		}
 	}
 
-	private static List<ClipboardHistoryEntry> FilterHistoryEntries(
-		List<ClipboardHistoryEntry> entries,
-		string searchText,
-		CancellationToken cancellationToken)
+	private void CompleteHistoryFilterDisplay(int totalEntryCount, int matchedEntryCount)
 	{
-		cancellationToken.ThrowIfCancellationRequested();
-		searchText = searchText.Trim();
-		if (string.IsNullOrWhiteSpace(searchText))
+		if (totalEntryCount == 0)
 		{
-			return entries;
+			return;
 		}
 
-		var searchTerms = SplitSearchTerms(searchText);
-		var filteredEntries = new List<ClipboardHistoryEntry>();
+		if (matchedEntryCount == 0)
+		{
+			AddMessage("一致する履歴がありません");
+		}
+		else if (_selectedItemIndex < 0)
+		{
+			SelectFirstHistoryItem();
+		}
+	}
+
+	private async Task<int> FilterHistoryEntriesProgressivelyAsync(
+		List<ClipboardHistoryEntry> entries,
+		string searchText,
+		CancellationTokenSource cancellationTokenSource)
+	{
+		CancellationToken cancellationToken = cancellationTokenSource.Token;
+		cancellationToken.ThrowIfCancellationRequested();
+		searchText = searchText.Trim();
+		var searchTerms = string.IsNullOrWhiteSpace(searchText)
+			? new List<string>()
+			: SplitSearchTerms(searchText);
+		var matchedEntries = new List<ClipboardHistoryEntry>(SearchResultBatchSize);
+		int matchedEntryCount = 0;
 		foreach (var entry in entries)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
-			if (searchTerms.All(term => ContainsSearchTerm(entry.SearchText, term)))
+			if (!EntryMatchesSearchTerms(entry, searchTerms))
 			{
-				filteredEntries.Add(entry);
+				continue;
+			}
+
+			matchedEntries.Add(entry);
+			matchedEntryCount++;
+			if (matchedEntryCount == 1 || matchedEntries.Count >= SearchResultBatchSize)
+			{
+				await FlushMatchedHistoryEntriesAsync(matchedEntries, cancellationTokenSource);
 			}
 		}
 
-		return filteredEntries;
+		await FlushMatchedHistoryEntriesAsync(matchedEntries, cancellationTokenSource);
+		return matchedEntryCount;
+	}
+
+	private async Task FlushMatchedHistoryEntriesAsync(
+		List<ClipboardHistoryEntry> matchedEntries,
+		CancellationTokenSource cancellationTokenSource)
+	{
+		if (matchedEntries.Count == 0)
+		{
+			return;
+		}
+
+		var entriesToAdd = matchedEntries.ToList();
+		matchedEntries.Clear();
+		await RunCurrentFilterOnUiAsync(
+			cancellationTokenSource,
+			() => AddMatchedHistoryEntries(entriesToAdd));
+		cancellationTokenSource.Token.ThrowIfCancellationRequested();
 	}
 
 	private static List<string> SplitSearchTerms(string searchText)
@@ -568,6 +634,11 @@ internal sealed class ClipboardHistoryWindow : Window
 			.Cast<Match>()
 			.Select(match => match.Value)
 			.ToList();
+	}
+
+	private static bool EntryMatchesSearchTerms(ClipboardHistoryEntry entry, List<string> searchTerms)
+	{
+		return searchTerms.Count == 0 || searchTerms.All(term => ContainsSearchTerm(entry.SearchText, term));
 	}
 
 	private static bool ContainsSearchTerm(string searchText, string term)
