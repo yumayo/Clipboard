@@ -1,15 +1,15 @@
-using System;
 using System.Diagnostics;
-using System.Drawing;
-using System.Drawing.Imaging;
 using System.IO;
-using System.Linq;
 using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
-using System.Windows.Forms;
+using System.Windows;
+using System.Windows.Documents;
+using System.Windows.Interop;
+using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 
 namespace Clipboard;
 
@@ -24,16 +24,16 @@ internal enum ClipboardDataType
 
 public static class ClipboardManager
 {
-	private static ClipboardMonitorForm? _monitorForm;
-	private static ClipboardHistoryForm? _historyForm;
+	private static ClipboardMonitorWindow? _monitorWindow;
+	private static ClipboardHistoryWindow? _historyWindow;
 	private static string _concatenatedText = string.Empty;
 	private static int _concatenationCount = 0;
 	private static readonly object _concatenationLock = new();
 
-	// キーボードフック関連
 	private static IntPtr _hookID = IntPtr.Zero;
 	private static NativeMethods.LowLevelKeyboardProc? _proc;
 	private static Thread? _hookThread;
+	private static Dispatcher? _hookDispatcher;
 	private static readonly ManualResetEventSlim _hookThreadReady = new(false);
 	private static readonly object _hookLock = new();
 	private static volatile bool _ctrlPressed = false;
@@ -43,17 +43,13 @@ public static class ClipboardManager
 	private static int _suppressedWinKeyCode = 0;
 	private static uint _hookThreadId = 0;
 
-	// 前回保存した内容を記憶
 	private static string _lastSavedContent = string.Empty;
 	private static bool _suppressNextClipboardSave = false;
-	private static Image? _restoredImage = null;
 
 	public static void Start()
 	{
-		_monitorForm = new ClipboardMonitorForm();
-		_monitorForm.Show();
+		_monitorWindow = new ClipboardMonitorWindow();
 
-		// キーボードフックを設定
 		_proc = HookCallback;
 		StartKeyboardHookThread();
 
@@ -62,26 +58,20 @@ public static class ClipboardManager
 
 	public static void Stop()
 	{
-		// キーボードフックを解除
 		StopKeyboardHookThread();
 
-		if (_monitorForm != null)
+		if (_monitorWindow != null)
 		{
-			_monitorForm.Close();
-			_monitorForm.Dispose();
-			_monitorForm = null;
+			_monitorWindow.Dispose();
+			_monitorWindow = null;
 			Logger.Debug("ClipboardManager: クリップボード監視とキーボードフックを停止しました。");
 		}
 
-		if (_historyForm != null)
+		if (_historyWindow != null)
 		{
-			_historyForm.Close();
-			_historyForm.Dispose();
-			_historyForm = null;
+			_historyWindow.CloseWindow();
+			_historyWindow = null;
 		}
-
-		_restoredImage?.Dispose();
-		_restoredImage = null;
 	}
 
 	public static string GetSaveDirectoryPath()
@@ -112,7 +102,7 @@ public static class ClipboardManager
 		catch (Exception ex)
 		{
 			Logger.Error(ex, $"ClipboardManager: 履歴の貼り付けに失敗しました: {filePath}");
-			MessageBox.Show("履歴の貼り付けに失敗しました。", "Clipboard", MessageBoxButtons.OK, MessageBoxIcon.Error);
+			MessageBox.Show("履歴の貼り付けに失敗しました。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
 			return false;
 		}
 	}
@@ -148,6 +138,8 @@ public static class ClipboardManager
 
 	private static void StopKeyboardHookThread()
 	{
+		_hookDispatcher?.BeginInvokeShutdown(DispatcherPriority.Send);
+
 		uint hookThreadId = _hookThreadId;
 		if (hookThreadId != 0 &&
 			!NativeMethods.PostThreadMessage(hookThreadId, NativeMethods.WM_QUIT, IntPtr.Zero, IntPtr.Zero))
@@ -170,6 +162,7 @@ public static class ClipboardManager
 		}
 
 		_hookThread = null;
+		_hookDispatcher = null;
 		_hookThreadId = 0;
 		_hookThreadReady.Reset();
 		ResetSuppressedWindowsKeyState();
@@ -180,6 +173,7 @@ public static class ClipboardManager
 	{
 		_hookThreadId = NativeMethods.GetCurrentThreadId();
 		NativeMethods.PeekMessage(out _, IntPtr.Zero, 0, 0, NativeMethods.PM_NOREMOVE);
+		_hookDispatcher = Dispatcher.CurrentDispatcher;
 
 		IntPtr hookID = _proc == null ? IntPtr.Zero : SetHook(_proc);
 		lock (_hookLock)
@@ -196,7 +190,7 @@ public static class ClipboardManager
 
 		try
 		{
-			Application.Run();
+			Dispatcher.Run();
 		}
 		finally
 		{
@@ -210,6 +204,7 @@ public static class ClipboardManager
 			}
 
 			_hookThreadId = 0;
+			_hookDispatcher = null;
 			ResetSuppressedWindowsKeyState();
 			_swallowWinVKeyUp = false;
 		}
@@ -282,7 +277,6 @@ public static class ClipboardManager
 						_ctrlPressed = false;
 						Logger.Debug("ClipboardManager: Ctrlキーが離されました。");
 
-						// Ctrlが離されたときに連結テキストとカウンターをクリア
 						lock (_concatenationLock)
 						{
 							if (!string.IsNullOrEmpty(_concatenatedText))
@@ -330,17 +324,15 @@ public static class ClipboardManager
 				return;
 			}
 
-			// Ctrl押下中でテキスト形式の場合は連結処理
-			if (_ctrlPressed && System.Windows.Forms.Clipboard.ContainsText())
+			if (_ctrlPressed && System.Windows.Clipboard.ContainsText())
 			{
-				string newText = System.Windows.Forms.Clipboard.GetText();
+				string newText = System.Windows.Clipboard.GetText();
 				if (!string.IsNullOrEmpty(newText))
 				{
 					lock (_concatenationLock)
 					{
 						if (_concatenatedText != newText)
 						{
-							// 既存のテキストがある場合は改行して連結
 							if (!string.IsNullOrEmpty(_concatenatedText))
 							{
 								_concatenatedText += ClipboardSettings.ConcatenationSeparator + newText;
@@ -352,10 +344,9 @@ public static class ClipboardManager
 								_concatenationCount = 1;
 							}
 
-							// 2回目以降のみクリップボードに書き戻す（1回目はリッチテキスト等を保持するため書き戻さない）
 							if (_concatenationCount >= 2)
 							{
-								System.Windows.Forms.Clipboard.SetText(_concatenatedText);
+								System.Windows.Clipboard.SetText(_concatenatedText);
 								Logger.Debug($"ClipboardManager: Ctrl押下中 - テキストを連結してクリップボードに書き戻しました（{_concatenatedText.Length}文字、{_concatenationCount}回目）");
 							}
 							else
@@ -367,10 +358,7 @@ public static class ClipboardManager
 				}
 			}
 
-			// ベースディレクトリパスを生成
 			string directoryPath = GetSaveDirectoryPath();
-
-			// ディレクトリが存在しない場合は作成
 			if (!Directory.Exists(directoryPath))
 			{
 				Directory.CreateDirectory(directoryPath);
@@ -378,11 +366,7 @@ public static class ClipboardManager
 			}
 
 			var (bytes, extension) = GetClipboardContentAsBytesWithExtension();
-
-			// 現在のクリップボード内容を取得して識別用の文字列を生成
 			string currentContent = CalculateHash(bytes);
-
-			// 前回保存した内容と同じ場合はスキップ
 			if (currentContent == _lastSavedContent)
 			{
 				Logger.Debug("ClipboardManager: 前回保存した内容と同じのため、保存をスキップします。");
@@ -412,19 +396,19 @@ public static class ClipboardManager
 
 	private static ClipboardDataType GetClipboardDataType()
 	{
-		if (System.Windows.Forms.Clipboard.ContainsImage())
+		if (System.Windows.Clipboard.ContainsImage())
 		{
 			return ClipboardDataType.Image;
 		}
-		else if (System.Windows.Forms.Clipboard.ContainsData(DataFormats.Html))
+		else if (System.Windows.Clipboard.ContainsData(DataFormats.Html))
 		{
 			return ClipboardDataType.Html;
 		}
-		else if (System.Windows.Forms.Clipboard.ContainsData(DataFormats.Rtf))
+		else if (System.Windows.Clipboard.ContainsData(DataFormats.Rtf))
 		{
 			return ClipboardDataType.Rtf;
 		}
-		else if (System.Windows.Forms.Clipboard.ContainsText())
+		else if (System.Windows.Clipboard.ContainsText())
 		{
 			return ClipboardDataType.Text;
 		}
@@ -439,46 +423,51 @@ public static class ClipboardManager
 		switch (dataType)
 		{
 			case ClipboardDataType.Image:
-				var image = System.Windows.Forms.Clipboard.GetImage();
+				BitmapSource? image = System.Windows.Clipboard.GetImage();
 				if (image != null)
 				{
 					using var ms = new MemoryStream();
-					image.Save(ms, ImageFormat.Png);
+					var encoder = new PngBitmapEncoder();
+					encoder.Frames.Add(BitmapFrame.Create(image));
+					encoder.Save(ms);
 					return (ms.ToArray(), ".png");
 				}
 				break;
 
 			case ClipboardDataType.Html:
-				if (System.Windows.Forms.Clipboard.TryGetData<string>(DataFormats.Html, out var htmlData))
+				if (GetClipboardStringData(DataFormats.Html) is { } htmlData)
 				{
 					return (Encoding.UTF8.GetBytes(htmlData), ".html");
 				}
 				break;
 
 			case ClipboardDataType.Rtf:
-				if (System.Windows.Forms.Clipboard.TryGetData<string>(DataFormats.Rtf, out var rtfData))
+				if (GetClipboardStringData(DataFormats.Rtf) is { } rtfData)
 				{
 					return (Encoding.UTF8.GetBytes(rtfData), ".rtf");
 				}
 				break;
 
 			case ClipboardDataType.Text:
-				string text = System.Windows.Forms.Clipboard.GetText();
+				string text = System.Windows.Clipboard.GetText();
 				return (Encoding.UTF8.GetBytes(text), ".txt");
 		}
 
 		return (Array.Empty<byte>(), "");
 	}
 
+	private static string? GetClipboardStringData(string format)
+	{
+		return System.Windows.Clipboard.GetData(format) as string;
+	}
+
 	private static string GetNextFilePath(string directoryPath, string extension)
 	{
-		// 拡張子が.で始まっていない場合は追加
 		if (!extension.StartsWith("."))
 		{
 			extension = "." + extension;
 		}
 
-		// ディレクトリ内のすべてのファイルから最大の番号を取得
 		int maxNumber = 0;
 		if (Directory.Exists(directoryPath))
 		{
@@ -486,35 +475,35 @@ public static class ClipboardManager
 			foreach (var file in files)
 			{
 				string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(file);
-				if (int.TryParse(fileNameWithoutExtension, out int number))
+				if (int.TryParse(fileNameWithoutExtension, out int number) && number > maxNumber)
 				{
-					if (number > maxNumber)
-					{
-						maxNumber = number;
-					}
+					maxNumber = number;
 				}
 			}
 		}
 
-		// 次の番号を使用
 		int nextNumber = maxNumber + 1;
 		string fileName = $"{nextNumber:D4}{extension}";
-		string filePath = Path.Combine(directoryPath, fileName);
-
-		return filePath;
+		return Path.Combine(directoryPath, fileName);
 	}
 
 	private static void ShowHistoryFromHotKey()
 	{
 		IntPtr targetWindow = NativeMethods.GetForegroundWindow();
 		Logger.Debug($"ClipboardManager: Win+V 対象ウィンドウを取得しました。TargetWindow={FormatHandle(targetWindow)}");
-		if (_monitorForm != null && _monitorForm.IsHandleCreated)
+		DispatchToUi(() => ShowHistoryWindow(targetWindow));
+	}
+
+	private static void DispatchToUi(Action action)
+	{
+		Dispatcher? dispatcher = Application.Current?.Dispatcher;
+		if (dispatcher == null || dispatcher.CheckAccess())
 		{
-			_monitorForm.BeginInvoke((Action)(() => ShowHistoryWindow(targetWindow)));
+			action();
 			return;
 		}
 
-		ShowHistoryWindow(targetWindow);
+		dispatcher.BeginInvoke(action);
 	}
 
 	private static string FormatHandle(IntPtr handle)
@@ -526,17 +515,17 @@ public static class ClipboardManager
 	{
 		try
 		{
-			if (_historyForm == null || _historyForm.IsDisposed)
+			if (_historyWindow == null || _historyWindow.IsClosed)
 			{
-				_historyForm = new ClipboardHistoryForm();
+				_historyWindow = new ClipboardHistoryWindow();
 			}
 
-			_historyForm.ShowHistory(targetWindow);
+			_historyWindow.ShowHistory(targetWindow);
 		}
 		catch (Exception ex)
 		{
 			Logger.Error(ex, "ClipboardManager: 履歴画面を開けませんでした。");
-			MessageBox.Show("履歴画面を開けませんでした。", "Clipboard", MessageBoxButtons.OK, MessageBoxIcon.Error);
+			MessageBox.Show("履歴画面を開けませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
 		}
 	}
 
@@ -566,26 +555,20 @@ public static class ClipboardManager
 	private static void SetClipboardText(string text)
 	{
 		_suppressNextClipboardSave = true;
-		System.Windows.Forms.Clipboard.SetText(text);
+		System.Windows.Clipboard.SetText(text);
 	}
 
 	private static void SetClipboardImage(string filePath)
 	{
-		using var stream = new MemoryStream(File.ReadAllBytes(filePath));
-		using var image = Image.FromStream(stream);
-		var bitmap = new Bitmap(image);
-		try
-		{
-			_suppressNextClipboardSave = true;
-			System.Windows.Forms.Clipboard.SetImage(bitmap);
-			_restoredImage?.Dispose();
-			_restoredImage = bitmap;
-		}
-		catch
-		{
-			bitmap.Dispose();
-			throw;
-		}
+		var bitmap = new BitmapImage();
+		bitmap.BeginInit();
+		bitmap.CacheOption = BitmapCacheOption.OnLoad;
+		bitmap.UriSource = new Uri(filePath);
+		bitmap.EndInit();
+		bitmap.Freeze();
+
+		_suppressNextClipboardSave = true;
+		System.Windows.Clipboard.SetImage(bitmap);
 	}
 
 	private static void SetClipboardHtml(string html)
@@ -600,7 +583,7 @@ public static class ClipboardManager
 		}
 
 		_suppressNextClipboardSave = true;
-		System.Windows.Forms.Clipboard.SetDataObject(dataObject, true);
+		System.Windows.Clipboard.SetDataObject(dataObject, true);
 	}
 
 	private static void SetClipboardRtf(string rtf)
@@ -615,7 +598,7 @@ public static class ClipboardManager
 		}
 
 		_suppressNextClipboardSave = true;
-		System.Windows.Forms.Clipboard.SetDataObject(dataObject, true);
+		System.Windows.Clipboard.SetDataObject(dataObject, true);
 	}
 
 	private static void PasteToTargetWindow(IntPtr targetWindow)
@@ -628,7 +611,7 @@ public static class ClipboardManager
 
 		NativeMethods.SetForegroundWindow(targetWindow);
 		Thread.Sleep(80);
-		SendKeys.SendWait("^v");
+		SendKeyCombination(NativeMethods.VK_CONTROL, NativeMethods.VK_V);
 	}
 
 	private static string ConvertHtmlToPlainText(string html)
@@ -653,9 +636,11 @@ public static class ClipboardManager
 	{
 		try
 		{
-			using var richTextBox = new RichTextBox();
-			richTextBox.Rtf = rtf;
-			return richTextBox.Text;
+			var richTextBox = new System.Windows.Controls.RichTextBox();
+			var range = new TextRange(richTextBox.Document.ContentStart, richTextBox.Document.ContentEnd);
+			using var stream = new MemoryStream(Encoding.UTF8.GetBytes(rtf));
+			range.Load(stream, DataFormats.Rtf);
+			return range.Text;
 		}
 		catch
 		{
@@ -707,29 +692,8 @@ public static class ClipboardManager
 	{
 		var inputs = new[]
 		{
-			new NativeMethods.Input
-			{
-				Type = NativeMethods.INPUT_KEYBOARD,
-				U = new NativeMethods.InputUnion
-				{
-					Ki = new NativeMethods.KeyboardInput
-					{
-						WVk = (ushort)vkCode
-					}
-				}
-			},
-			new NativeMethods.Input
-			{
-				Type = NativeMethods.INPUT_KEYBOARD,
-				U = new NativeMethods.InputUnion
-				{
-					Ki = new NativeMethods.KeyboardInput
-					{
-						WVk = (ushort)vkCode,
-						DwFlags = NativeMethods.KEYEVENTF_KEYUP
-					}
-				}
-			}
+			CreateKeyInput(vkCode, false),
+			CreateKeyInput(vkCode, true)
 		};
 
 		NativeMethods.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<NativeMethods.Input>());
@@ -739,44 +703,62 @@ public static class ClipboardManager
 	{
 		var inputs = new[]
 		{
-			new NativeMethods.Input
-			{
-				Type = NativeMethods.INPUT_KEYBOARD,
-				U = new NativeMethods.InputUnion
-				{
-					Ki = new NativeMethods.KeyboardInput
-					{
-						WVk = (ushort)vkCode
-					}
-				}
-			}
+			CreateKeyInput(vkCode, false)
 		};
 
 		NativeMethods.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<NativeMethods.Input>());
 	}
 
-	private class ClipboardMonitorForm : Form
+	private static void SendKeyCombination(int modifierVkCode, int keyVkCode)
 	{
+		var inputs = new[]
+		{
+			CreateKeyInput(modifierVkCode, false),
+			CreateKeyInput(keyVkCode, false),
+			CreateKeyInput(keyVkCode, true),
+			CreateKeyInput(modifierVkCode, true)
+		};
+
+		NativeMethods.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<NativeMethods.Input>());
+	}
+
+	private static NativeMethods.Input CreateKeyInput(int vkCode, bool keyUp)
+	{
+		return new NativeMethods.Input
+		{
+			Type = NativeMethods.INPUT_KEYBOARD,
+			U = new NativeMethods.InputUnion
+			{
+				Ki = new NativeMethods.KeyboardInput
+				{
+					WVk = (ushort)vkCode,
+					DwFlags = keyUp ? NativeMethods.KEYEVENTF_KEYUP : 0
+				}
+			}
+		};
+	}
+
+	private sealed class ClipboardMonitorWindow : IDisposable
+	{
+		private readonly HwndSource _source;
 		private bool _registeredWinVHotkey;
+		private bool _isDisposed;
 
-		public ClipboardMonitorForm()
+		public ClipboardMonitorWindow()
 		{
-			// 隠しフォームとして設定
-			ShowInTaskbar = false;
-			WindowState = FormWindowState.Minimized;
-			Opacity = 0;
-			Width = 0;
-			Height = 0;
-		}
+			var parameters = new HwndSourceParameters("Clipboard Monitor")
+			{
+				Width = 0,
+				Height = 0,
+				WindowStyle = 0
+			};
+			_source = new HwndSource(parameters);
+			_source.AddHook(WndProc);
 
-		protected override void OnHandleCreated(EventArgs e)
-		{
-			base.OnHandleCreated(e);
-			// クリップボード変更通知を登録
-			NativeMethods.AddClipboardFormatListener(Handle);
+			NativeMethods.AddClipboardFormatListener(_source.Handle);
 
 			_registeredWinVHotkey = NativeMethods.RegisterHotKey(
-				Handle,
+				_source.Handle,
 				NativeMethods.HOTKEY_ID_WIN_V,
 				NativeMethods.MOD_WIN | NativeMethods.MOD_NOREPEAT,
 				NativeMethods.VK_V);
@@ -791,34 +773,40 @@ public static class ClipboardManager
 			}
 		}
 
-		protected override void OnHandleDestroyed(EventArgs e)
+		public void Dispose()
 		{
-			if (_registeredWinVHotkey)
+			if (_isDisposed)
 			{
-				NativeMethods.UnregisterHotKey(Handle, NativeMethods.HOTKEY_ID_WIN_V);
-				_registeredWinVHotkey = false;
-			}
-
-			// クリップボード変更通知を解除
-			NativeMethods.RemoveClipboardFormatListener(Handle);
-			base.OnHandleDestroyed(e);
-		}
-
-		protected override void WndProc(ref Message m)
-		{
-			if (m.Msg == NativeMethods.WM_HOTKEY && m.WParam.ToInt32() == NativeMethods.HOTKEY_ID_WIN_V)
-			{
-				ShowHistoryFromHotKey();
 				return;
 			}
 
-			if (m.Msg == NativeMethods.WM_CLIPBOARDUPDATE)
+			_isDisposed = true;
+			if (_registeredWinVHotkey)
 			{
-				// クリップボードが更新された
+				NativeMethods.UnregisterHotKey(_source.Handle, NativeMethods.HOTKEY_ID_WIN_V);
+				_registeredWinVHotkey = false;
+			}
+
+			NativeMethods.RemoveClipboardFormatListener(_source.Handle);
+			_source.RemoveHook(WndProc);
+			_source.Dispose();
+		}
+
+		private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+		{
+			if (msg == NativeMethods.WM_HOTKEY && wParam.ToInt32() == NativeMethods.HOTKEY_ID_WIN_V)
+			{
+				ShowHistoryFromHotKey();
+				handled = true;
+				return IntPtr.Zero;
+			}
+
+			if (msg == NativeMethods.WM_CLIPBOARDUPDATE)
+			{
 				SaveClipboardToFile();
 			}
 
-			base.WndProc(ref m);
+			return IntPtr.Zero;
 		}
 	}
 }

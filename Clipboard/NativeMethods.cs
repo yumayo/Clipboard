@@ -1,33 +1,26 @@
-using System;
 using System.Runtime.InteropServices;
 
 namespace Clipboard;
 
 internal static class NativeMethods
 {
-	// クリップボード関連
 	public const int WM_CLIPBOARDUPDATE = 0x031D;
 	public const int WM_HOTKEY = 0x0312;
 	public const int WM_QUIT = 0x0012;
+	public const int WM_APP = 0x8000;
+	public const int WM_CONTEXTMENU = 0x007B;
+	public const int WM_LBUTTONUP = 0x0202;
+	public const int WM_RBUTTONUP = 0x0205;
 	public const uint PM_NOREMOVE = 0x0000;
 
-	[DllImport("user32.dll", SetLastError = true)]
-	[return: MarshalAs(UnmanagedType.Bool)]
-	public static extern bool AddClipboardFormatListener(IntPtr hwnd);
-
-	[DllImport("user32.dll", SetLastError = true)]
-	[return: MarshalAs(UnmanagedType.Bool)]
-	public static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
-
-	// キーボードフック関連
 	public const int WH_KEYBOARD_LL = 13;
 	public const int LLKHF_INJECTED = 0x00000010;
 	public const int WM_KEYDOWN = 0x0100;
 	public const int WM_KEYUP = 0x0101;
 	public const int WM_SYSKEYDOWN = 0x0104;
 	public const int WM_SYSKEYUP = 0x0105;
-	public const int VK_LCONTROL = 0xA2;  // 162
-	public const int VK_RCONTROL = 0xA3;  // 163
+	public const int VK_LCONTROL = 0xA2;
+	public const int VK_RCONTROL = 0xA3;
 	public const int VK_LWIN = 0x5B;
 	public const int VK_RWIN = 0x5C;
 	public const int VK_V = 0x56;
@@ -40,6 +33,20 @@ internal static class NativeMethods
 	public const int INPUT_KEYBOARD = 1;
 	public const uint KEYEVENTF_KEYUP = 0x0002;
 	public const uint FLASHW_STOP = 0;
+
+	public const uint NIM_ADD = 0x00000000;
+	public const uint NIM_DELETE = 0x00000002;
+	public const uint NIM_SETVERSION = 0x00000004;
+	public const uint NIF_MESSAGE = 0x00000001;
+	public const uint NIF_ICON = 0x00000002;
+	public const uint NIF_TIP = 0x00000004;
+	public const uint NOTIFYICON_VERSION_4 = 4;
+
+	public const uint IMAGE_ICON = 1;
+	public const uint LR_LOADFROMFILE = 0x00000010;
+	public const uint LR_DEFAULTSIZE = 0x00000040;
+
+	public const uint MONITOR_DEFAULTTONEAREST = 0x00000002;
 
 	[StructLayout(LayoutKind.Sequential)]
 	public struct KbdLlHookStruct
@@ -126,7 +133,47 @@ internal static class NativeMethods
 		public uint DwTimeout;
 	}
 
+	[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+	public struct NotifyIconData
+	{
+		public uint CbSize;
+		public IntPtr HWnd;
+		public uint UID;
+		public uint UFlags;
+		public uint UCallbackMessage;
+		public IntPtr HIcon;
+		[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+		public string SzTip;
+		public uint DwState;
+		public uint DwStateMask;
+		[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+		public string SzInfo;
+		public uint UTimeoutOrVersion;
+		[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)]
+		public string SzInfoTitle;
+		public uint DwInfoFlags;
+		public Guid GuidItem;
+		public IntPtr HBalloonIcon;
+	}
+
+	[StructLayout(LayoutKind.Sequential)]
+	public struct MonitorInfo
+	{
+		public uint CbSize;
+		public NativeRect RcMonitor;
+		public NativeRect RcWork;
+		public uint DwFlags;
+	}
+
 	public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+	[DllImport("user32.dll", SetLastError = true)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	public static extern bool AddClipboardFormatListener(IntPtr hwnd);
+
+	[DllImport("user32.dll", SetLastError = true)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	public static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
 
 	[DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
 	public static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
@@ -191,4 +238,26 @@ internal static class NativeMethods
 	[DllImport("user32.dll")]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static extern bool ClientToScreen(IntPtr hWnd, ref NativePoint lpPoint);
+
+	[DllImport("user32.dll")]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	public static extern bool GetCursorPos(out NativePoint lpPoint);
+
+	[DllImport("user32.dll")]
+	public static extern IntPtr MonitorFromPoint(NativePoint pt, uint dwFlags);
+
+	[DllImport("user32.dll", SetLastError = true)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MonitorInfo lpmi);
+
+	[DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	public static extern bool Shell_NotifyIcon(uint dwMessage, ref NotifyIconData lpData);
+
+	[DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+	public static extern IntPtr LoadImage(IntPtr hInst, string name, uint type, int cx, int cy, uint fuLoad);
+
+	[DllImport("user32.dll", SetLastError = true)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	public static extern bool DestroyIcon(IntPtr hIcon);
 }
