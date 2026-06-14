@@ -10,5 +10,5 @@ Clipboard.exeをダブルクリックしてください。
 
 ```sh
 wsl
-make artifact APP_VERSION=v0.xx.zip
+make artifact APP_VERSION=v0.xx
 ```

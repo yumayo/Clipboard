@@ -40,6 +40,7 @@ static class Program
 	private static ContextMenuStrip ContextMenu()
 	{
 		var menu = new ContextMenuStrip();
+		menu.Items.Add("履歴を開く", null, (s, e) => { ClipboardManager.ShowHistoryWindow(); });
 		menu.Items.Add("保存先を開く", null, (s, e) => { OpenSaveDirectory(); });
 		menu.Items.Add("設定", null, (s, e) => { OpenSettings(); });
 		menu.Items.Add(new ToolStripSeparator());
