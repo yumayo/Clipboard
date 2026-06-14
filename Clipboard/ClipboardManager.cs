@@ -44,6 +44,7 @@ public static class ClipboardManager
 	private static bool _swallowWinVKeyUp = false;
 	private static int _suppressedWinKeyCode = 0;
 	private static uint _hookThreadId = 0;
+	private static volatile bool _historyWindowVisible = false;
 
 	private static string _lastSavedContent = string.Empty;
 	private static bool _suppressNextClipboardSave = false;
@@ -71,6 +72,7 @@ public static class ClipboardManager
 
 		if (_historyWindow != null)
 		{
+			_historyWindowVisible = false;
 			_historyWindow.CloseWindow();
 			_historyWindow = null;
 		}
@@ -226,6 +228,11 @@ public static class ClipboardManager
 			bool isKeyDown = wParam == (IntPtr)NativeMethods.WM_KEYDOWN || wParam == (IntPtr)NativeMethods.WM_SYSKEYDOWN;
 			bool isKeyUp = wParam == (IntPtr)NativeMethods.WM_KEYUP || wParam == (IntPtr)NativeMethods.WM_SYSKEYUP;
 			bool isWindowsKey = IsWindowsKey(vkCode);
+
+			if (TryHandleHistoryNavigationKey(vkCode, isKeyDown, isKeyUp))
+			{
+				return (IntPtr)1;
+			}
 
 			if (isKeyDown)
 			{
@@ -520,9 +527,11 @@ public static class ClipboardManager
 			if (_historyWindow == null || _historyWindow.IsClosed)
 			{
 				_historyWindow = new ClipboardHistoryWindow();
+				_historyWindow.VisibleStateChanged += isVisible => _historyWindowVisible = isVisible;
 			}
 
 			_historyWindow.ShowHistory(targetWindow);
+			_historyWindowVisible = _historyWindow.IsVisible;
 		}
 		catch (Exception ex)
 		{
@@ -678,6 +687,35 @@ public static class ClipboardManager
 	private static bool IsWindowsKey(int vkCode)
 	{
 		return vkCode == NativeMethods.VK_LWIN || vkCode == NativeMethods.VK_RWIN;
+	}
+
+	private static bool TryHandleHistoryNavigationKey(int vkCode, bool isKeyDown, bool isKeyUp)
+	{
+		if (!_historyWindowVisible || !IsHistoryNavigationKey(vkCode) || IsModifierKeyDown())
+		{
+			return false;
+		}
+
+		if (isKeyDown)
+		{
+			int offset = vkCode == NativeMethods.VK_DOWN ? 1 : -1;
+			DispatchToUi(() => _historyWindow?.MoveSelectionFromKeyboard(offset));
+		}
+
+		return isKeyDown || isKeyUp;
+	}
+
+	private static bool IsHistoryNavigationKey(int vkCode)
+	{
+		return vkCode == NativeMethods.VK_UP || vkCode == NativeMethods.VK_DOWN;
+	}
+
+	private static bool IsModifierKeyDown()
+	{
+		return IsKeyDown(NativeMethods.VK_CONTROL) ||
+			IsKeyDown(NativeMethods.VK_SHIFT) ||
+			IsKeyDown(NativeMethods.VK_MENU) ||
+			IsPhysicalWindowsKeyDown();
 	}
 
 	private static bool IsPhysicalWindowsKeyDown()

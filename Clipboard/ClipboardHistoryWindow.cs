@@ -43,9 +43,14 @@ internal sealed class ClipboardHistoryWindow : Window
 		MinWidth = 380;
 		MinHeight = 320;
 		ShowInTaskbar = false;
-		Focusable = true;
+		ShowActivated = false;
+		Focusable = false;
 		Icon = LoadIcon();
-		SourceInitialized += (_, _) => HideMinimizeAndMaximizeButtons();
+		SourceInitialized += (_, _) =>
+		{
+			HideMinimizeAndMaximizeButtons();
+			PreventWindowActivation();
+		};
 
 		_listPanel = new StackPanel
 		{
@@ -66,8 +71,12 @@ internal sealed class ClipboardHistoryWindow : Window
 			{
 				CancelHistoryLoad();
 			}
+
+			VisibleStateChanged?.Invoke(IsVisible);
 		};
 	}
+
+	public event Action<bool>? VisibleStateChanged;
 
 	public void ShowHistory(IntPtr targetWindow)
 	{
@@ -76,18 +85,10 @@ internal sealed class ClipboardHistoryWindow : Window
 
 		Topmost = true;
 		Show();
-		Activate();
-		Focus();
-		Keyboard.Focus(this);
 		SelectFirstHistoryItem();
 		Topmost = false;
 		StopWindowFlash();
-		Dispatcher.BeginInvoke((Action)(() =>
-		{
-			Focus();
-			Keyboard.Focus(this);
-			StopWindowFlash();
-		}));
+		Dispatcher.BeginInvoke((Action)StopWindowFlash);
 
 		if (_isLoadingHistory && _loadHistoryCancellation?.IsCancellationRequested == true)
 		{
@@ -111,6 +112,11 @@ internal sealed class ClipboardHistoryWindow : Window
 		Close();
 	}
 
+	public bool MoveSelectionFromKeyboard(int offset)
+	{
+		return IsVisible && MoveSelection(offset);
+	}
+
 	protected override void OnPreviewKeyDown(KeyEventArgs e)
 	{
 		if (e.Key == Key.Down)
@@ -124,14 +130,6 @@ internal sealed class ClipboardHistoryWindow : Window
 		else if (e.Key == Key.Up)
 		{
 			if (MoveSelection(-1))
-			{
-				e.Handled = true;
-				return;
-			}
-		}
-		else if (e.Key == Key.Return)
-		{
-			if (ActivateSelectedItem())
 			{
 				e.Handled = true;
 				return;
@@ -285,18 +283,6 @@ internal sealed class ClipboardHistoryWindow : Window
 		int nextIndex = _selectedItemIndex < 0 ? 0 : _selectedItemIndex + offset;
 		nextIndex = Math.Max(0, Math.Min(nextIndex, items.Count - 1));
 		return SelectHistoryItem(nextIndex, items);
-	}
-
-	private bool ActivateSelectedItem()
-	{
-		var items = GetHistoryItems();
-		if (_selectedItemIndex < 0 || _selectedItemIndex >= items.Count)
-		{
-			return false;
-		}
-
-		items[_selectedItemIndex].Activate();
-		return true;
 	}
 
 	private bool SelectHistoryItem(int index)
@@ -698,6 +684,36 @@ internal sealed class ClipboardHistoryWindow : Window
 			NativeMethods.SWP_NOMOVE |
 			NativeMethods.SWP_NOSIZE |
 			NativeMethods.SWP_NOZORDER |
+			NativeMethods.SWP_FRAMECHANGED);
+	}
+
+	private void PreventWindowActivation()
+	{
+		IntPtr handle = new WindowInteropHelper(this).Handle;
+		if (handle == IntPtr.Zero)
+		{
+			return;
+		}
+
+		int extendedStyle = NativeMethods.GetWindowLong(handle, NativeMethods.GWL_EXSTYLE);
+		int newExtendedStyle = extendedStyle | NativeMethods.WS_EX_NOACTIVATE;
+		if (newExtendedStyle == extendedStyle)
+		{
+			return;
+		}
+
+		NativeMethods.SetWindowLong(handle, NativeMethods.GWL_EXSTYLE, newExtendedStyle);
+		NativeMethods.SetWindowPos(
+			handle,
+			IntPtr.Zero,
+			0,
+			0,
+			0,
+			0,
+			NativeMethods.SWP_NOMOVE |
+			NativeMethods.SWP_NOSIZE |
+			NativeMethods.SWP_NOZORDER |
+			NativeMethods.SWP_NOACTIVATE |
 			NativeMethods.SWP_FRAMECHANGED);
 	}
 

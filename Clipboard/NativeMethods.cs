@@ -26,6 +26,10 @@ internal static class NativeMethods
 	public const int VK_RWIN = 0x5C;
 	public const int VK_V = 0x56;
 	public const int VK_CONTROL = 0x11;
+	public const int VK_SHIFT = 0x10;
+	public const int VK_MENU = 0x12;
+	public const int VK_UP = 0x26;
+	public const int VK_DOWN = 0x28;
 
 	public const int HOTKEY_ID_WIN_V = 0x5601;
 	public const uint MOD_WIN = 0x0008;
@@ -51,11 +55,14 @@ internal static class NativeMethods
 
 	public const uint MONITOR_DEFAULTTONEAREST = 0x00000002;
 	public const int GWL_STYLE = -16;
+	public const int GWL_EXSTYLE = -20;
 	public const int WS_MAXIMIZEBOX = 0x00010000;
 	public const int WS_MINIMIZEBOX = 0x00020000;
+	public const int WS_EX_NOACTIVATE = 0x08000000;
 	public const uint SWP_NOSIZE = 0x0001;
 	public const uint SWP_NOMOVE = 0x0002;
 	public const uint SWP_NOZORDER = 0x0004;
+	public const uint SWP_NOACTIVATE = 0x0010;
 	public const uint SWP_FRAMECHANGED = 0x0020;
 
 	[StructLayout(LayoutKind.Sequential)]
