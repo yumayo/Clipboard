@@ -10,6 +10,8 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Automation;
+using System.Windows.Automation.Text;
 using System.Windows.Forms;
 
 namespace Clipboard;
@@ -264,12 +266,12 @@ internal sealed class ClipboardHistoryForm : Form
 
 	private void MoveNearTextInput(IntPtr targetWindow)
 	{
-		bool hasTextInputBounds = TryGetTextInputBounds(targetWindow, out var textInputBounds);
+		bool hasTextInputBounds = TryGetTextInputBounds(targetWindow, out var textInputBounds, out string textInputSource);
 		Rectangle anchorBounds;
 		if (hasTextInputBounds)
 		{
 			anchorBounds = textInputBounds;
-			Logger.Debug($"ClipboardHistoryForm: テキスト入力座標を取得しました。TargetWindow={FormatHandle(targetWindow)} Bounds={anchorBounds}");
+			Logger.Debug($"ClipboardHistoryForm: テキスト入力座標を取得しました。Source={textInputSource} TargetWindow={FormatHandle(targetWindow)} Bounds={anchorBounds}");
 		}
 		else
 		{
@@ -292,19 +294,37 @@ internal sealed class ClipboardHistoryForm : Form
 		Logger.Debug($"ClipboardHistoryForm: 履歴画面の表示位置を決定しました。Anchor={anchorBounds} WorkingArea={workingArea} Location={Location} Size={Size}");
 	}
 
-	private static bool TryGetTextInputBounds(IntPtr targetWindow, out Rectangle bounds)
+	private static bool TryGetTextInputBounds(IntPtr targetWindow, out Rectangle bounds, out string source)
+	{
+		if (TryGetWin32TextInputBounds(targetWindow, out bounds))
+		{
+			source = "Win32";
+			return true;
+		}
+
+		if (TryGetAutomationTextInputBounds(out bounds))
+		{
+			source = "UIAutomation";
+			return true;
+		}
+
+		source = string.Empty;
+		return false;
+	}
+
+	private static bool TryGetWin32TextInputBounds(IntPtr targetWindow, out Rectangle bounds)
 	{
 		bounds = Rectangle.Empty;
 		if (targetWindow == IntPtr.Zero || !NativeMethods.IsWindow(targetWindow))
 		{
-			Logger.Debug($"ClipboardHistoryForm: テキスト入力座標の取得に失敗しました。対象ウィンドウが無効です。TargetWindow={FormatHandle(targetWindow)}");
+			Logger.Debug($"ClipboardHistoryForm: Win32 テキスト入力座標の取得に失敗しました。対象ウィンドウが無効です。TargetWindow={FormatHandle(targetWindow)}");
 			return false;
 		}
 
 		uint threadId = NativeMethods.GetWindowThreadProcessId(targetWindow, out _);
 		if (threadId == 0)
 		{
-			Logger.Debug($"ClipboardHistoryForm: テキスト入力座標の取得に失敗しました。GetWindowThreadProcessId が失敗しました。TargetWindow={FormatHandle(targetWindow)} Win32Error={System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
+			Logger.Debug($"ClipboardHistoryForm: Win32 テキスト入力座標の取得に失敗しました。GetWindowThreadProcessId が失敗しました。TargetWindow={FormatHandle(targetWindow)} Win32Error={System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
 			return false;
 		}
 
@@ -314,14 +334,14 @@ internal sealed class ClipboardHistoryForm : Form
 		};
 		if (!NativeMethods.GetGUIThreadInfo(threadId, ref guiThreadInfo))
 		{
-			Logger.Debug($"ClipboardHistoryForm: テキスト入力座標の取得に失敗しました。GetGUIThreadInfo が失敗しました。TargetWindow={FormatHandle(targetWindow)} ThreadId={threadId} Win32Error={System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
+			Logger.Debug($"ClipboardHistoryForm: Win32 テキスト入力座標の取得に失敗しました。GetGUIThreadInfo が失敗しました。TargetWindow={FormatHandle(targetWindow)} ThreadId={threadId} Win32Error={System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
 			return false;
 		}
 
 		Logger.Debug($"ClipboardHistoryForm: GUI thread 情報を取得しました。TargetWindow={FormatHandle(targetWindow)} ThreadId={threadId} Active={FormatHandle(guiThreadInfo.HWndActive)} Focus={FormatHandle(guiThreadInfo.HWndFocus)} Caret={FormatHandle(guiThreadInfo.HWndCaret)} CaretRect=({guiThreadInfo.RcCaret.Left},{guiThreadInfo.RcCaret.Top})-({guiThreadInfo.RcCaret.Right},{guiThreadInfo.RcCaret.Bottom})");
 		if (guiThreadInfo.HWndCaret == IntPtr.Zero)
 		{
-			Logger.Debug($"ClipboardHistoryForm: テキスト入力座標の取得に失敗しました。キャレット HWND が 0 です。TargetWindow={FormatHandle(targetWindow)} ThreadId={threadId} Focus={FormatHandle(guiThreadInfo.HWndFocus)}");
+			Logger.Debug($"ClipboardHistoryForm: Win32 テキスト入力座標の取得に失敗しました。キャレット HWND が 0 です。TargetWindow={FormatHandle(targetWindow)} ThreadId={threadId} Focus={FormatHandle(guiThreadInfo.HWndFocus)}");
 			return false;
 		}
 
@@ -338,24 +358,165 @@ internal sealed class ClipboardHistoryForm : Form
 
 		if (!NativeMethods.ClientToScreen(guiThreadInfo.HWndCaret, ref topLeft))
 		{
-			Logger.Debug($"ClipboardHistoryForm: テキスト入力座標の取得に失敗しました。ClientToScreen(topLeft) が失敗しました。Caret={FormatHandle(guiThreadInfo.HWndCaret)} Win32Error={System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
+			Logger.Debug($"ClipboardHistoryForm: Win32 テキスト入力座標の取得に失敗しました。ClientToScreen(topLeft) が失敗しました。Caret={FormatHandle(guiThreadInfo.HWndCaret)} Win32Error={System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
 			return false;
 		}
 
 		if (!NativeMethods.ClientToScreen(guiThreadInfo.HWndCaret, ref bottomRight))
 		{
-			Logger.Debug($"ClipboardHistoryForm: テキスト入力座標の取得に失敗しました。ClientToScreen(bottomRight) が失敗しました。Caret={FormatHandle(guiThreadInfo.HWndCaret)} Win32Error={System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
+			Logger.Debug($"ClipboardHistoryForm: Win32 テキスト入力座標の取得に失敗しました。ClientToScreen(bottomRight) が失敗しました。Caret={FormatHandle(guiThreadInfo.HWndCaret)} Win32Error={System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
 			return false;
 		}
 
 		bounds = Rectangle.FromLTRB(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
 		if (bounds.IsEmpty)
 		{
-			Logger.Debug($"ClipboardHistoryForm: テキスト入力座標の取得に失敗しました。画面座標変換後のキャレット矩形が空です。Caret={FormatHandle(guiThreadInfo.HWndCaret)} Bounds={bounds}");
+			Logger.Debug($"ClipboardHistoryForm: Win32 テキスト入力座標の取得に失敗しました。画面座標変換後のキャレット矩形が空です。Caret={FormatHandle(guiThreadInfo.HWndCaret)} Bounds={bounds}");
 			return false;
 		}
 
 		return true;
+	}
+
+	private static bool TryGetAutomationTextInputBounds(out Rectangle bounds)
+	{
+		bounds = Rectangle.Empty;
+		try
+		{
+			AutomationElement focusedElement = AutomationElement.FocusedElement;
+			if (focusedElement == null)
+			{
+				Logger.Debug("ClipboardHistoryForm: UI Automation テキスト入力座標の取得に失敗しました。FocusedElement が null です。");
+				return false;
+			}
+
+			Logger.Debug($"ClipboardHistoryForm: UI Automation focused element を取得しました。{FormatAutomationElement(focusedElement)}");
+			if (TryGetAutomationTextPatternBounds(focusedElement, out bounds))
+			{
+				return true;
+			}
+
+			if (TryGetAutomationElementBounds(focusedElement, out bounds))
+			{
+				return true;
+			}
+
+			Logger.Debug("ClipboardHistoryForm: UI Automation テキスト入力座標の取得に失敗しました。TextPattern または focused element の有効な矩形を取得できませんでした。");
+			return false;
+		}
+		catch (Exception ex) when (ex is ElementNotAvailableException ||
+			ex is InvalidOperationException ||
+			ex is System.Runtime.InteropServices.COMException)
+		{
+			Logger.Error(ex, "ClipboardHistoryForm: UI Automation テキスト入力座標の取得中に例外が発生しました。");
+			return false;
+		}
+	}
+
+	private static bool TryGetAutomationTextPatternBounds(AutomationElement element, out Rectangle bounds)
+	{
+		bounds = Rectangle.Empty;
+		if (!element.TryGetCurrentPattern(TextPattern.Pattern, out object patternObject))
+		{
+			Logger.Debug("ClipboardHistoryForm: UI Automation TextPattern は利用できません。");
+			return false;
+		}
+
+		var textPattern = (TextPattern)patternObject;
+		TextPatternRange[] selectionRanges = textPattern.GetSelection();
+		Logger.Debug($"ClipboardHistoryForm: UI Automation TextPattern.GetSelection を取得しました。Count={selectionRanges.Length}");
+		foreach (TextPatternRange range in selectionRanges)
+		{
+			if (TryGetTextPatternRangeBounds(range, out bounds))
+			{
+				Logger.Debug($"ClipboardHistoryForm: UI Automation TextPattern の選択範囲矩形を取得しました。Bounds={bounds}");
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private static bool TryGetAutomationElementBounds(AutomationElement element, out Rectangle bounds)
+	{
+		System.Windows.Rect rectangle = element.Current.BoundingRectangle;
+		if (TryCreateRectangle(rectangle.Left, rectangle.Top, rectangle.Width, rectangle.Height, out bounds))
+		{
+			Logger.Debug($"ClipboardHistoryForm: UI Automation focused element の矩形を取得しました。Bounds={bounds}");
+			return true;
+		}
+
+		Logger.Debug($"ClipboardHistoryForm: UI Automation focused element の矩形が無効です。Bounds=({rectangle.Left},{rectangle.Top},{rectangle.Width},{rectangle.Height})");
+		return false;
+	}
+
+	private static bool TryGetTextPatternRangeBounds(TextPatternRange range, out Rectangle bounds)
+	{
+		if (TryGetBoundingRectangle(range, out bounds))
+		{
+			return true;
+		}
+
+		foreach (TextUnit textUnit in new[] { TextUnit.Character, TextUnit.Word, TextUnit.Line })
+		{
+			TextPatternRange expandedRange = range.Clone();
+			expandedRange.ExpandToEnclosingUnit(textUnit);
+			if (TryGetBoundingRectangle(expandedRange, out bounds))
+			{
+				Logger.Debug($"ClipboardHistoryForm: UI Automation range を {textUnit} に拡張して矩形を取得しました。Bounds={bounds}");
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private static bool TryGetBoundingRectangle(TextPatternRange range, out Rectangle bounds)
+	{
+		bounds = Rectangle.Empty;
+		System.Windows.Rect[] rectangles = range.GetBoundingRectangles();
+		foreach (System.Windows.Rect rectangle in rectangles)
+		{
+			if (TryCreateRectangle(rectangle.Left, rectangle.Top, rectangle.Width, rectangle.Height, out bounds))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private static bool TryCreateRectangle(double left, double top, double width, double height, out Rectangle bounds)
+	{
+		bounds = Rectangle.Empty;
+		if (!double.IsFinite(left) || !double.IsFinite(top) || !double.IsFinite(width) || !double.IsFinite(height) ||
+			width < 0 ||
+			height < 0)
+		{
+			return false;
+		}
+
+		bounds = new Rectangle(
+			(int)Math.Round(left),
+			(int)Math.Round(top),
+			Math.Max(1, (int)Math.Round(width)),
+			Math.Max(1, (int)Math.Round(height)));
+		return true;
+	}
+
+	private static string FormatAutomationElement(AutomationElement element)
+	{
+		try
+		{
+			AutomationElement.AutomationElementInformation current = element.Current;
+			return $"Name=\"{current.Name}\" ControlType={current.ControlType?.ProgrammaticName ?? string.Empty} NativeWindowHandle=0x{current.NativeWindowHandle:X} AutomationId=\"{current.AutomationId}\" ClassName=\"{current.ClassName}\"";
+		}
+		catch (Exception ex) when (ex is ElementNotAvailableException ||
+			ex is InvalidOperationException ||
+			ex is System.Runtime.InteropServices.COMException)
+		{
+			return $"取得失敗: {ex.Message}";
+		}
 	}
 
 	private static string FormatHandle(IntPtr handle)
