@@ -79,7 +79,24 @@ internal static class NativeMethods
 	public struct InputUnion
 	{
 		[FieldOffset(0)]
+		public MouseInput Mi;
+
+		[FieldOffset(0)]
 		public KeyboardInput Ki;
+
+		[FieldOffset(0)]
+		public HardwareInput Hi;
+	}
+
+	[StructLayout(LayoutKind.Sequential)]
+	public struct MouseInput
+	{
+		public int Dx;
+		public int Dy;
+		public uint MouseData;
+		public uint DwFlags;
+		public uint Time;
+		public UIntPtr DwExtraInfo;
 	}
 
 	[StructLayout(LayoutKind.Sequential)]
@@ -90,6 +107,14 @@ internal static class NativeMethods
 		public uint DwFlags;
 		public uint Time;
 		public UIntPtr DwExtraInfo;
+	}
+
+	[StructLayout(LayoutKind.Sequential)]
+	public struct HardwareInput
+	{
+		public uint UMsg;
+		public ushort WParamL;
+		public ushort WParamH;
 	}
 
 	[StructLayout(LayoutKind.Sequential)]
@@ -209,7 +234,7 @@ internal static class NativeMethods
 	[DllImport("user32.dll")]
 	public static extern IntPtr GetForegroundWindow();
 
-	[DllImport("user32.dll")]
+	[DllImport("user32.dll", SetLastError = true)]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static extern bool SetForegroundWindow(IntPtr hWnd);
 

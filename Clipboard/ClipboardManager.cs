@@ -24,6 +24,8 @@ internal enum ClipboardDataType
 
 public static class ClipboardManager
 {
+	private const int ForegroundRestoreTimeoutMilliseconds = 500;
+	private const int ForegroundRestorePollIntervalMilliseconds = 20;
 	private static ClipboardMonitorWindow? _monitorWindow;
 	private static ClipboardHistoryWindow? _historyWindow;
 	private static string _concatenatedText = string.Empty;
@@ -609,9 +611,34 @@ public static class ClipboardManager
 			return;
 		}
 
-		NativeMethods.SetForegroundWindow(targetWindow);
-		Thread.Sleep(80);
+		if (!NativeMethods.SetForegroundWindow(targetWindow))
+		{
+			Logger.Warning($"ClipboardManager: 貼り付け先ウィンドウを前面化できませんでした。TargetWindow={FormatHandle(targetWindow)} Win32Error={Marshal.GetLastWin32Error()}");
+		}
+
+		if (!WaitForForegroundWindow(targetWindow))
+		{
+			Logger.Warning($"ClipboardManager: 貼り付け先ウィンドウの前面化を確認できませんでした。TargetWindow={FormatHandle(targetWindow)} ForegroundWindow={FormatHandle(NativeMethods.GetForegroundWindow())}");
+		}
+
 		SendKeyCombination(NativeMethods.VK_CONTROL, NativeMethods.VK_V);
+	}
+
+	private static bool WaitForForegroundWindow(IntPtr targetWindow)
+	{
+		long startTicks = Environment.TickCount64;
+		do
+		{
+			if (NativeMethods.GetForegroundWindow() == targetWindow)
+			{
+				return true;
+			}
+
+			Thread.Sleep(ForegroundRestorePollIntervalMilliseconds);
+		}
+		while (Environment.TickCount64 - startTicks < ForegroundRestoreTimeoutMilliseconds);
+
+		return NativeMethods.GetForegroundWindow() == targetWindow;
 	}
 
 	private static string ConvertHtmlToPlainText(string html)
@@ -696,7 +723,7 @@ public static class ClipboardManager
 			CreateKeyInput(vkCode, true)
 		};
 
-		NativeMethods.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<NativeMethods.Input>());
+		SendInput(inputs, "key press");
 	}
 
 	private static void SendKeyDown(int vkCode)
@@ -706,7 +733,7 @@ public static class ClipboardManager
 			CreateKeyInput(vkCode, false)
 		};
 
-		NativeMethods.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<NativeMethods.Input>());
+		SendInput(inputs, "key down");
 	}
 
 	private static void SendKeyCombination(int modifierVkCode, int keyVkCode)
@@ -719,7 +746,18 @@ public static class ClipboardManager
 			CreateKeyInput(modifierVkCode, true)
 		};
 
-		NativeMethods.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<NativeMethods.Input>());
+		SendInput(inputs, "key combination");
+	}
+
+	private static void SendInput(NativeMethods.Input[] inputs, string operation)
+	{
+		int inputSize = Marshal.SizeOf<NativeMethods.Input>();
+		uint sent = NativeMethods.SendInput((uint)inputs.Length, inputs, inputSize);
+		if (sent != inputs.Length)
+		{
+			int win32Error = Marshal.GetLastWin32Error();
+			Logger.Warning($"ClipboardManager: SendInput に失敗しました。Operation={operation} Sent={sent}/{inputs.Length} InputSize={inputSize} Win32Error={win32Error}");
+		}
 	}
 
 	private static NativeMethods.Input CreateKeyInput(int vkCode, bool keyUp)
