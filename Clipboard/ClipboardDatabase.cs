@@ -196,13 +196,46 @@ internal static class ClipboardDatabase
 		int? maxEntryCount,
 		CancellationToken cancellationToken)
 	{
+		return LoadHistorySummariesCore(searchText, null, maxEntryCount, false, cancellationToken);
+	}
+
+	public static List<ClipboardHistorySummary> LoadHistorySearchSummaries(
+		string searchText,
+		long? beforeId,
+		int maxEntryCount,
+		CancellationToken cancellationToken)
+	{
+		if (string.IsNullOrWhiteSpace(searchText))
+		{
+			return new List<ClipboardHistorySummary>();
+		}
+
+		return LoadHistorySummariesCore(searchText, beforeId, maxEntryCount, true, cancellationToken);
+	}
+
+	private static List<ClipboardHistorySummary> LoadHistorySummariesCore(
+		string? searchText,
+		long? beforeId,
+		int? maxEntryCount,
+		bool orderByPrimaryKey,
+		CancellationToken cancellationToken)
+	{
+		if (maxEntryCount.HasValue && maxEntryCount.Value <= 0)
+		{
+			return new List<ClipboardHistorySummary>();
+		}
+
 		Initialize();
 		string[] searchTerms = SplitSearchTerms(searchText);
 		lock (Sync)
 		{
 			using var connection = OpenConnection();
 			using var command = connection.CreateCommand();
-			command.CommandText = CreateHistorySummariesSql(searchTerms, maxEntryCount.HasValue);
+			command.CommandText = CreateHistorySummariesSql(searchTerms, beforeId.HasValue, maxEntryCount.HasValue, orderByPrimaryKey);
+			if (beforeId.HasValue)
+			{
+				AddParameter(command, "$before_id", beforeId.Value);
+			}
 			for (int i = 0; i < searchTerms.Length; i++)
 			{
 				AddParameter(command, $"$term{i}", $"%{EscapeLikePattern(searchTerms[i])}%");
@@ -356,19 +389,34 @@ internal static class ClipboardDatabase
 		};
 	}
 
-	private static string CreateHistorySummariesSql(string[] searchTerms, bool hasLimit)
+	private static string CreateHistorySummariesSql(
+		string[] searchTerms,
+		bool hasBeforeId,
+		bool hasLimit,
+		bool orderByPrimaryKey)
 	{
 		string sql =
 			"""
 			SELECT id, kind, created_at_utc_ticks, preview_text, thumbnail
 			FROM clipboard_history
 			""";
+		var whereClauses = new List<string>();
+		if (hasBeforeId)
+		{
+			whereClauses.Add("id < $before_id");
+		}
 		if (searchTerms.Length > 0)
 		{
-			sql += " WHERE " + string.Join(" AND ", searchTerms.Select((_, index) => $"search_text LIKE $term{index} ESCAPE '\\'"));
+			whereClauses.AddRange(searchTerms.Select((_, index) => $"search_text LIKE $term{index} ESCAPE '\\'"));
+		}
+		if (whereClauses.Count > 0)
+		{
+			sql += " WHERE " + string.Join(" AND ", whereClauses);
 		}
 
-		sql += " ORDER BY created_at_utc_ticks DESC, id DESC";
+		sql += orderByPrimaryKey
+			? " ORDER BY id DESC"
+			: " ORDER BY created_at_utc_ticks DESC, id DESC";
 		if (hasLimit)
 		{
 			sql += " LIMIT $limit";

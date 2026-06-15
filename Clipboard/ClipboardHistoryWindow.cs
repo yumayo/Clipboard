@@ -19,6 +19,7 @@ internal sealed class ClipboardHistoryWindow : Window
 {
 	private const int SearchFilterDelayMilliseconds = 150;
 	private const int InitialHistoryDisplayLimit = 100;
+	private const int SearchHistoryPageSize = 100;
 	private const int SearchResultBatchSize = 16;
 	private readonly TextBox _searchBox;
 	private readonly ScrollViewer _scrollViewer;
@@ -488,13 +489,15 @@ internal sealed class ClipboardHistoryWindow : Window
 			}
 
 			bool hasSearchText = !string.IsNullOrWhiteSpace(searchText);
-			List<ClipboardHistoryEntry> entriesToDisplay = hasSearchText
-				? await Task.Run(() => LoadHistoryEntries(cancellationToken, searchText), cancellationToken)
-				: entriesSnapshot;
-
-			int matchedEntryCount = await Task.Run(
-				() => DisplayHistoryEntriesProgressivelyAsync(entriesToDisplay, cancellationTokenSource),
-				cancellationToken);
+			int matchedEntryCount;
+			if (hasSearchText)
+			{
+				matchedEntryCount = await DisplaySearchHistoryEntriesProgressivelyAsync(searchText, cancellationTokenSource);
+			}
+			else
+			{
+				matchedEntryCount = await DisplayHistoryEntriesProgressivelyAsync(entriesSnapshot, cancellationTokenSource);
+			}
 
 			if (cancellationToken.IsCancellationRequested || _filterHistoryCancellation != cancellationTokenSource)
 			{
@@ -602,6 +605,40 @@ internal sealed class ClipboardHistoryWindow : Window
 
 		await FlushMatchedHistoryEntriesAsync(matchedEntries, cancellationTokenSource);
 		return matchedEntryCount;
+	}
+
+	private async Task<int> DisplaySearchHistoryEntriesProgressivelyAsync(
+		string searchText,
+		CancellationTokenSource cancellationTokenSource)
+	{
+		CancellationToken cancellationToken = cancellationTokenSource.Token;
+		long? beforeId = null;
+		int matchedEntryCount = 0;
+
+		while (true)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			List<ClipboardHistoryEntry> entries = await Task.Run(
+				() => LoadSearchHistoryEntries(
+					cancellationToken,
+					searchText,
+					beforeId,
+					SearchHistoryPageSize),
+				cancellationToken);
+
+			if (entries.Count == 0)
+			{
+				return matchedEntryCount;
+			}
+
+			matchedEntryCount += await DisplayHistoryEntriesProgressivelyAsync(entries, cancellationTokenSource);
+			beforeId = entries[^1].Id;
+
+			if (entries.Count < SearchHistoryPageSize)
+			{
+				return matchedEntryCount;
+			}
+		}
 	}
 
 	private async Task FlushMatchedHistoryEntriesAsync(
@@ -1144,6 +1181,29 @@ internal sealed class ClipboardHistoryWindow : Window
 		try
 		{
 			return ClipboardDatabase.LoadHistorySummaries(searchText, maxEntryCount, cancellationToken)
+				.Select(CreateHistoryEntry)
+				.ToList();
+		}
+		catch (OperationCanceledException)
+		{
+			throw;
+		}
+		catch (Exception ex)
+		{
+			Logger.Error(ex, "ClipboardHistoryWindow: 履歴の読み込みに失敗しました。");
+			return new List<ClipboardHistoryEntry>();
+		}
+	}
+
+	private static List<ClipboardHistoryEntry> LoadSearchHistoryEntries(
+		CancellationToken cancellationToken,
+		string searchText,
+		long? beforeId,
+		int maxEntryCount)
+	{
+		try
+		{
+			return ClipboardDatabase.LoadHistorySearchSummaries(searchText, beforeId, maxEntryCount, cancellationToken)
 				.Select(CreateHistoryEntry)
 				.ToList();
 		}
