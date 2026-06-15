@@ -18,6 +18,7 @@ namespace Clipboard;
 internal sealed class ClipboardHistoryWindow : Window
 {
 	private const int SearchFilterDelayMilliseconds = 150;
+	private const int InitialHistoryDisplayLimit = 100;
 	private const int SearchResultBatchSize = 16;
 	private readonly TextBox _searchBox;
 	private readonly ScrollViewer _scrollViewer;
@@ -401,7 +402,9 @@ internal sealed class ClipboardHistoryWindow : Window
 		List<ClipboardHistoryEntry> entries;
 		try
 		{
-			entries = await Task.Run(() => LoadHistoryEntries(cancellationTokenSource.Token), cancellationTokenSource.Token);
+			entries = await Task.Run(
+				() => LoadHistoryEntries(cancellationTokenSource.Token, maxEntryCount: InitialHistoryDisplayLimit),
+				cancellationTokenSource.Token);
 		}
 		catch (OperationCanceledException)
 		{
@@ -1133,11 +1136,14 @@ internal sealed class ClipboardHistoryWindow : Window
 			NativeMethods.SWP_FRAMECHANGED);
 	}
 
-	private static List<ClipboardHistoryEntry> LoadHistoryEntries(CancellationToken cancellationToken, string? searchText = null)
+	private static List<ClipboardHistoryEntry> LoadHistoryEntries(
+		CancellationToken cancellationToken,
+		string? searchText = null,
+		int? maxEntryCount = null)
 	{
 		try
 		{
-			return ClipboardDatabase.LoadHistorySummaries(searchText, cancellationToken)
+			return ClipboardDatabase.LoadHistorySummaries(searchText, maxEntryCount, cancellationToken)
 				.Select(CreateHistoryEntry)
 				.ToList();
 		}

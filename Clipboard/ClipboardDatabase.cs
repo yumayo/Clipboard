@@ -191,7 +191,10 @@ internal static class ClipboardDatabase
 		return true;
 	}
 
-	public static List<ClipboardHistorySummary> LoadHistorySummaries(string? searchText, CancellationToken cancellationToken)
+	public static List<ClipboardHistorySummary> LoadHistorySummaries(
+		string? searchText,
+		int? maxEntryCount,
+		CancellationToken cancellationToken)
 	{
 		Initialize();
 		string[] searchTerms = SplitSearchTerms(searchText);
@@ -199,10 +202,14 @@ internal static class ClipboardDatabase
 		{
 			using var connection = OpenConnection();
 			using var command = connection.CreateCommand();
-			command.CommandText = CreateHistorySummariesSql(searchTerms);
+			command.CommandText = CreateHistorySummariesSql(searchTerms, maxEntryCount.HasValue);
 			for (int i = 0; i < searchTerms.Length; i++)
 			{
 				AddParameter(command, $"$term{i}", $"%{EscapeLikePattern(searchTerms[i])}%");
+			}
+			if (maxEntryCount.HasValue)
+			{
+				AddParameter(command, "$limit", maxEntryCount.Value);
 			}
 
 			var entries = new List<ClipboardHistorySummary>();
@@ -349,7 +356,7 @@ internal static class ClipboardDatabase
 		};
 	}
 
-	private static string CreateHistorySummariesSql(string[] searchTerms)
+	private static string CreateHistorySummariesSql(string[] searchTerms, bool hasLimit)
 	{
 		string sql =
 			"""
@@ -361,7 +368,13 @@ internal static class ClipboardDatabase
 			sql += " WHERE " + string.Join(" AND ", searchTerms.Select((_, index) => $"search_text LIKE $term{index} ESCAPE '\\'"));
 		}
 
-		return sql + " ORDER BY created_at_utc_ticks DESC, id DESC;";
+		sql += " ORDER BY created_at_utc_ticks DESC, id DESC";
+		if (hasLimit)
+		{
+			sql += " LIMIT $limit";
+		}
+
+		return sql + ";";
 	}
 
 	private static string[] SplitSearchTerms(string? searchText)
