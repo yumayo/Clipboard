@@ -1,9 +1,7 @@
 using System.Collections.Generic;
 using System.ComponentModel;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -27,24 +25,19 @@ internal sealed class ClipboardHistoryWindow : Window
 	private readonly ScrollViewer _scrollViewer;
 	private readonly StackPanel _listPanel;
 	private readonly List<ClipboardHistoryEntry> _historyEntries = new();
-	private readonly NativeMethods.LowLevelMouseProc _outsideClickProc;
 	private CancellationTokenSource? _loadHistoryCancellation;
 	private CancellationTokenSource? _filterHistoryCancellation;
-	private IntPtr _outsideClickHook;
 	private IntPtr _targetWindow;
 	private IntPtr _windowHandle;
-	private IntPtr _suppressedOutsideMouseButtonUpMessage;
 	private int _selectedItemIndex = -1;
 	private bool _isLoadingHistory;
 	private bool _hasLoadedHistory;
 	private bool _allowClose;
-	private bool _suppressOutsideMouseButtonUp;
 
 	public bool IsClosed { get; private set; }
 
 	public ClipboardHistoryWindow()
 	{
-		_outsideClickProc = OnOutsideClickMouseHook;
 		Title = "クリップボード履歴";
 		WindowStartupLocation = WindowStartupLocation.Manual;
 		Width = 520;
@@ -52,8 +45,8 @@ internal sealed class ClipboardHistoryWindow : Window
 		MinWidth = 380;
 		MinHeight = 320;
 		ShowInTaskbar = false;
-		ShowActivated = false;
-		Focusable = false;
+		ShowActivated = true;
+		Focusable = true;
 		Icon = LoadIcon();
 		SourceInitialized += (_, _) =>
 		{
@@ -123,12 +116,6 @@ internal sealed class ClipboardHistoryWindow : Window
 		{
 			if (!IsVisible)
 			{
-				// 外側クリック時は背後アプリへ Click を成立させないため、対応する MouseUp までフックを残す。
-				if (!_suppressOutsideMouseButtonUp)
-				{
-					StopDismissOnOutsideClick();
-				}
-
 				CancelHistoryLoad();
 				CancelHistoryFilter();
 			}
@@ -155,11 +142,12 @@ internal sealed class ClipboardHistoryWindow : Window
 
 		Topmost = true;
 		Show();
+		Activate();
+		Focus();
 		SelectFirstHistoryItem();
 		Topmost = false;
 		StopWindowFlash();
 		Dispatcher.BeginInvoke((Action)StopWindowFlash);
-		BeginDismissOnOutsideClick();
 
 		if (_isLoadingHistory && _loadHistoryCancellation?.IsCancellationRequested == true)
 		{
@@ -264,176 +252,10 @@ internal sealed class ClipboardHistoryWindow : Window
 			return;
 		}
 
-		StopDismissOnOutsideClick();
 		CancelHistoryLoad();
 		CancelHistoryFilter();
 		IsClosed = true;
 		base.OnClosing(e);
-	}
-
-	private void BeginDismissOnOutsideClick()
-	{
-		StopDismissOnOutsideClick();
-		_outsideClickHook = SetOutsideClickHook(_outsideClickProc);
-		if (_outsideClickHook == IntPtr.Zero)
-		{
-			Logger.Warning($"ClipboardHistoryWindow: 外側クリック監視の開始に失敗しました。Win32Error={Marshal.GetLastWin32Error()}");
-		}
-	}
-
-	private static IntPtr SetOutsideClickHook(NativeMethods.LowLevelMouseProc proc)
-	{
-		using var curProcess = Process.GetCurrentProcess();
-		using var curModule = curProcess.MainModule;
-		return NativeMethods.SetWindowsHookEx(NativeMethods.WH_MOUSE_LL, proc, NativeMethods.GetModuleHandle(curModule?.ModuleName), 0);
-	}
-
-	private void StopDismissOnOutsideClick()
-	{
-		_suppressOutsideMouseButtonUp = false;
-		_suppressedOutsideMouseButtonUpMessage = IntPtr.Zero;
-		if (_outsideClickHook == IntPtr.Zero)
-		{
-			return;
-		}
-
-		if (!NativeMethods.UnhookWindowsHookEx(_outsideClickHook))
-		{
-			Logger.Warning($"ClipboardHistoryWindow: 外側クリック監視の解除に失敗しました。Win32Error={Marshal.GetLastWin32Error()}");
-		}
-
-		_outsideClickHook = IntPtr.Zero;
-	}
-
-	private IntPtr OnOutsideClickMouseHook(int nCode, IntPtr wParam, IntPtr lParam)
-	{
-		if (nCode >= 0)
-		{
-			if (_suppressOutsideMouseButtonUp && wParam == _suppressedOutsideMouseButtonUpMessage)
-			{
-				StopDismissOnOutsideClick();
-				return (IntPtr)1;
-			}
-
-			if (IsMouseButtonDownMessage(wParam) || IsMouseWheelMessage(wParam))
-			{
-				var mouse = Marshal.PtrToStructure<NativeMethods.MouseLlHookStruct>(lParam);
-				if (TryGetOutsideWindowAtPoint(mouse.Pt, out IntPtr outsideWindow))
-				{
-					if (IsMouseButtonDownMessage(wParam))
-					{
-						BeginSuppressOutsideMouseButtonUp(wParam);
-						HideFromOutsideClick(mouse.Pt, outsideWindow);
-					}
-
-					return (IntPtr)1;
-				}
-			}
-		}
-
-		return NativeMethods.CallNextHookEx(_outsideClickHook, nCode, wParam, lParam);
-	}
-
-	private static bool IsMouseButtonDownMessage(IntPtr wParam)
-	{
-		return wParam == (IntPtr)NativeMethods.WM_LBUTTONDOWN ||
-			wParam == (IntPtr)NativeMethods.WM_RBUTTONDOWN ||
-			wParam == (IntPtr)NativeMethods.WM_MBUTTONDOWN ||
-			wParam == (IntPtr)NativeMethods.WM_XBUTTONDOWN;
-	}
-
-	private static bool IsMouseWheelMessage(IntPtr wParam)
-	{
-		return wParam == (IntPtr)NativeMethods.WM_MOUSEWHEEL ||
-			wParam == (IntPtr)NativeMethods.WM_MOUSEHWHEEL;
-	}
-
-	private static IntPtr GetMouseButtonUpMessage(IntPtr mouseButtonDownMessage)
-	{
-		if (mouseButtonDownMessage == (IntPtr)NativeMethods.WM_LBUTTONDOWN)
-		{
-			return (IntPtr)NativeMethods.WM_LBUTTONUP;
-		}
-
-		if (mouseButtonDownMessage == (IntPtr)NativeMethods.WM_RBUTTONDOWN)
-		{
-			return (IntPtr)NativeMethods.WM_RBUTTONUP;
-		}
-
-		if (mouseButtonDownMessage == (IntPtr)NativeMethods.WM_MBUTTONDOWN)
-		{
-			return (IntPtr)NativeMethods.WM_MBUTTONUP;
-		}
-
-		if (mouseButtonDownMessage == (IntPtr)NativeMethods.WM_XBUTTONDOWN)
-		{
-			return (IntPtr)NativeMethods.WM_XBUTTONUP;
-		}
-
-		return IntPtr.Zero;
-	}
-
-	private void BeginSuppressOutsideMouseButtonUp(IntPtr mouseButtonDownMessage)
-	{
-		_suppressOutsideMouseButtonUp = true;
-		_suppressedOutsideMouseButtonUpMessage = GetMouseButtonUpMessage(mouseButtonDownMessage);
-		_ = StopOutsideClickHookAfterMouseUpTimeoutAsync();
-	}
-
-	private async Task StopOutsideClickHookAfterMouseUpTimeoutAsync()
-	{
-		await Task.Delay(1000);
-		if (!IsVisible && _suppressOutsideMouseButtonUp)
-		{
-			StopDismissOnOutsideClick();
-		}
-	}
-
-	private bool TryGetOutsideWindowAtPoint(NativeMethods.NativePoint point, out IntPtr outsideWindow)
-	{
-		outsideWindow = IntPtr.Zero;
-		if (!IsVisible || IsClosed)
-		{
-			return false;
-		}
-
-		IntPtr windowHandle = GetWindowHandle();
-		IntPtr windowAtPoint = NativeMethods.WindowFromPoint(point);
-		if (IsSameRootWindow(windowAtPoint, windowHandle))
-		{
-			return false;
-		}
-
-		outsideWindow = windowAtPoint;
-		return true;
-	}
-
-	private void HideFromOutsideClick(NativeMethods.NativePoint point, IntPtr clickedWindow)
-	{
-		if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
-		{
-			return;
-		}
-
-		IntPtr windowHandle = GetWindowHandle();
-		Logger.Debug($"ClipboardHistoryWindow: 履歴画面外がクリックされたため履歴画面を閉じます。Point=({point.X},{point.Y}) Window={FormatHandle(windowHandle)} ClickedWindow={FormatHandle(clickedWindow)}");
-		Hide();
-	}
-
-	private static bool IsSameRootWindow(IntPtr window, IntPtr rootWindow)
-	{
-		if (window == IntPtr.Zero || rootWindow == IntPtr.Zero)
-		{
-			return false;
-		}
-
-		if (window == rootWindow)
-		{
-			return true;
-		}
-
-		IntPtr root = NativeMethods.GetAncestor(window, NativeMethods.GA_ROOT);
-		return root == rootWindow;
 	}
 
 	private IntPtr GetWindowHandle()
