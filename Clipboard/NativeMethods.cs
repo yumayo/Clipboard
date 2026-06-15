@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace Clipboard;
 
@@ -39,6 +40,7 @@ internal static class NativeMethods
 	public const int VK_CONTROL = 0x11;
 	public const int VK_SHIFT = 0x10;
 	public const int VK_MENU = 0x12;
+	public const int VK_INSERT = 0x2D;
 	public const int VK_UP = 0x26;
 	public const int VK_DOWN = 0x28;
 
@@ -275,6 +277,9 @@ internal static class NativeMethods
 	[DllImport("user32.dll")]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static extern bool IsWindow(IntPtr hWnd);
+
+	[DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+	public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
 	[DllImport("user32.dll")]
 	public static extern IntPtr WindowFromPoint(NativePoint point);

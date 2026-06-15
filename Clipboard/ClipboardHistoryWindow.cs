@@ -43,6 +43,7 @@ internal sealed class ClipboardHistoryWindow : Window
 	private bool _hasMoreHistory;
 	private bool _allowClose;
 	private bool _suppressOutsideMouseButtonUp;
+	private bool _targetUsesTerminalInput;
 
 	public bool IsClosed { get; private set; }
 
@@ -830,7 +831,7 @@ internal sealed class ClipboardHistoryWindow : Window
 	private void PasteEntry(ClipboardHistoryEntry entry)
 	{
 		Hide();
-		ClipboardManager.PasteHistoryEntry(entry.Id, _targetWindow);
+		ClipboardManager.PasteHistoryEntry(entry.Id, _targetWindow, _targetUsesTerminalInput);
 	}
 
 	private void AddMessage(string text)
@@ -984,7 +985,12 @@ internal sealed class ClipboardHistoryWindow : Window
 
 	private void MoveNearTextInput(IntPtr targetWindow)
 	{
-		bool hasTextInputBounds = TryGetTextInputBounds(targetWindow, out Rect textInputBoundsDevice, out string textInputSource);
+		bool hasTextInputBounds = TryGetTextInputBounds(
+			targetWindow,
+			out Rect textInputBoundsDevice,
+			out string textInputSource,
+			out bool usesTerminalInput);
+		_targetUsesTerminalInput = usesTerminalInput;
 		Rect anchorBoundsDevice;
 		if (hasTextInputBounds)
 		{
@@ -1020,15 +1026,16 @@ internal sealed class ClipboardHistoryWindow : Window
 		Logger.Debug($"ClipboardHistoryWindow: 履歴画面の表示位置を決定しました。AnchorDevice={anchorBoundsDevice} Anchor={anchorBounds} WorkingArea={workingArea} Location=({Left},{Top}) Size=({windowWidth},{windowHeight})");
 	}
 
-	private static bool TryGetTextInputBounds(IntPtr targetWindow, out Rect bounds, out string source)
+	private static bool TryGetTextInputBounds(IntPtr targetWindow, out Rect bounds, out string source, out bool usesTerminalInput)
 	{
+		usesTerminalInput = false;
 		if (TryGetWin32TextInputBounds(targetWindow, out bounds))
 		{
 			source = "Win32";
 			return true;
 		}
 
-		if (TryGetAutomationTextInputBounds(out bounds))
+		if (TryGetAutomationTextInputBounds(out bounds, out usesTerminalInput))
 		{
 			source = "UIAutomation";
 			return true;
@@ -1100,9 +1107,10 @@ internal sealed class ClipboardHistoryWindow : Window
 		return true;
 	}
 
-	private static bool TryGetAutomationTextInputBounds(out Rect bounds)
+	private static bool TryGetAutomationTextInputBounds(out Rect bounds, out bool usesTerminalInput)
 	{
 		bounds = Rect.Empty;
+		usesTerminalInput = false;
 		try
 		{
 			AutomationElement focusedElement = AutomationElement.FocusedElement;
@@ -1113,6 +1121,12 @@ internal sealed class ClipboardHistoryWindow : Window
 			}
 
 			Logger.Debug($"ClipboardHistoryWindow: UI Automation focused element を取得しました。{FormatAutomationElement(focusedElement)}");
+			usesTerminalInput = IsTerminalAutomationElement(focusedElement);
+			if (usesTerminalInput)
+			{
+				Logger.Debug("ClipboardHistoryWindow: ターミナル入力要素として扱います。");
+			}
+
 			if (TryGetAutomationTextPatternBounds(focusedElement, out bounds))
 			{
 				return true;
@@ -1133,6 +1147,20 @@ internal sealed class ClipboardHistoryWindow : Window
 			Logger.Error(ex, "ClipboardHistoryWindow: UI Automation テキスト入力座標の取得中に例外が発生しました。");
 			return false;
 		}
+	}
+
+	private static bool IsTerminalAutomationElement(AutomationElement element)
+	{
+		string className = element.Current.ClassName ?? string.Empty;
+		string automationId = element.Current.AutomationId ?? string.Empty;
+		return ContainsOrdinalIgnoreCase(className, "xterm") ||
+			ContainsOrdinalIgnoreCase(className, "terminal") ||
+			ContainsOrdinalIgnoreCase(automationId, "terminal");
+	}
+
+	private static bool ContainsOrdinalIgnoreCase(string value, string searchText)
+	{
+		return value.IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0;
 	}
 
 	private static bool TryGetAutomationTextPatternBounds(AutomationElement element, out Rect bounds)

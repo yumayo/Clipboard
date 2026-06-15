@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
@@ -26,6 +27,12 @@ public static class ClipboardManager
 {
 	private const int ForegroundRestoreTimeoutMilliseconds = 500;
 	private const int ForegroundRestorePollIntervalMilliseconds = 20;
+	private const int WindowClassNameCapacity = 256;
+	private const int ClipboardSetRetryCount = 20;
+	private const int ClipboardSetRetryDelayMilliseconds = 25;
+	private const int ClipboardOpenFailedErrorCode = unchecked((int)0x800401D0);
+	private const string ConsoleWindowClassName = "ConsoleWindowClass";
+	private const string WindowsTerminalClassName = "CASCADIA_HOSTING_WINDOW_CLASS";
 	private static ClipboardMonitorWindow? _monitorWindow;
 	private static ClipboardHistoryWindow? _historyWindow;
 	private static string _concatenatedText = string.Empty;
@@ -89,7 +96,7 @@ public static class ClipboardManager
 		ShowHistoryFromHotKey();
 	}
 
-	public static bool PasteHistoryEntry(long historyId, IntPtr targetWindow)
+	public static bool PasteHistoryEntry(long historyId, IntPtr targetWindow, bool preferPlainTextPaste = false)
 	{
 		try
 		{
@@ -100,8 +107,9 @@ public static class ClipboardManager
 				return false;
 			}
 
-			RestoreClipboardFromContent(content);
-			PasteToTargetWindow(targetWindow);
+			bool useConsolePaste = preferPlainTextPaste || IsConsoleLikeWindow(targetWindow);
+			RestoreClipboardFromContent(content, useConsolePaste);
+			PasteToTargetWindow(targetWindow, useConsolePaste);
 			return true;
 		}
 		catch (Exception ex)
@@ -507,7 +515,7 @@ public static class ClipboardManager
 		}
 	}
 
-	private static void RestoreClipboardFromContent(ClipboardStoredContent content)
+	private static void RestoreClipboardFromContent(ClipboardStoredContent content, bool pasteAsPlainText)
 	{
 		switch (content.Kind)
 		{
@@ -516,11 +524,11 @@ public static class ClipboardManager
 				break;
 
 			case ClipboardHistoryKind.Html:
-				SetClipboardHtml(Encoding.UTF8.GetString(content.Bytes));
+				SetClipboardHtml(Encoding.UTF8.GetString(content.Bytes), pasteAsPlainText);
 				break;
 
 			case ClipboardHistoryKind.Rtf:
-				SetClipboardRtf(Encoding.UTF8.GetString(content.Bytes));
+				SetClipboardRtf(Encoding.UTF8.GetString(content.Bytes), pasteAsPlainText);
 				break;
 
 			default:
@@ -531,8 +539,7 @@ public static class ClipboardManager
 
 	private static void SetClipboardText(string text)
 	{
-		_suppressNextClipboardSave = true;
-		System.Windows.Clipboard.SetText(text);
+		SetClipboardWithRetry(() => System.Windows.Clipboard.SetText(text), "Text");
 	}
 
 	private static void SetClipboardImage(byte[] bytes)
@@ -545,12 +552,17 @@ public static class ClipboardManager
 		bitmap.EndInit();
 		bitmap.Freeze();
 
-		_suppressNextClipboardSave = true;
-		System.Windows.Clipboard.SetImage(bitmap);
+		SetClipboardWithRetry(() => System.Windows.Clipboard.SetImage(bitmap), "Image");
 	}
 
-	private static void SetClipboardHtml(string html)
+	private static void SetClipboardHtml(string html, bool pasteAsPlainText)
 	{
+		if (pasteAsPlainText)
+		{
+			SetClipboardText(ConvertHtmlToPlainText(html));
+			return;
+		}
+
 		var dataObject = new DataObject();
 		dataObject.SetData(DataFormats.Html, html);
 
@@ -560,12 +572,17 @@ public static class ClipboardManager
 			dataObject.SetText(plainText);
 		}
 
-		_suppressNextClipboardSave = true;
-		System.Windows.Clipboard.SetDataObject(dataObject, true);
+		SetClipboardWithRetry(() => System.Windows.Clipboard.SetDataObject(dataObject, true), "Html");
 	}
 
-	private static void SetClipboardRtf(string rtf)
+	private static void SetClipboardRtf(string rtf, bool pasteAsPlainText)
 	{
+		if (pasteAsPlainText)
+		{
+			SetClipboardText(ConvertRtfToPlainText(rtf));
+			return;
+		}
+
 		var dataObject = new DataObject();
 		dataObject.SetData(DataFormats.Rtf, rtf);
 
@@ -575,11 +592,45 @@ public static class ClipboardManager
 			dataObject.SetText(plainText);
 		}
 
-		_suppressNextClipboardSave = true;
-		System.Windows.Clipboard.SetDataObject(dataObject, true);
+		SetClipboardWithRetry(() => System.Windows.Clipboard.SetDataObject(dataObject, true), "Rtf");
 	}
 
-	private static void PasteToTargetWindow(IntPtr targetWindow)
+	private static void SetClipboardWithRetry(Action setClipboard, string contentType)
+	{
+		for (int attempt = 1; attempt <= ClipboardSetRetryCount; attempt++)
+		{
+			try
+			{
+				_suppressNextClipboardSave = true;
+				setClipboard();
+				return;
+			}
+			catch (Exception ex) when (IsClipboardOpenFailure(ex))
+			{
+				_suppressNextClipboardSave = false;
+				if (attempt >= ClipboardSetRetryCount)
+				{
+					throw;
+				}
+
+				Logger.Debug($"ClipboardManager: クリップボードへの復元を再試行します。Type={contentType} Attempt={attempt}/{ClipboardSetRetryCount} Error={ex.Message}");
+				Thread.Sleep(ClipboardSetRetryDelayMilliseconds);
+			}
+			catch
+			{
+				_suppressNextClipboardSave = false;
+				throw;
+			}
+		}
+	}
+
+	private static bool IsClipboardOpenFailure(Exception exception)
+	{
+		return exception is ExternalException externalException &&
+			externalException.ErrorCode == ClipboardOpenFailedErrorCode;
+	}
+
+	private static void PasteToTargetWindow(IntPtr targetWindow, bool useConsolePaste)
 	{
 		if (targetWindow == IntPtr.Zero || !NativeMethods.IsWindow(targetWindow))
 		{
@@ -597,7 +648,66 @@ public static class ClipboardManager
 			Logger.Warning($"ClipboardManager: 貼り付け先ウィンドウの前面化を確認できませんでした。TargetWindow={FormatHandle(targetWindow)} ForegroundWindow={FormatHandle(NativeMethods.GetForegroundWindow())}");
 		}
 
+		SendPasteShortcut(targetWindow, useConsolePaste);
+	}
+
+	private static void SendPasteShortcut(IntPtr targetWindow, bool useConsolePaste)
+	{
+		if (useConsolePaste)
+		{
+			Logger.Debug($"ClipboardManager: Console向け貼り付けショートカットを送信します。TargetWindow={FormatHandle(targetWindow)}");
+			SendKeyCombination(NativeMethods.VK_SHIFT, NativeMethods.VK_INSERT);
+			return;
+		}
+
 		SendKeyCombination(NativeMethods.VK_CONTROL, NativeMethods.VK_V);
+	}
+
+	private static bool IsConsoleLikeWindow(IntPtr window)
+	{
+		string className = GetWindowClassName(window);
+		if (string.Equals(className, ConsoleWindowClassName, StringComparison.Ordinal) ||
+			string.Equals(className, WindowsTerminalClassName, StringComparison.Ordinal))
+		{
+			return true;
+		}
+
+		return IsConsoleLikeProcess(window);
+	}
+
+	private static string GetWindowClassName(IntPtr window)
+	{
+		var className = new StringBuilder(WindowClassNameCapacity);
+		int length = NativeMethods.GetClassName(window, className, className.Capacity);
+		if (length <= 0)
+		{
+			return string.Empty;
+		}
+
+		return className.ToString();
+	}
+
+	private static bool IsConsoleLikeProcess(IntPtr window)
+	{
+		uint threadProcessId = NativeMethods.GetWindowThreadProcessId(window, out uint processId);
+		if (threadProcessId == 0 || processId == 0)
+		{
+			return false;
+		}
+
+		try
+		{
+			using Process process = Process.GetProcessById(unchecked((int)processId));
+			string processName = process.ProcessName;
+			return string.Equals(processName, "conhost", StringComparison.OrdinalIgnoreCase) ||
+				string.Equals(processName, "OpenConsole", StringComparison.OrdinalIgnoreCase) ||
+				string.Equals(processName, "WindowsTerminal", StringComparison.OrdinalIgnoreCase);
+		}
+		catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Win32Exception)
+		{
+			Logger.Debug($"ClipboardManager: 貼り付け先プロセス名を取得できませんでした。TargetWindow={FormatHandle(window)} ProcessId={processId} Error={ex.Message}");
+			return false;
+		}
 	}
 
 	private static bool WaitForForegroundWindow(IntPtr targetWindow)
