@@ -20,15 +20,17 @@ namespace Clipboard;
 internal sealed class ClipboardHistoryWindow : Window
 {
 	private const int SearchFilterDelayMilliseconds = 150;
-	private const int InitialHistoryDisplayLimit = 100;
+	private const int HistoryPageSize = 100;
 	private const int SearchHistoryPageSize = 100;
 	private const int SearchResultBatchSize = 16;
+	private const double LoadMoreHistoryScrollThreshold = 48;
 	private readonly TextBox _searchBox;
 	private readonly ScrollViewer _scrollViewer;
 	private readonly StackPanel _listPanel;
 	private readonly List<ClipboardHistoryEntry> _historyEntries = new();
 	private readonly NativeMethods.LowLevelMouseProc _outsideClickProc;
 	private CancellationTokenSource? _loadHistoryCancellation;
+	private CancellationTokenSource? _loadMoreHistoryCancellation;
 	private CancellationTokenSource? _filterHistoryCancellation;
 	private IntPtr _outsideClickHook;
 	private IntPtr _targetWindow;
@@ -36,7 +38,9 @@ internal sealed class ClipboardHistoryWindow : Window
 	private IntPtr _suppressedOutsideMouseButtonUpMessage;
 	private int _selectedItemIndex = -1;
 	private bool _isLoadingHistory;
+	private bool _isLoadingMoreHistory;
 	private bool _hasLoadedHistory;
+	private bool _hasMoreHistory;
 	private bool _allowClose;
 	private bool _suppressOutsideMouseButtonUp;
 
@@ -117,6 +121,7 @@ internal sealed class ClipboardHistoryWindow : Window
 			HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
 			Background = new SolidColorBrush(Color.FromRgb(245, 246, 248))
 		};
+		_scrollViewer.ScrollChanged += (_, _) => TryBeginLoadMoreHistory();
 		rootPanel.Children.Add(_scrollViewer);
 		Content = rootPanel;
 		IsVisibleChanged += (_, _) =>
@@ -449,6 +454,9 @@ internal sealed class ClipboardHistoryWindow : Window
 	private async void BeginLoadHistory(bool preserveExistingItems)
 	{
 		CancelHistoryLoad();
+		_loadMoreHistoryCancellation = null;
+		_isLoadingMoreHistory = false;
+		_hasMoreHistory = false;
 		var cancellationTokenSource = new CancellationTokenSource();
 		_loadHistoryCancellation = cancellationTokenSource;
 		_isLoadingHistory = true;
@@ -463,7 +471,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		try
 		{
 			entries = await Task.Run(
-				() => LoadHistoryEntries(cancellationTokenSource.Token, maxEntryCount: InitialHistoryDisplayLimit),
+				() => LoadHistoryEntries(cancellationTokenSource.Token, maxEntryCount: HistoryPageSize),
 				cancellationTokenSource.Token);
 		}
 		catch (OperationCanceledException)
@@ -510,6 +518,109 @@ internal sealed class ClipboardHistoryWindow : Window
 	{
 		_historyEntries.Clear();
 		_historyEntries.AddRange(entries);
+		_hasMoreHistory = entries.Count >= HistoryPageSize;
+		BeginApplyHistoryFilter(delay: false);
+	}
+
+	private void TryBeginLoadMoreHistory()
+	{
+		if (!IsVisible ||
+			!_hasLoadedHistory ||
+			_isLoadingHistory ||
+			_isLoadingMoreHistory ||
+			!_hasMoreHistory ||
+			_filterHistoryCancellation != null ||
+			_historyEntries.Count == 0 ||
+			!string.IsNullOrWhiteSpace(_searchBox.Text))
+		{
+			return;
+		}
+
+		if (_scrollViewer.ScrollableHeight <= 0 || _scrollViewer.VerticalOffset <= 0)
+		{
+			return;
+		}
+
+		if (_scrollViewer.VerticalOffset < Math.Max(0, _scrollViewer.ScrollableHeight - LoadMoreHistoryScrollThreshold))
+		{
+			return;
+		}
+
+		BeginLoadMoreHistory();
+	}
+
+	private async void BeginLoadMoreHistory()
+	{
+		if (_historyEntries.Count == 0 || _isLoadingMoreHistory || !_hasMoreHistory)
+		{
+			return;
+		}
+
+		var lastEntry = _historyEntries[^1];
+		var cancellationTokenSource = new CancellationTokenSource();
+		_loadMoreHistoryCancellation = cancellationTokenSource;
+		_isLoadingMoreHistory = true;
+
+		List<ClipboardHistoryEntry> entries;
+		try
+		{
+			entries = await Task.Run(
+				() => LoadHistoryPageEntries(
+					cancellationTokenSource.Token,
+					lastEntry.CreatedAtUtcTicks,
+					lastEntry.Id,
+					HistoryPageSize),
+				cancellationTokenSource.Token);
+		}
+		catch (OperationCanceledException)
+		{
+			if (_loadMoreHistoryCancellation == cancellationTokenSource)
+			{
+				_isLoadingMoreHistory = false;
+			}
+
+			return;
+		}
+		catch (Exception ex)
+		{
+			Logger.Error(ex, "ClipboardHistoryWindow: 追加履歴の読み込みに失敗しました。");
+			if (_loadMoreHistoryCancellation == cancellationTokenSource)
+			{
+				_isLoadingMoreHistory = false;
+			}
+
+			return;
+		}
+
+		if (cancellationTokenSource.IsCancellationRequested || _loadMoreHistoryCancellation != cancellationTokenSource)
+		{
+			if (_loadMoreHistoryCancellation == cancellationTokenSource)
+			{
+				_isLoadingMoreHistory = false;
+			}
+
+			return;
+		}
+
+		_isLoadingMoreHistory = false;
+		_hasMoreHistory = entries.Count >= HistoryPageSize;
+		if (entries.Count == 0)
+		{
+			return;
+		}
+
+		_historyEntries.AddRange(entries);
+		if (!string.IsNullOrWhiteSpace(_searchBox.Text))
+		{
+			return;
+		}
+
+		if (_filterHistoryCancellation == null)
+		{
+			AddMatchedHistoryEntries(entries);
+			return;
+		}
+
 		BeginApplyHistoryFilter(delay: false);
 	}
 
@@ -856,6 +967,11 @@ internal sealed class ClipboardHistoryWindow : Window
 		if (_loadHistoryCancellation is { IsCancellationRequested: false })
 		{
 			_loadHistoryCancellation.Cancel();
+		}
+
+		if (_loadMoreHistoryCancellation is { IsCancellationRequested: false })
+		{
+			_loadMoreHistoryCancellation.Cancel();
 		}
 	}
 
@@ -1277,12 +1393,36 @@ internal sealed class ClipboardHistoryWindow : Window
 		}
 	}
 
+	private static List<ClipboardHistoryEntry> LoadHistoryPageEntries(
+		CancellationToken cancellationToken,
+		long beforeCreatedAtUtcTicks,
+		long beforeId,
+		int maxEntryCount)
+	{
+		try
+		{
+			return ClipboardDatabase.LoadHistoryPageSummaries(beforeCreatedAtUtcTicks, beforeId, maxEntryCount, cancellationToken)
+				.Select(CreateHistoryEntry)
+				.ToList();
+		}
+		catch (OperationCanceledException)
+		{
+			throw;
+		}
+		catch (Exception ex)
+		{
+			Logger.Error(ex, "ClipboardHistoryWindow: 追加履歴の読み込みに失敗しました。");
+			return new List<ClipboardHistoryEntry>();
+		}
+	}
+
 	private static ClipboardHistoryEntry CreateHistoryEntry(ClipboardHistorySummary summary)
 	{
 		return new ClipboardHistoryEntry
 		{
 			Id = summary.Id,
 			Kind = summary.Kind,
+			CreatedAtUtcTicks = summary.CreatedAtUtcTicks,
 			LastWriteTime = summary.CreatedAt,
 			PreviewText = summary.PreviewText,
 			Thumbnail = CreateThumbnail(summary.ThumbnailBytes)
@@ -1328,6 +1468,7 @@ internal sealed class ClipboardHistoryWindow : Window
 	{
 		public required long Id { get; init; }
 		public required ClipboardHistoryKind Kind { get; init; }
+		public required long CreatedAtUtcTicks { get; init; }
 		public required DateTime LastWriteTime { get; init; }
 		public required string PreviewText { get; init; }
 		public ImageSource? Thumbnail { get; init; }
