@@ -24,6 +24,7 @@ internal sealed class ClipboardHistoryWindow : Window
 	private const int SearchHistoryPageSize = 100;
 	private const int SearchResultBatchSize = 16;
 	private const double LoadMoreHistoryScrollThreshold = 48;
+	private const double MaxTerminalTextInputBoundsHeight = 120;
 	private readonly TextBox _searchBox;
 	private readonly ScrollViewer _scrollViewer;
 	private readonly StackPanel _listPanel;
@@ -44,6 +45,8 @@ internal sealed class ClipboardHistoryWindow : Window
 	private bool _allowClose;
 	private bool _suppressOutsideMouseButtonUp;
 	private bool _targetUsesTerminalInput;
+	private IntPtr _lastTerminalTargetWindow;
+	private Rect _lastTerminalAnchorBoundsDevice = Rect.Empty;
 
 	public bool IsClosed { get; private set; }
 
@@ -995,7 +998,20 @@ internal sealed class ClipboardHistoryWindow : Window
 		if (hasTextInputBounds)
 		{
 			anchorBoundsDevice = textInputBoundsDevice;
+			if (usesTerminalInput)
+			{
+				_lastTerminalTargetWindow = targetWindow;
+				_lastTerminalAnchorBoundsDevice = textInputBoundsDevice;
+			}
+
 			Logger.Debug($"ClipboardHistoryWindow: テキスト入力座標を取得しました。Source={textInputSource} TargetWindow={FormatHandle(targetWindow)} BoundsDevice={anchorBoundsDevice}");
+		}
+		else if (usesTerminalInput &&
+			_lastTerminalTargetWindow == targetWindow &&
+			IsUsableRect(_lastTerminalAnchorBoundsDevice))
+		{
+			anchorBoundsDevice = _lastTerminalAnchorBoundsDevice;
+			Logger.Debug($"ClipboardHistoryWindow: ターミナル入力座標を取得できなかったため直前の座標を使用します。TargetWindow={FormatHandle(targetWindow)} BoundsDevice={anchorBoundsDevice}");
 		}
 		else
 		{
@@ -1127,9 +1143,15 @@ internal sealed class ClipboardHistoryWindow : Window
 				Logger.Debug("ClipboardHistoryWindow: ターミナル入力要素として扱います。");
 			}
 
-			if (TryGetAutomationTextPatternBounds(focusedElement, out bounds))
+			if (TryGetAutomationTextPatternBounds(focusedElement, usesTerminalInput, out bounds))
 			{
 				return true;
+			}
+
+			if (usesTerminalInput)
+			{
+				Logger.Debug("ClipboardHistoryWindow: ターミナル入力の有効なキャレット矩形を取得できませんでした。");
+				return false;
 			}
 
 			if (TryGetAutomationElementBounds(focusedElement, out bounds))
@@ -1163,7 +1185,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		return value.IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0;
 	}
 
-	private static bool TryGetAutomationTextPatternBounds(AutomationElement element, out Rect bounds)
+	private static bool TryGetAutomationTextPatternBounds(AutomationElement element, bool usesTerminalInput, out Rect bounds)
 	{
 		bounds = Rect.Empty;
 		if (!element.TryGetCurrentPattern(TextPattern.Pattern, out object patternObject))
@@ -1177,7 +1199,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		Logger.Debug($"ClipboardHistoryWindow: UI Automation TextPattern.GetSelection を取得しました。Count={selectionRanges.Length}");
 		foreach (TextPatternRange range in selectionRanges)
 		{
-			if (TryGetTextPatternRangeBounds(range, out bounds))
+			if (TryGetTextPatternRangeBounds(range, usesTerminalInput, out bounds))
 			{
 				Logger.Debug($"ClipboardHistoryWindow: UI Automation TextPattern の選択範囲矩形を取得しました。Bounds={bounds}");
 				return true;
@@ -1202,9 +1224,9 @@ internal sealed class ClipboardHistoryWindow : Window
 		return false;
 	}
 
-	private static bool TryGetTextPatternRangeBounds(TextPatternRange range, out Rect bounds)
+	private static bool TryGetTextPatternRangeBounds(TextPatternRange range, bool usesTerminalInput, out Rect bounds)
 	{
-		if (TryGetBoundingRectangle(range, out bounds))
+		if (TryGetBoundingRectangle(range, usesTerminalInput, out bounds))
 		{
 			return true;
 		}
@@ -1213,7 +1235,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		{
 			TextPatternRange expandedRange = range.Clone();
 			expandedRange.ExpandToEnclosingUnit(textUnit);
-			if (TryGetBoundingRectangle(expandedRange, out bounds))
+			if (TryGetBoundingRectangle(expandedRange, usesTerminalInput, out bounds))
 			{
 				Logger.Debug($"ClipboardHistoryWindow: UI Automation range を {textUnit} に拡張して矩形を取得しました。Bounds={bounds}");
 				return true;
@@ -1223,19 +1245,32 @@ internal sealed class ClipboardHistoryWindow : Window
 		return false;
 	}
 
-	private static bool TryGetBoundingRectangle(TextPatternRange range, out Rect bounds)
+	private static bool TryGetBoundingRectangle(TextPatternRange range, bool usesTerminalInput, out Rect bounds)
 	{
 		bounds = Rect.Empty;
 		foreach (Rect rectangle in range.GetBoundingRectangles())
 		{
-			if (IsUsableRect(rectangle))
+			if (!IsUsableRect(rectangle))
 			{
-				bounds = rectangle;
-				return true;
+				continue;
 			}
+
+			if (usesTerminalInput && !IsUsableTerminalTextInputRect(rectangle))
+			{
+				Logger.Debug($"ClipboardHistoryWindow: ターミナル入力のキャレットとしては大きすぎる矩形を無視します。Bounds={rectangle}");
+				continue;
+			}
+
+			bounds = rectangle;
+			return true;
 		}
 
 		return false;
+	}
+
+	private static bool IsUsableTerminalTextInputRect(Rect rectangle)
+	{
+		return rectangle.Height <= MaxTerminalTextInputBoundsHeight;
 	}
 
 	private static bool IsUsableRect(Rect rectangle)
