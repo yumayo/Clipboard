@@ -10,11 +10,20 @@ internal static class NativeMethods
 	public const int WM_APP = 0x8000;
 	public const int WM_USER = 0x0400;
 	public const int WM_CONTEXTMENU = 0x007B;
+	public const int WM_LBUTTONDOWN = 0x0201;
 	public const int WM_LBUTTONUP = 0x0202;
+	public const int WM_RBUTTONDOWN = 0x0204;
 	public const int WM_RBUTTONUP = 0x0205;
+	public const int WM_MBUTTONDOWN = 0x0207;
+	public const int WM_MBUTTONUP = 0x0208;
+	public const int WM_MOUSEWHEEL = 0x020A;
+	public const int WM_XBUTTONDOWN = 0x020B;
+	public const int WM_XBUTTONUP = 0x020C;
+	public const int WM_MOUSEHWHEEL = 0x020E;
 	public const uint PM_NOREMOVE = 0x0000;
 
 	public const int WH_KEYBOARD_LL = 13;
+	public const int WH_MOUSE_LL = 14;
 	public const int LLKHF_INJECTED = 0x00000010;
 	public const int WM_KEYDOWN = 0x0100;
 	public const int WM_KEYUP = 0x0101;
@@ -40,10 +49,6 @@ internal static class NativeMethods
 	public const int INPUT_KEYBOARD = 1;
 	public const uint KEYEVENTF_KEYUP = 0x0002;
 	public const uint FLASHW_STOP = 0;
-	public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
-	public const uint EVENT_OBJECT_FOCUS = 0x8005;
-	public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
-	public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
 
 	public const uint NIM_ADD = 0x00000000;
 	public const uint NIM_DELETE = 0x00000002;
@@ -79,6 +84,16 @@ internal static class NativeMethods
 		public int ScanCode;
 		public int Flags;
 		public int Time;
+		public IntPtr DwExtraInfo;
+	}
+
+	[StructLayout(LayoutKind.Sequential)]
+	public struct MouseLlHookStruct
+	{
+		public NativePoint Pt;
+		public uint MouseData;
+		public uint Flags;
+		public uint Time;
 		public IntPtr DwExtraInfo;
 	}
 
@@ -216,15 +231,7 @@ internal static class NativeMethods
 
 	public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 
-	[UnmanagedFunctionPointer(CallingConvention.Winapi)]
-	public delegate void WinEventProc(
-		IntPtr hWinEventHook,
-		uint eventType,
-		IntPtr hwnd,
-		int idObject,
-		int idChild,
-		uint dwEventThread,
-		uint dwmsEventTime);
+	public delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
 
 	[DllImport("user32.dll", SetLastError = true)]
 	[return: MarshalAs(UnmanagedType.Bool)]
@@ -238,22 +245,11 @@ internal static class NativeMethods
 	public static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
 
 	[DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+	public static extern IntPtr SetWindowsHookEx(int idHook, LowLevelMouseProc lpfn, IntPtr hMod, uint dwThreadId);
+
+	[DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static extern bool UnhookWindowsHookEx(IntPtr hhk);
-
-	[DllImport("user32.dll", SetLastError = true)]
-	public static extern IntPtr SetWinEventHook(
-		uint eventMin,
-		uint eventMax,
-		IntPtr hmodWinEventProc,
-		WinEventProc lpfnWinEventProc,
-		uint idProcess,
-		uint idThread,
-		uint dwFlags);
-
-	[DllImport("user32.dll", SetLastError = true)]
-	[return: MarshalAs(UnmanagedType.Bool)]
-	public static extern bool UnhookWinEvent(IntPtr hWinEventHook);
 
 	[DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
 	public static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
@@ -279,6 +275,9 @@ internal static class NativeMethods
 	[DllImport("user32.dll")]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static extern bool IsWindow(IntPtr hWnd);
+
+	[DllImport("user32.dll")]
+	public static extern IntPtr WindowFromPoint(NativePoint point);
 
 	[DllImport("user32.dll")]
 	public static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
