@@ -31,6 +31,7 @@ public static class ClipboardManager
 	private const int ClipboardSetRetryCount = 20;
 	private const int ClipboardSetRetryDelayMilliseconds = 25;
 	private const int ClipboardOpenFailedErrorCode = unchecked((int)0x800401D0);
+	private const char ByteOrderMark = '\uFEFF';
 	private const string ConsoleWindowClassName = "ConsoleWindowClass";
 	private const string WindowsTerminalClassName = "CASCADIA_HOSTING_WINDOW_CLASS";
 	private static ClipboardMonitorWindow? _monitorWindow;
@@ -539,6 +540,7 @@ public static class ClipboardManager
 
 	private static void SetClipboardText(string text)
 	{
+		text = NormalizeTextForClipboardPaste(text);
 		SetClipboardWithRetry(() => System.Windows.Clipboard.SetText(text), "Text");
 	}
 
@@ -566,7 +568,7 @@ public static class ClipboardManager
 		var dataObject = new DataObject();
 		dataObject.SetData(DataFormats.Html, html);
 
-		string plainText = ConvertHtmlToPlainText(html);
+		string plainText = NormalizeTextForClipboardPaste(ConvertHtmlToPlainText(html));
 		if (!string.IsNullOrWhiteSpace(plainText))
 		{
 			dataObject.SetText(plainText);
@@ -586,7 +588,7 @@ public static class ClipboardManager
 		var dataObject = new DataObject();
 		dataObject.SetData(DataFormats.Rtf, rtf);
 
-		string plainText = ConvertRtfToPlainText(rtf);
+		string plainText = NormalizeTextForClipboardPaste(ConvertRtfToPlainText(rtf));
 		if (!string.IsNullOrWhiteSpace(plainText))
 		{
 			dataObject.SetText(plainText);
@@ -628,6 +630,22 @@ public static class ClipboardManager
 	{
 		return exception is ExternalException externalException &&
 			externalException.ErrorCode == ClipboardOpenFailedErrorCode;
+	}
+
+	private static string NormalizeTextForClipboardPaste(string text)
+	{
+		if (text.Length == 0 || text[0] != ByteOrderMark)
+		{
+			return text;
+		}
+
+		int startIndex = 0;
+		while (startIndex < text.Length && text[startIndex] == ByteOrderMark)
+		{
+			startIndex++;
+		}
+
+		return text[startIndex..];
 	}
 
 	private static void PasteToTargetWindow(IntPtr targetWindow, bool useConsolePaste)
