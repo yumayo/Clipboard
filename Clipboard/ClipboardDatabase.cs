@@ -7,7 +7,6 @@ internal sealed class ClipboardHistorySummary
 {
 	public required long Id { get; init; }
 	public required ClipboardHistoryKind Kind { get; init; }
-	public required long CreatedAtUtcTicks { get; init; }
 	public required DateTime CreatedAt { get; init; }
 	public required string PreviewText { get; init; }
 	public byte[]? ThumbnailBytes { get; init; }
@@ -75,7 +74,7 @@ internal static class ClipboardDatabase
 					source_last_write_time_utc_ticks INTEGER NULL
 				);
 				""");
-			ExecuteNonQuery(connection, transaction, "CREATE INDEX IF NOT EXISTS ix_clipboard_history_created_at ON clipboard_history (created_at_utc_ticks DESC);");
+			ExecuteNonQuery(connection, transaction, "DROP INDEX IF EXISTS ix_clipboard_history_created_at;");
 			ExecuteNonQuery(connection, transaction, "CREATE INDEX IF NOT EXISTS ix_clipboard_history_kind ON clipboard_history (kind);");
 			ExecuteNonQuery(connection, transaction, "CREATE INDEX IF NOT EXISTS ix_clipboard_history_content_hash ON clipboard_history (content_hash);");
 			ExecuteNonQuery(
@@ -197,21 +196,15 @@ internal static class ClipboardDatabase
 		int? maxEntryCount,
 		CancellationToken cancellationToken)
 	{
-		return LoadHistorySummariesCore(searchText, null, null, maxEntryCount, false, cancellationToken);
+		return LoadHistorySummariesCore(searchText, null, maxEntryCount, cancellationToken);
 	}
 
 	public static List<ClipboardHistorySummary> LoadHistoryPageSummaries(
-		long? beforeCreatedAtUtcTicks,
-		long? beforeId,
+		long beforeId,
 		int maxEntryCount,
 		CancellationToken cancellationToken)
 	{
-		if (beforeCreatedAtUtcTicks.HasValue != beforeId.HasValue)
-		{
-			throw new ArgumentException("beforeCreatedAtUtcTicks and beforeId must both be specified or both be null.");
-		}
-
-		return LoadHistorySummariesCore(null, beforeCreatedAtUtcTicks, beforeId, maxEntryCount, false, cancellationToken);
+		return LoadHistorySummariesCore(null, beforeId, maxEntryCount, cancellationToken);
 	}
 
 	public static List<ClipboardHistorySummary> LoadHistorySearchSummaries(
@@ -225,15 +218,13 @@ internal static class ClipboardDatabase
 			return new List<ClipboardHistorySummary>();
 		}
 
-		return LoadHistorySummariesCore(searchText, null, beforeId, maxEntryCount, true, cancellationToken);
+		return LoadHistorySummariesCore(searchText, beforeId, maxEntryCount, cancellationToken);
 	}
 
 	private static List<ClipboardHistorySummary> LoadHistorySummariesCore(
 		string? searchText,
-		long? beforeCreatedAtUtcTicks,
 		long? beforeId,
 		int? maxEntryCount,
-		bool orderByPrimaryKey,
 		CancellationToken cancellationToken)
 	{
 		if (maxEntryCount.HasValue && maxEntryCount.Value <= 0)
@@ -247,11 +238,7 @@ internal static class ClipboardDatabase
 		{
 			using var connection = OpenConnection();
 			using var command = connection.CreateCommand();
-			command.CommandText = CreateHistorySummariesSql(searchTerms, beforeId.HasValue, maxEntryCount.HasValue, orderByPrimaryKey);
-			if (beforeCreatedAtUtcTicks.HasValue)
-			{
-				AddParameter(command, "$before_created_at_utc_ticks", beforeCreatedAtUtcTicks.Value);
-			}
+			command.CommandText = CreateHistorySummariesSql(searchTerms, beforeId.HasValue, maxEntryCount.HasValue);
 			if (beforeId.HasValue)
 			{
 				AddParameter(command, "$before_id", beforeId.Value);
@@ -403,7 +390,6 @@ internal static class ClipboardDatabase
 		{
 			Id = reader.GetInt64(0),
 			Kind = (ClipboardHistoryKind)reader.GetInt32(1),
-			CreatedAtUtcTicks = utcTicks,
 			CreatedAt = new DateTime(utcTicks, DateTimeKind.Utc).ToLocalTime(),
 			PreviewText = reader.GetString(3),
 			ThumbnailBytes = thumbnailBytes
@@ -413,8 +399,7 @@ internal static class ClipboardDatabase
 	private static string CreateHistorySummariesSql(
 		string[] searchTerms,
 		bool hasBeforeId,
-		bool hasLimit,
-		bool orderByPrimaryKey)
+		bool hasLimit)
 	{
 		string sql =
 			"""
@@ -424,9 +409,7 @@ internal static class ClipboardDatabase
 		var whereClauses = new List<string>();
 		if (hasBeforeId)
 		{
-			whereClauses.Add(orderByPrimaryKey
-				? "id < $before_id"
-				: "(created_at_utc_ticks < $before_created_at_utc_ticks OR (created_at_utc_ticks = $before_created_at_utc_ticks AND id < $before_id))");
+			whereClauses.Add("id < $before_id");
 		}
 		if (searchTerms.Length > 0)
 		{
@@ -437,9 +420,7 @@ internal static class ClipboardDatabase
 			sql += " WHERE " + string.Join(" AND ", whereClauses);
 		}
 
-		sql += orderByPrimaryKey
-			? " ORDER BY id DESC"
-			: " ORDER BY created_at_utc_ticks DESC, id DESC";
+		sql += " ORDER BY id DESC";
 		if (hasLimit)
 		{
 			sql += " LIMIT $limit";

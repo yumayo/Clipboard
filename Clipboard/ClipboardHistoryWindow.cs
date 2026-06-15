@@ -567,7 +567,6 @@ internal sealed class ClipboardHistoryWindow : Window
 			entries = await Task.Run(
 				() => LoadHistoryPageEntries(
 					cancellationTokenSource.Token,
-					lastEntry.CreatedAtUtcTicks,
 					lastEntry.Id,
 					HistoryPageSize),
 				cancellationTokenSource.Token);
@@ -1395,13 +1394,12 @@ internal sealed class ClipboardHistoryWindow : Window
 
 	private static List<ClipboardHistoryEntry> LoadHistoryPageEntries(
 		CancellationToken cancellationToken,
-		long beforeCreatedAtUtcTicks,
 		long beforeId,
 		int maxEntryCount)
 	{
 		try
 		{
-			return ClipboardDatabase.LoadHistoryPageSummaries(beforeCreatedAtUtcTicks, beforeId, maxEntryCount, cancellationToken)
+			return ClipboardDatabase.LoadHistoryPageSummaries(beforeId, maxEntryCount, cancellationToken)
 				.Select(CreateHistoryEntry)
 				.ToList();
 		}
@@ -1422,7 +1420,6 @@ internal sealed class ClipboardHistoryWindow : Window
 		{
 			Id = summary.Id,
 			Kind = summary.Kind,
-			CreatedAtUtcTicks = summary.CreatedAtUtcTicks,
 			LastWriteTime = summary.CreatedAt,
 			PreviewText = summary.PreviewText,
 			Thumbnail = CreateThumbnail(summary.ThumbnailBytes)
@@ -1468,7 +1465,6 @@ internal sealed class ClipboardHistoryWindow : Window
 	{
 		public required long Id { get; init; }
 		public required ClipboardHistoryKind Kind { get; init; }
-		public required long CreatedAtUtcTicks { get; init; }
 		public required DateTime LastWriteTime { get; init; }
 		public required string PreviewText { get; init; }
 		public ImageSource? Thumbnail { get; init; }
