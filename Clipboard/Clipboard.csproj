@@ -14,6 +14,10 @@
         </None>
     </ItemGroup>
 
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.9" />
+    </ItemGroup>
+
     <!-- Releaseビルド時の設定 -->
     <PropertyGroup Condition="'$(Configuration)' == 'Release'">
         <DebugType>none</DebugType>

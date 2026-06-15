@@ -1,6 +1,4 @@
 using System.IO;
-using System.Text.Encodings.Web;
-using System.Text.Json;
 
 namespace Clipboard;
 
@@ -19,14 +17,23 @@ public static class ClipboardSettings
 
 	public static string BaseDirectoryPath
 	{
+		get => LegacyBaseDirectoryPath;
+	}
+
+	public static string ApplicationDirectoryPath
+	{
 		get
 		{
 			string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-			return Path.Combine(appData, "yumayo", "clipboard");
+			return Path.Combine(appData, "yumayo");
 		}
 	}
 
-	public static string SettingsFilePath => Path.Combine(BaseDirectoryPath, "settings.json");
+	public static string LegacyBaseDirectoryPath => Path.Combine(ApplicationDirectoryPath, "clipboard");
+
+	public static string SettingsFilePath => Path.Combine(LegacyBaseDirectoryPath, "settings.json");
+
+	public static string DatabaseFilePath => Path.Combine(ApplicationDirectoryPath, "clipboard.db");
 
 	public static string ConcatenationSeparator
 	{
@@ -65,19 +72,12 @@ public static class ClipboardSettings
 	{
 		lock (Sync)
 		{
-			Directory.CreateDirectory(BaseDirectoryPath);
 			_current = new ClipboardSettingsData
 			{
 				ConcatenationSeparator = NormalizeSeparator(settings.ConcatenationSeparator)
 			};
 
-			var options = new JsonSerializerOptions
-			{
-				WriteIndented = true,
-				Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-			};
-			string json = JsonSerializer.Serialize(_current, options);
-			File.WriteAllText(SettingsFilePath, json);
+			ClipboardDatabase.SaveConcatenationSeparator(_current.ConcatenationSeparator);
 			_loaded = true;
 		}
 	}
@@ -97,18 +97,14 @@ public static class ClipboardSettings
 	{
 		try
 		{
-			if (!File.Exists(SettingsFilePath))
+			return NormalizeSettings(new ClipboardSettingsData
 			{
-				return new ClipboardSettingsData();
-			}
-
-			string json = File.ReadAllText(SettingsFilePath);
-			var settings = JsonSerializer.Deserialize<ClipboardSettingsData>(json);
-			return NormalizeSettings(settings);
+				ConcatenationSeparator = ClipboardDatabase.LoadConcatenationSeparator()
+			});
 		}
 		catch (Exception ex)
 		{
-			Logger.Error(ex, "設定ファイルの読み込みに失敗しました。デフォルト設定を使用します。");
+			Logger.Error(ex, "設定の読み込みに失敗しました。デフォルト設定を使用します。");
 			return new ClipboardSettingsData();
 		}
 	}
@@ -121,7 +117,7 @@ public static class ClipboardSettings
 		};
 	}
 
-	private static string NormalizeSeparator(string? separator)
+	internal static string NormalizeSeparator(string? separator)
 	{
 		return (separator ?? DefaultConcatenationSeparator).Replace("\r\n", "\n").Replace("\r", "\n");
 	}

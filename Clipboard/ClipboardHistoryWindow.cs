@@ -1,11 +1,7 @@
 using System.Collections.Generic;
 using System.ComponentModel;
-using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Net;
-using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -21,7 +17,6 @@ namespace Clipboard;
 
 internal sealed class ClipboardHistoryWindow : Window
 {
-	private const int PreviewTextLength = 180;
 	private const int SearchFilterDelayMilliseconds = 150;
 	private const int SearchResultBatchSize = 16;
 	private readonly TextBox _searchBox;
@@ -489,8 +484,13 @@ internal sealed class ClipboardHistoryWindow : Window
 				return;
 			}
 
+			bool hasSearchText = !string.IsNullOrWhiteSpace(searchText);
+			List<ClipboardHistoryEntry> entriesToDisplay = hasSearchText
+				? await Task.Run(() => LoadHistoryEntries(cancellationToken, searchText), cancellationToken)
+				: entriesSnapshot;
+
 			int matchedEntryCount = await Task.Run(
-				() => FilterHistoryEntriesProgressivelyAsync(entriesSnapshot, searchText, cancellationTokenSource),
+				() => DisplayHistoryEntriesProgressivelyAsync(entriesToDisplay, cancellationTokenSource),
 				cancellationToken);
 
 			if (cancellationToken.IsCancellationRequested || _filterHistoryCancellation != cancellationTokenSource)
@@ -578,27 +578,17 @@ internal sealed class ClipboardHistoryWindow : Window
 		}
 	}
 
-	private async Task<int> FilterHistoryEntriesProgressivelyAsync(
+	private async Task<int> DisplayHistoryEntriesProgressivelyAsync(
 		List<ClipboardHistoryEntry> entries,
-		string searchText,
 		CancellationTokenSource cancellationTokenSource)
 	{
 		CancellationToken cancellationToken = cancellationTokenSource.Token;
 		cancellationToken.ThrowIfCancellationRequested();
-		searchText = searchText.Trim();
-		var searchTerms = string.IsNullOrWhiteSpace(searchText)
-			? new List<string>()
-			: SplitSearchTerms(searchText);
 		var matchedEntries = new List<ClipboardHistoryEntry>(SearchResultBatchSize);
 		int matchedEntryCount = 0;
 		foreach (var entry in entries)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
-			if (!EntryMatchesSearchTerms(entry, searchTerms))
-			{
-				continue;
-			}
-
 			matchedEntries.Add(entry);
 			matchedEntryCount++;
 			if (matchedEntryCount == 1 || matchedEntries.Count >= SearchResultBatchSize)
@@ -628,28 +618,10 @@ internal sealed class ClipboardHistoryWindow : Window
 		cancellationTokenSource.Token.ThrowIfCancellationRequested();
 	}
 
-	private static List<string> SplitSearchTerms(string searchText)
-	{
-		return Regex.Matches(searchText, @"\S+")
-			.Cast<Match>()
-			.Select(match => match.Value)
-			.ToList();
-	}
-
-	private static bool EntryMatchesSearchTerms(ClipboardHistoryEntry entry, List<string> searchTerms)
-	{
-		return searchTerms.Count == 0 || searchTerms.All(term => ContainsSearchTerm(entry.SearchText, term));
-	}
-
-	private static bool ContainsSearchTerm(string searchText, string term)
-	{
-		return searchText.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0;
-	}
-
 	private void PasteEntry(ClipboardHistoryEntry entry)
 	{
 		Hide();
-		ClipboardManager.PasteHistoryFile(entry.FilePath, _targetWindow);
+		ClipboardManager.PasteHistoryEntry(entry.Id, _targetWindow);
 	}
 
 	private void AddMessage(string text)
@@ -1161,25 +1133,13 @@ internal sealed class ClipboardHistoryWindow : Window
 			NativeMethods.SWP_FRAMECHANGED);
 	}
 
-	private static List<ClipboardHistoryEntry> LoadHistoryEntries(CancellationToken cancellationToken)
+	private static List<ClipboardHistoryEntry> LoadHistoryEntries(CancellationToken cancellationToken, string? searchText = null)
 	{
 		try
 		{
-			if (!Directory.Exists(ClipboardSettings.BaseDirectoryPath))
-			{
-				return new List<ClipboardHistoryEntry>();
-			}
-
-			var candidates = LoadHistoryCandidates(cancellationToken);
-
-			var entries = new List<ClipboardHistoryEntry>(candidates.Count);
-			foreach (var candidate in candidates)
-			{
-				cancellationToken.ThrowIfCancellationRequested();
-				entries.Add(CreateHistoryEntry(candidate));
-			}
-
-			return entries;
+			return ClipboardDatabase.LoadHistorySummaries(searchText, cancellationToken)
+				.Select(CreateHistoryEntry)
+				.ToList();
 		}
 		catch (OperationCanceledException)
 		{
@@ -1192,245 +1152,40 @@ internal sealed class ClipboardHistoryWindow : Window
 		}
 	}
 
-	private static List<ClipboardHistoryCandidate> LoadHistoryCandidates(CancellationToken cancellationToken)
+	private static ClipboardHistoryEntry CreateHistoryEntry(ClipboardHistorySummary summary)
 	{
-		var baseDirectory = new DirectoryInfo(ClipboardSettings.BaseDirectoryPath);
-		var candidates = new List<ClipboardHistoryCandidate>();
-
-		AddDirectoryCandidates(baseDirectory, SearchOption.TopDirectoryOnly, candidates, cancellationToken);
-
-		var datedDirectories = baseDirectory
-			.EnumerateDirectories()
-			.Select(directory => new
-			{
-				Directory = directory,
-				Date = TryGetHistoryDirectoryDate(directory.Name, out var date) ? date : (DateTime?)null
-			})
-			.Where(item => item.Date.HasValue)
-			.OrderByDescending(item => item.Date.GetValueOrDefault())
-			.ToList();
-
-		var datedDirectoryPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-		foreach (var item in datedDirectories)
-		{
-			cancellationToken.ThrowIfCancellationRequested();
-			datedDirectoryPaths.Add(item.Directory.FullName);
-			AddDirectoryCandidates(item.Directory, SearchOption.TopDirectoryOnly, candidates, cancellationToken);
-		}
-
-		var fallbackDirectories = baseDirectory
-			.EnumerateDirectories()
-			.Where(directory => !datedDirectoryPaths.Contains(directory.FullName))
-			.OrderByDescending(directory => directory.LastWriteTime);
-
-		foreach (var directory in fallbackDirectories)
-		{
-			cancellationToken.ThrowIfCancellationRequested();
-			AddDirectoryCandidates(directory, SearchOption.AllDirectories, candidates, cancellationToken);
-		}
-
-		return candidates
-			.OrderByDescending(candidate => candidate.LastWriteTime)
-			.ThenByDescending(candidate => candidate.FilePath)
-			.ToList();
-	}
-
-	private static void AddDirectoryCandidates(
-		DirectoryInfo directory,
-		SearchOption searchOption,
-		List<ClipboardHistoryCandidate> candidates,
-		CancellationToken cancellationToken)
-	{
-		foreach (var fileInfo in directory.EnumerateFiles("*.*", searchOption))
-		{
-			cancellationToken.ThrowIfCancellationRequested();
-			var candidate = CreateHistoryCandidate(fileInfo, cancellationToken);
-			if (candidate != null)
-			{
-				candidates.Add(candidate);
-			}
-		}
-	}
-
-	private static bool TryGetHistoryDirectoryDate(string directoryName, out DateTime date)
-	{
-		return DateTime.TryParseExact(
-			directoryName,
-			"yyyyMMdd",
-			CultureInfo.InvariantCulture,
-			DateTimeStyles.None,
-			out date);
-	}
-
-	private static ClipboardHistoryEntry CreateHistoryEntry(ClipboardHistoryCandidate candidate)
-	{
-		string previewText;
-		string searchableContent = string.Empty;
-		ImageSource? thumbnail = null;
-
-		if (candidate.Kind == ClipboardHistoryKind.Image)
-		{
-			(previewText, thumbnail) = CreateImagePreview(candidate.FilePath);
-		}
-		else
-		{
-			searchableContent = CreateSearchableText(candidate.FilePath, candidate.Kind);
-			previewText = CreatePreviewText(searchableContent, candidate.FilePath);
-		}
-
 		return new ClipboardHistoryEntry
 		{
-			FilePath = candidate.FilePath,
-			Kind = candidate.Kind,
-			LastWriteTime = candidate.LastWriteTime,
-			PreviewText = previewText,
-			SearchText = CreateEntrySearchText(candidate, previewText, searchableContent),
-			Thumbnail = thumbnail
+			Id = summary.Id,
+			Kind = summary.Kind,
+			LastWriteTime = summary.CreatedAt,
+			PreviewText = summary.PreviewText,
+			Thumbnail = CreateThumbnail(summary.ThumbnailBytes)
 		};
 	}
 
-	private static ClipboardHistoryCandidate? CreateHistoryCandidate(FileInfo fileInfo, CancellationToken cancellationToken)
+	private static ImageSource? CreateThumbnail(byte[]? bytes)
 	{
-		cancellationToken.ThrowIfCancellationRequested();
-
-		string extension = fileInfo.Extension.ToLowerInvariant();
-		ClipboardHistoryKind kind = extension switch
-		{
-			".png" => ClipboardHistoryKind.Image,
-			".html" => ClipboardHistoryKind.Html,
-			".rtf" => ClipboardHistoryKind.Rtf,
-			".txt" => ClipboardHistoryKind.Text,
-			_ => ClipboardHistoryKind.Unknown
-		};
-
-		if (kind == ClipboardHistoryKind.Unknown)
+		if (bytes == null || bytes.Length == 0)
 		{
 			return null;
 		}
 
-		return new ClipboardHistoryCandidate
-		{
-			FilePath = fileInfo.FullName,
-			Kind = kind,
-			LastWriteTime = fileInfo.LastWriteTime
-		};
-	}
-
-	private static string CreateSearchableText(string filePath, ClipboardHistoryKind kind)
-	{
 		try
 		{
-			string text = ReadAllText(filePath);
-			if (kind == ClipboardHistoryKind.Html)
-			{
-				text = ConvertHtmlToPlainText(text);
-			}
-			else if (kind == ClipboardHistoryKind.Rtf)
-			{
-				text = ConvertRtfToPlainText(text);
-			}
-
-			return NormalizePreviewText(text);
+			using var stream = new MemoryStream(bytes);
+			var thumbnail = new BitmapImage();
+			thumbnail.BeginInit();
+			thumbnail.CacheOption = BitmapCacheOption.OnLoad;
+			thumbnail.StreamSource = stream;
+			thumbnail.EndInit();
+			thumbnail.Freeze();
+			return thumbnail;
 		}
 		catch
 		{
-			return string.Empty;
+			return null;
 		}
-	}
-
-	private static string CreatePreviewText(string text, string filePath)
-	{
-		if (text.Length > PreviewTextLength)
-		{
-			text = text[..PreviewTextLength] + "...";
-		}
-
-		return string.IsNullOrWhiteSpace(text) ? Path.GetFileName(filePath) : text;
-	}
-
-	private static string ReadAllText(string filePath)
-	{
-		using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-		using var reader = new StreamReader(stream, Encoding.UTF8, true);
-		return reader.ReadToEnd();
-	}
-
-	private static string CreateEntrySearchText(
-		ClipboardHistoryCandidate candidate,
-		string previewText,
-		string searchableContent)
-	{
-		return string.Join(
-			"\n",
-			new[]
-			{
-				Path.GetFileName(candidate.FilePath),
-				candidate.FilePath,
-				candidate.LastWriteTime.ToString("yyyy/MM/dd HH:mm:ss", CultureInfo.InvariantCulture),
-				candidate.Kind.ToString(),
-				previewText,
-				searchableContent
-			}.Where(text => !string.IsNullOrWhiteSpace(text)));
-	}
-
-	private static string NormalizePreviewText(string text)
-	{
-		return Regex.Replace(text, @"\s+", " ").Trim();
-	}
-
-	private static string ConvertHtmlToPlainText(string html)
-	{
-		string fragment = html;
-		const string startMarker = "<!--StartFragment-->";
-		const string endMarker = "<!--EndFragment-->";
-		int start = html.IndexOf(startMarker, StringComparison.OrdinalIgnoreCase);
-		int end = html.IndexOf(endMarker, StringComparison.OrdinalIgnoreCase);
-		if (start >= 0 && end > start)
-		{
-			start += startMarker.Length;
-			fragment = html[start..end];
-		}
-
-		string noTags = Regex.Replace(fragment, "<[^>]+>", " ");
-		return WebUtility.HtmlDecode(noTags);
-	}
-
-	private static string ConvertRtfToPlainText(string rtf)
-	{
-		string text = Regex.Replace(rtf, @"\\'[0-9a-fA-F]{2}", " ");
-		text = Regex.Replace(text, @"\\[a-zA-Z]+\d* ?", " ");
-		text = text.Replace(@"\par", " ");
-		text = text.Replace(@"\tab", " ");
-		text = Regex.Replace(text, @"[{}]", " ");
-		return text;
-	}
-
-	private static (string PreviewText, ImageSource? Thumbnail) CreateImagePreview(string filePath)
-	{
-		try
-		{
-			using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-			BitmapDecoder decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
-			BitmapFrame frame = decoder.Frames[0];
-			ImageSource thumbnail = CreateThumbnail(filePath);
-			return ($"{Path.GetFileName(filePath)} / {frame.PixelWidth} x {frame.PixelHeight}", thumbnail);
-		}
-		catch
-		{
-			return (Path.GetFileName(filePath), null);
-		}
-	}
-
-	private static ImageSource CreateThumbnail(string filePath)
-	{
-		var thumbnail = new BitmapImage();
-		thumbnail.BeginInit();
-		thumbnail.CacheOption = BitmapCacheOption.OnLoad;
-		thumbnail.DecodePixelWidth = 86;
-		thumbnail.UriSource = new Uri(filePath);
-		thumbnail.EndInit();
-		thumbnail.Freeze();
-		return thumbnail;
 	}
 
 	private static BitmapFrame? LoadIcon()
@@ -1444,30 +1199,13 @@ internal sealed class ClipboardHistoryWindow : Window
 		return File.Exists(path) ? BitmapFrame.Create(new Uri(path)) : null;
 	}
 
-	private sealed class ClipboardHistoryCandidate
-	{
-		public required string FilePath { get; init; }
-		public required ClipboardHistoryKind Kind { get; init; }
-		public required DateTime LastWriteTime { get; init; }
-	}
-
 	private sealed class ClipboardHistoryEntry
 	{
-		public required string FilePath { get; init; }
+		public required long Id { get; init; }
 		public required ClipboardHistoryKind Kind { get; init; }
 		public required DateTime LastWriteTime { get; init; }
 		public required string PreviewText { get; init; }
-		public required string SearchText { get; init; }
 		public ImageSource? Thumbnail { get; init; }
-	}
-
-	private enum ClipboardHistoryKind
-	{
-		Image,
-		Html,
-		Rtf,
-		Text,
-		Unknown
 	}
 
 	private sealed class HistoryItemControl : Border

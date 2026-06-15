@@ -1,5 +1,6 @@
 # 説明
-Clipboard.exeはクリップボードの変更通知を受けて、%APPDATA%\yumayo\yyyyMMdd\0001.txtに記録していく常駐アプリケーションです。
+Clipboard.exeはクリップボードの変更通知を受けて、%APPDATA%\yumayo\clipboard.dbに履歴を記録していく常駐アプリケーションです。
+旧バージョンの%APPDATA%\yumayo\clipboard配下の履歴とsettings.jsonは、起動時にSQLiteへ移行されます。
 Ctrlを押し続けてコピーする場合、上書きではなく文字列を連結してクリップボードに保存されます。
 
 # 使い方

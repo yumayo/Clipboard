@@ -16,7 +16,6 @@ internal static class Program
 	private static void Main()
 	{
 		Logger.Setup();
-		ClipboardSettings.Load();
 
 		var application = new Application
 		{
@@ -25,6 +24,14 @@ internal static class Program
 
 		try
 		{
+			ClipboardDatabase.Initialize();
+			if (!MigrationProgressWindow.RunIfNeeded())
+			{
+				Logger.Warning("Program: 旧データの移行が完了しないまま起動を継続します。");
+			}
+
+			ClipboardSettings.Load();
+
 			_notifyIcon = new WpfNotifyIcon();
 			_notifyIcon.HistoryRequested += (_, _) => ClipboardManager.ShowHistoryWindow();
 			_notifyIcon.OpenSaveDirectoryRequested += (_, _) => OpenSaveDirectory();

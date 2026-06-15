@@ -81,8 +81,7 @@ public static class ClipboardManager
 
 	public static string GetSaveDirectoryPath()
 	{
-		string dateFolder = DateTime.Now.ToString("yyyyMMdd");
-		return Path.Combine(ClipboardSettings.BaseDirectoryPath, dateFolder);
+		return ClipboardSettings.ApplicationDirectoryPath;
 	}
 
 	public static void ShowHistoryWindow()
@@ -90,23 +89,24 @@ public static class ClipboardManager
 		ShowHistoryFromHotKey();
 	}
 
-	public static bool PasteHistoryFile(string filePath, IntPtr targetWindow)
+	public static bool PasteHistoryEntry(long historyId, IntPtr targetWindow)
 	{
 		try
 		{
-			if (!File.Exists(filePath))
+			ClipboardStoredContent? content = ClipboardDatabase.LoadContent(historyId);
+			if (content == null)
 			{
-				Logger.Warning($"ClipboardManager: 履歴ファイルが見つかりません: {filePath}");
+				Logger.Warning($"ClipboardManager: 履歴が見つかりません: Id={historyId}");
 				return false;
 			}
 
-			RestoreClipboardFromFile(filePath);
+			RestoreClipboardFromContent(content);
 			PasteToTargetWindow(targetWindow);
 			return true;
 		}
 		catch (Exception ex)
 		{
-			Logger.Error(ex, $"ClipboardManager: 履歴の貼り付けに失敗しました: {filePath}");
+			Logger.Error(ex, $"ClipboardManager: 履歴の貼り付けに失敗しました: Id={historyId}");
 			MessageBox.Show("履歴の貼り付けに失敗しました。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
 			return false;
 		}
@@ -323,7 +323,7 @@ public static class ClipboardManager
 		return NativeMethods.CallNextHookEx(_hookID, nCode, wParam, lParam);
 	}
 
-	public static void SaveClipboardToFile()
+	public static void SaveClipboardToDatabase()
 	{
 		try
 		{
@@ -368,14 +368,7 @@ public static class ClipboardManager
 				}
 			}
 
-			string directoryPath = GetSaveDirectoryPath();
-			if (!Directory.Exists(directoryPath))
-			{
-				Directory.CreateDirectory(directoryPath);
-				Logger.Debug($"ClipboardManager: 出力先ディレクトリを作成しました: {directoryPath}");
-			}
-
-			var (bytes, extension) = GetClipboardContentAsBytesWithExtension();
+			var (bytes, kind) = GetClipboardContentAsBytes();
 			string currentContent = CalculateHash(bytes);
 			if (currentContent == _lastSavedContent)
 			{
@@ -383,11 +376,10 @@ public static class ClipboardManager
 				return;
 			}
 
-			if (bytes.Length > 0 && !string.IsNullOrEmpty(extension))
+			if (bytes.Length > 0 && kind != ClipboardHistoryKind.Unknown)
 			{
-				string filePath = GetNextFilePath(directoryPath, extension);
-				File.WriteAllBytes(filePath, bytes);
-				Logger.Info($"ClipboardManager: クリップボードの内容を保存しました: {filePath}");
+				ClipboardDatabase.InsertHistory(kind, bytes, currentContent, DateTime.Now);
+				Logger.Info($"ClipboardManager: クリップボードの内容をDBに保存しました。Kind={kind} Size={bytes.Length}");
 				_lastSavedContent = currentContent;
 			}
 		}
@@ -426,7 +418,7 @@ public static class ClipboardManager
 		return ClipboardDataType.Unknown;
 	}
 
-	private static (byte[] bytes, string extension) GetClipboardContentAsBytesWithExtension()
+	private static (byte[] bytes, ClipboardHistoryKind kind) GetClipboardContentAsBytes()
 	{
 		ClipboardDataType dataType = GetClipboardDataType();
 
@@ -440,61 +432,35 @@ public static class ClipboardManager
 					var encoder = new PngBitmapEncoder();
 					encoder.Frames.Add(BitmapFrame.Create(image));
 					encoder.Save(ms);
-					return (ms.ToArray(), ".png");
+					return (ms.ToArray(), ClipboardHistoryKind.Image);
 				}
 				break;
 
 			case ClipboardDataType.Html:
 				if (GetClipboardStringData(DataFormats.Html) is { } htmlData)
 				{
-					return (Encoding.UTF8.GetBytes(htmlData), ".html");
+					return (Encoding.UTF8.GetBytes(htmlData), ClipboardHistoryKind.Html);
 				}
 				break;
 
 			case ClipboardDataType.Rtf:
 				if (GetClipboardStringData(DataFormats.Rtf) is { } rtfData)
 				{
-					return (Encoding.UTF8.GetBytes(rtfData), ".rtf");
+					return (Encoding.UTF8.GetBytes(rtfData), ClipboardHistoryKind.Rtf);
 				}
 				break;
 
 			case ClipboardDataType.Text:
 				string text = System.Windows.Clipboard.GetText();
-				return (Encoding.UTF8.GetBytes(text), ".txt");
+				return (Encoding.UTF8.GetBytes(text), ClipboardHistoryKind.Text);
 		}
 
-		return (Array.Empty<byte>(), "");
+		return (Array.Empty<byte>(), ClipboardHistoryKind.Unknown);
 	}
 
 	private static string? GetClipboardStringData(string format)
 	{
 		return System.Windows.Clipboard.GetData(format) as string;
-	}
-
-	private static string GetNextFilePath(string directoryPath, string extension)
-	{
-		if (!extension.StartsWith("."))
-		{
-			extension = "." + extension;
-		}
-
-		int maxNumber = 0;
-		if (Directory.Exists(directoryPath))
-		{
-			var files = Directory.GetFiles(directoryPath);
-			foreach (var file in files)
-			{
-				string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(file);
-				if (int.TryParse(fileNameWithoutExtension, out int number) && number > maxNumber)
-				{
-					maxNumber = number;
-				}
-			}
-		}
-
-		int nextNumber = maxNumber + 1;
-		string fileName = $"{nextNumber:D4}{extension}";
-		return Path.Combine(directoryPath, fileName);
 	}
 
 	private static void ShowHistoryFromHotKey()
@@ -541,25 +507,24 @@ public static class ClipboardManager
 		}
 	}
 
-	private static void RestoreClipboardFromFile(string filePath)
+	private static void RestoreClipboardFromContent(ClipboardStoredContent content)
 	{
-		string extension = Path.GetExtension(filePath).ToLowerInvariant();
-		switch (extension)
+		switch (content.Kind)
 		{
-			case ".png":
-				SetClipboardImage(filePath);
+			case ClipboardHistoryKind.Image:
+				SetClipboardImage(content.Bytes);
 				break;
 
-			case ".html":
-				SetClipboardHtml(File.ReadAllText(filePath, Encoding.UTF8));
+			case ClipboardHistoryKind.Html:
+				SetClipboardHtml(Encoding.UTF8.GetString(content.Bytes));
 				break;
 
-			case ".rtf":
-				SetClipboardRtf(File.ReadAllText(filePath, Encoding.UTF8));
+			case ClipboardHistoryKind.Rtf:
+				SetClipboardRtf(Encoding.UTF8.GetString(content.Bytes));
 				break;
 
 			default:
-				SetClipboardText(File.ReadAllText(filePath, Encoding.UTF8));
+				SetClipboardText(Encoding.UTF8.GetString(content.Bytes));
 				break;
 		}
 	}
@@ -570,12 +535,13 @@ public static class ClipboardManager
 		System.Windows.Clipboard.SetText(text);
 	}
 
-	private static void SetClipboardImage(string filePath)
+	private static void SetClipboardImage(byte[] bytes)
 	{
+		using var stream = new MemoryStream(bytes);
 		var bitmap = new BitmapImage();
 		bitmap.BeginInit();
 		bitmap.CacheOption = BitmapCacheOption.OnLoad;
-		bitmap.UriSource = new Uri(filePath);
+		bitmap.StreamSource = stream;
 		bitmap.EndInit();
 		bitmap.Freeze();
 
@@ -907,7 +873,7 @@ public static class ClipboardManager
 
 			if (msg == NativeMethods.WM_CLIPBOARDUPDATE)
 			{
-				SaveClipboardToFile();
+				SaveClipboardToDatabase();
 			}
 
 			return IntPtr.Zero;
