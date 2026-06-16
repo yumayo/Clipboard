@@ -6,7 +6,13 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <UseWPF>true</UseWPF>
+        <UseWindowsForms>true</UseWindowsForms>
     </PropertyGroup>
+
+    <ItemGroup>
+        <Using Remove="System.Drawing" />
+        <Using Remove="System.Windows.Forms" />
+    </ItemGroup>
 
     <ItemGroup>
         <None Update="Clipboard.ico">

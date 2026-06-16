@@ -1,26 +1,27 @@
 using System.Diagnostics;
+using System.Drawing;
 using System.IO;
-using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
-using System.Windows.Interop;
+using WinForms = System.Windows.Forms;
 
 namespace Clipboard;
 
 internal static class Program
 {
-	private static WpfNotifyIcon? _notifyIcon;
+	private static TrayNotifyIcon? _notifyIcon;
 
 	[STAThread]
 	private static void Main()
 	{
 		Logger.Setup();
+		WinForms.Application.EnableVisualStyles();
 
 		var application = new Application
 		{
 			ShutdownMode = ShutdownMode.OnExplicitShutdown
 		};
+		RegisterUnhandledExceptionLogging(application);
 
 		try
 		{
@@ -32,7 +33,7 @@ internal static class Program
 
 			ClipboardSettings.Load();
 
-			_notifyIcon = new WpfNotifyIcon();
+			_notifyIcon = new TrayNotifyIcon();
 			_notifyIcon.HistoryRequested += (_, _) => ClipboardManager.ShowHistoryWindow();
 			_notifyIcon.OpenSaveDirectoryRequested += (_, _) => OpenSaveDirectory();
 			_notifyIcon.SettingsRequested += (_, _) => OpenSettings();
@@ -42,6 +43,11 @@ internal static class Program
 			ClipboardManager.Start();
 			application.Run();
 		}
+		catch (Exception ex)
+		{
+			Logger.Error(ex, "Program: アプリケーションで致命的な例外が発生しました。");
+			MessageBox.Show("アプリケーションでエラーが発生しました。ログを確認してください。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
+		}
 		finally
 		{
 			ClipboardManager.Stop();
@@ -50,6 +56,34 @@ internal static class Program
 			Logger.Debug("Clipboardを終了しました。");
 			Logger.Close();
 		}
+	}
+
+	private static void RegisterUnhandledExceptionLogging(Application application)
+	{
+		application.DispatcherUnhandledException += (_, e) =>
+		{
+			Logger.Error(e.Exception, "Program: UIスレッドで未処理例外が発生しました。");
+			MessageBox.Show("処理中にエラーが発生しました。ログを確認してください。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
+			e.Handled = true;
+		};
+
+		AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+		{
+			if (e.ExceptionObject is Exception ex)
+			{
+				Logger.Error(ex, $"Program: 未処理例外が発生しました。IsTerminating={e.IsTerminating}");
+			}
+			else
+			{
+				Logger.Error(null, $"Program: 未処理例外が発生しました。IsTerminating={e.IsTerminating} ExceptionObject={e.ExceptionObject}");
+			}
+		};
+
+		TaskScheduler.UnobservedTaskException += (_, e) =>
+		{
+			Logger.Error(e.Exception, "Program: タスクで未監視の例外が発生しました。");
+			e.SetObserved();
+		};
 	}
 
 	private static void OpenSettings()
@@ -88,14 +122,11 @@ internal static class Program
 	}
 }
 
-internal sealed class WpfNotifyIcon : IDisposable
+internal sealed class TrayNotifyIcon : IDisposable
 {
-	private const uint NotifyIconId = 1;
-	private const int CallbackMessage = NativeMethods.WM_APP + 1;
-	private readonly HwndSource _source;
-	private readonly ContextMenu _contextMenu;
-	private NativeMethods.NotifyIconData _notifyIconData;
-	private IntPtr _iconHandle;
+	private readonly WinForms.NotifyIcon _notifyIcon;
+	private readonly WinForms.ContextMenuStrip _contextMenu;
+	private readonly Icon _icon;
 	private bool _isDisposed;
 
 	public event EventHandler? HistoryRequested;
@@ -103,19 +134,17 @@ internal sealed class WpfNotifyIcon : IDisposable
 	public event EventHandler? SettingsRequested;
 	public event EventHandler? ExitRequested;
 
-	public WpfNotifyIcon()
+	public TrayNotifyIcon()
 	{
-		var parameters = new HwndSourceParameters("Clipboard Notify Icon")
-		{
-			Width = 0,
-			Height = 0,
-			WindowStyle = 0
-		};
-		_source = new HwndSource(parameters);
-		_source.AddHook(WndProc);
-
+		_icon = LoadIcon();
 		_contextMenu = CreateContextMenu();
-		AddNotifyIcon();
+		_notifyIcon = new WinForms.NotifyIcon
+		{
+			Text = "クリップボード",
+			Icon = _icon,
+			ContextMenuStrip = _contextMenu,
+			Visible = true
+		};
 	}
 
 	public void Dispose()
@@ -126,127 +155,56 @@ internal sealed class WpfNotifyIcon : IDisposable
 		}
 
 		_isDisposed = true;
-		_contextMenu.IsOpen = false;
-		NativeMethods.Shell_NotifyIcon(NativeMethods.NIM_DELETE, ref _notifyIconData);
-		if (_iconHandle != IntPtr.Zero)
-		{
-			NativeMethods.DestroyIcon(_iconHandle);
-			_iconHandle = IntPtr.Zero;
-		}
-
-		_source.RemoveHook(WndProc);
-		_source.Dispose();
+		_notifyIcon.Visible = false;
+		_notifyIcon.ContextMenuStrip = null;
+		_contextMenu.Close();
+		_contextMenu.Dispose();
+		_notifyIcon.Dispose();
+		_icon.Dispose();
 	}
 
-	private ContextMenu CreateContextMenu()
+	private WinForms.ContextMenuStrip CreateContextMenu()
 	{
-		var menu = new ContextMenu
-		{
-			Placement = PlacementMode.MousePoint
-		};
+		var menu = new WinForms.ContextMenuStrip();
 
-		var historyItem = new MenuItem { Header = "履歴を開く" };
-		historyItem.Click += (_, _) => HistoryRequested?.Invoke(this, EventArgs.Empty);
-		menu.Items.Add(historyItem);
-
-		var saveDirectoryItem = new MenuItem { Header = "保存先を開く" };
-		saveDirectoryItem.Click += (_, _) => OpenSaveDirectoryRequested?.Invoke(this, EventArgs.Empty);
-		menu.Items.Add(saveDirectoryItem);
-
-		var settingsItem = new MenuItem { Header = "設定" };
-		settingsItem.Click += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
-		menu.Items.Add(settingsItem);
-
-		menu.Items.Add(new Separator());
-
-		var exitItem = new MenuItem { Header = "終了" };
-		exitItem.Click += (_, _) => ExitRequested?.Invoke(this, EventArgs.Empty);
-		menu.Items.Add(exitItem);
+		menu.Items.Add("履歴を開く", null, (_, _) => InvokeMenuAction("履歴を開く", HistoryRequested));
+		menu.Items.Add("保存先を開く", null, (_, _) => InvokeMenuAction("保存先を開く", OpenSaveDirectoryRequested));
+		menu.Items.Add("設定", null, (_, _) => InvokeMenuAction("設定", SettingsRequested));
+		menu.Items.Add(new WinForms.ToolStripSeparator());
+		menu.Items.Add("終了", null, (_, _) => InvokeMenuAction("終了", ExitRequested));
 
 		return menu;
 	}
 
-	private void AddNotifyIcon()
+	private void InvokeMenuAction(string actionName, EventHandler? handler)
+	{
+		try
+		{
+			handler?.Invoke(this, EventArgs.Empty);
+		}
+		catch (Exception ex)
+		{
+			Logger.Error(ex, $"Program: タスクトレイメニューの処理に失敗しました。Action={actionName}");
+			MessageBox.Show($"{actionName} の処理に失敗しました。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
+		}
+	}
+
+	private static Icon LoadIcon()
 	{
 		string iconPath = ResolveIconPath();
 		if (!string.IsNullOrEmpty(iconPath))
 		{
-			_iconHandle = NativeMethods.LoadImage(
-				IntPtr.Zero,
-				iconPath,
-				NativeMethods.IMAGE_ICON,
-				0,
-				0,
-				NativeMethods.LR_LOADFROMFILE | NativeMethods.LR_DEFAULTSIZE);
-		}
-
-		_notifyIconData = CreateNotifyIconData();
-		if (!NativeMethods.Shell_NotifyIcon(NativeMethods.NIM_ADD, ref _notifyIconData))
-		{
-			Logger.Warning($"Program: 通知領域アイコンの追加に失敗しました。Win32Error={Marshal.GetLastWin32Error()}");
-			return;
-		}
-
-		_notifyIconData.UTimeoutOrVersion = NativeMethods.NOTIFYICON_VERSION_4;
-		NativeMethods.Shell_NotifyIcon(NativeMethods.NIM_SETVERSION, ref _notifyIconData);
-	}
-
-	private NativeMethods.NotifyIconData CreateNotifyIconData()
-	{
-		return new NativeMethods.NotifyIconData
-		{
-			CbSize = (uint)Marshal.SizeOf<NativeMethods.NotifyIconData>(),
-			HWnd = _source.Handle,
-			UID = NotifyIconId,
-			UFlags = NativeMethods.NIF_MESSAGE | NativeMethods.NIF_TIP | (_iconHandle == IntPtr.Zero ? 0 : NativeMethods.NIF_ICON),
-			UCallbackMessage = CallbackMessage,
-			HIcon = _iconHandle,
-			SzTip = "クリップボード",
-			SzInfo = string.Empty,
-			SzInfoTitle = string.Empty
-		};
-	}
-
-	private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
-	{
-		if (msg == CallbackMessage)
-		{
-			int notifyEvent = GetLowWord(lParam);
-			int iconId = GetHighWord(lParam);
-			if ((iconId == 0 || iconId == (int)NotifyIconId) &&
-				notifyEvent is NativeMethods.WM_LBUTTONUP or
-					NativeMethods.WM_RBUTTONUP or
-					NativeMethods.WM_CONTEXTMENU or
-					NativeMethods.NIN_SELECT or
-					NativeMethods.NIN_KEYSELECT)
+			try
 			{
-				ShowContextMenu();
-				handled = true;
+				return new Icon(iconPath);
+			}
+			catch (Exception ex)
+			{
+				Logger.Error(ex, $"Program: アイコンファイルを読み込めませんでした。Path={iconPath}");
 			}
 		}
 
-		return IntPtr.Zero;
-	}
-
-	private void ShowContextMenu()
-	{
-		if (_contextMenu.IsOpen)
-		{
-			_contextMenu.IsOpen = false;
-		}
-
-		NativeMethods.SetForegroundWindow(_source.Handle);
-		_contextMenu.IsOpen = true;
-	}
-
-	private static int GetLowWord(IntPtr value)
-	{
-		return unchecked((int)((long)value & 0xFFFF));
-	}
-
-	private static int GetHighWord(IntPtr value)
-	{
-		return unchecked((int)(((long)value >> 16) & 0xFFFF));
+		return (Icon)SystemIcons.Application.Clone();
 	}
 
 	private static string ResolveIconPath()
