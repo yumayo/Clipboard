@@ -156,7 +156,7 @@ internal sealed class ClipboardHistoryWindow : Window
 	public void ShowHistory(IntPtr targetWindow)
 	{
 		_targetWindow = targetWindow;
-		MoveNearTextInput(targetWindow);
+		bool positionedFromTextInput = MoveNearTextInput(targetWindow);
 		if (!IsVisible && _searchBox.Text.Length > 0)
 		{
 			_searchBox.Clear();
@@ -164,6 +164,11 @@ internal sealed class ClipboardHistoryWindow : Window
 
 		Topmost = true;
 		Show();
+		if (!positionedFromTextInput)
+		{
+			MoveNearTextInput(targetWindow, allowMouseFallback: false);
+		}
+
 		SelectFirstHistoryItem();
 		Topmost = false;
 		StopWindowFlash();
@@ -986,7 +991,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		}
 	}
 
-	private void MoveNearTextInput(IntPtr targetWindow)
+	private bool MoveNearTextInput(IntPtr targetWindow, bool allowMouseFallback = true)
 	{
 		bool hasTextInputBounds = TryGetTextInputBounds(
 			targetWindow,
@@ -995,6 +1000,7 @@ internal sealed class ClipboardHistoryWindow : Window
 			out bool usesTerminalInput);
 		_targetUsesTerminalInput = usesTerminalInput;
 		Rect anchorBoundsDevice;
+		bool positionedFromTextInput = true;
 		if (hasTextInputBounds)
 		{
 			anchorBoundsDevice = textInputBoundsDevice;
@@ -1015,8 +1021,14 @@ internal sealed class ClipboardHistoryWindow : Window
 		}
 		else
 		{
+			if (!allowMouseFallback)
+			{
+				return false;
+			}
+
 			Point cursorPoint = GetCursorPoint();
 			anchorBoundsDevice = new Rect(cursorPoint, new Size(0, 0));
+			positionedFromTextInput = false;
 			Logger.Debug($"ClipboardHistoryWindow: テキスト入力座標を取得できなかったためマウス座標にフォールバックします。TargetWindow={FormatHandle(targetWindow)} Cursor={cursorPoint}");
 		}
 
@@ -1040,6 +1052,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		Left = x;
 		Top = y;
 		Logger.Debug($"ClipboardHistoryWindow: 履歴画面の表示位置を決定しました。AnchorDevice={anchorBoundsDevice} Anchor={anchorBounds} WorkingArea={workingArea} Location=({Left},{Top}) Size=({windowWidth},{windowHeight})");
+		return positionedFromTextInput;
 	}
 
 	private static bool TryGetTextInputBounds(IntPtr targetWindow, out Rect bounds, out string source, out bool usesTerminalInput)
@@ -1143,7 +1156,9 @@ internal sealed class ClipboardHistoryWindow : Window
 				Logger.Debug("ClipboardHistoryWindow: ターミナル入力要素として扱います。");
 			}
 
-			if (TryGetAutomationTextPatternBounds(focusedElement, usesTerminalInput, out bounds))
+			bool isTextInputElement = IsTextInputAutomationElement(focusedElement);
+			if ((usesTerminalInput || isTextInputElement) &&
+				TryGetAutomationTextPatternBounds(focusedElement, usesTerminalInput, out bounds))
 			{
 				return true;
 			}
@@ -1151,6 +1166,12 @@ internal sealed class ClipboardHistoryWindow : Window
 			if (usesTerminalInput)
 			{
 				Logger.Debug("ClipboardHistoryWindow: ターミナル入力の有効なキャレット矩形を取得できませんでした。");
+				return false;
+			}
+
+			if (!isTextInputElement)
+			{
+				Logger.Debug("ClipboardHistoryWindow: UI Automation focused element はテキスト入力ではないため、要素全体の矩形は使用しません。");
 				return false;
 			}
 
@@ -1169,6 +1190,13 @@ internal sealed class ClipboardHistoryWindow : Window
 			Logger.Error(ex, "ClipboardHistoryWindow: UI Automation テキスト入力座標の取得中に例外が発生しました。");
 			return false;
 		}
+	}
+
+	private static bool IsTextInputAutomationElement(AutomationElement element)
+	{
+		ControlType controlType = element.Current.ControlType;
+		return Equals(controlType, ControlType.Edit) ||
+			Equals(controlType, ControlType.ComboBox);
 	}
 
 	private static bool IsTerminalAutomationElement(AutomationElement element)
