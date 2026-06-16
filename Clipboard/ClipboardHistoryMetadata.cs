@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.IO;
-using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Media;
@@ -11,8 +10,11 @@ namespace Clipboard;
 internal sealed class ClipboardHistoryMetadata
 {
 	private const int PreviewTextLength = 180;
-	private const int ThumbnailWidth = 86;
-	private const int ThumbnailHeight = 66;
+	internal const int ThumbnailLogicalWidth = 144;
+	internal const int ThumbnailLogicalHeight = 108;
+	internal const int ThumbnailPixelScale = 3;
+	internal const int ThumbnailPixelWidth = ThumbnailLogicalWidth * ThumbnailPixelScale;
+	internal const int ThumbnailPixelHeight = ThumbnailLogicalHeight * ThumbnailPixelScale;
 
 	public required string PreviewText { get; init; }
 	public required string SearchText { get; init; }
@@ -76,7 +78,7 @@ internal sealed class ClipboardHistoryMetadata
 		string text = Encoding.UTF8.GetString(content);
 		if (kind == ClipboardHistoryKind.Html)
 		{
-			text = ConvertHtmlToPlainText(text);
+			text = ClipboardHtmlTextConverter.ConvertToPlainText(text);
 		}
 		else if (kind == ClipboardHistoryKind.Rtf)
 		{
@@ -86,7 +88,22 @@ internal sealed class ClipboardHistoryMetadata
 		return NormalizePreviewText(text);
 	}
 
-	private static string CreatePreviewText(string text, string? displayName)
+	public static string CreateDisplayText(byte[] content, ClipboardHistoryKind kind)
+	{
+		string text = Encoding.UTF8.GetString(content);
+		if (kind == ClipboardHistoryKind.Html)
+		{
+			text = ClipboardHtmlTextConverter.ConvertToPlainText(text);
+		}
+		else if (kind == ClipboardHistoryKind.Rtf)
+		{
+			text = ConvertRtfToMultilinePlainText(text);
+		}
+
+		return NormalizeDisplayText(text);
+	}
+
+	public static string CreatePreviewText(string text, string? displayName = null)
 	{
 		if (text.Length > PreviewTextLength)
 		{
@@ -141,7 +158,7 @@ internal sealed class ClipboardHistoryMetadata
 			return null;
 		}
 
-		double scale = Math.Min((double)ThumbnailWidth / frame.PixelWidth, (double)ThumbnailHeight / frame.PixelHeight);
+		double scale = Math.Min((double)ThumbnailPixelWidth / frame.PixelWidth, (double)ThumbnailPixelHeight / frame.PixelHeight);
 		if (scale <= 0 || scale >= 1)
 		{
 			scale = 1;
@@ -167,30 +184,26 @@ internal sealed class ClipboardHistoryMetadata
 		return Regex.Replace(text, @"\s+", " ").Trim();
 	}
 
-	public static string ConvertHtmlToPlainText(string html)
+	private static string NormalizeDisplayText(string text)
 	{
-		string fragment = html;
-		const string startMarker = "<!--StartFragment-->";
-		const string endMarker = "<!--EndFragment-->";
-		int start = html.IndexOf(startMarker, StringComparison.OrdinalIgnoreCase);
-		int end = html.IndexOf(endMarker, StringComparison.OrdinalIgnoreCase);
-		if (start >= 0 && end > start)
-		{
-			start += startMarker.Length;
-			fragment = html[start..end];
-		}
-
-		string noTags = Regex.Replace(fragment, "<[^>]+>", " ");
-		string decoded = WebUtility.HtmlDecode(noTags);
-		return Regex.Replace(decoded, @"\s+", " ").Trim();
+		text = text.Replace("\r\n", "\n").Replace('\r', '\n');
+		text = Regex.Replace(text, @"[ \t\f\v]+\n", "\n");
+		text = Regex.Replace(text, @"\n[ \t\f\v]+", "\n");
+		text = Regex.Replace(text, @"\n{4,}", "\n\n\n");
+		return text.Trim();
 	}
 
 	private static string ConvertRtfToPlainText(string rtf)
 	{
+		return NormalizePreviewText(ConvertRtfToMultilinePlainText(rtf));
+	}
+
+	private static string ConvertRtfToMultilinePlainText(string rtf)
+	{
 		string text = Regex.Replace(rtf, @"\\'[0-9a-fA-F]{2}", " ");
+		text = Regex.Replace(text, @"\\(par|line)\b\s*", "\n");
+		text = text.Replace(@"\tab", "\t");
 		text = Regex.Replace(text, @"\\[a-zA-Z]+\d* ?", " ");
-		text = text.Replace(@"\par", " ");
-		text = text.Replace(@"\tab", " ");
 		text = Regex.Replace(text, @"[{}]", " ");
 		return text;
 	}

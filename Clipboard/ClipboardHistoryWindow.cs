@@ -10,6 +10,7 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Automation.Text;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -23,8 +24,17 @@ internal sealed class ClipboardHistoryWindow : Window
 	private const int HistoryPageSize = 100;
 	private const int SearchHistoryPageSize = 100;
 	private const int SearchResultBatchSize = 16;
+	private const int HoverPreviewDelayMilliseconds = 180;
+	private const int HoverPreviewHideDelayMilliseconds = 120;
+	private const int HoverPreviewMaxTextLength = 5000;
 	private const double LoadMoreHistoryScrollThreshold = 48;
 	private const double MaxTerminalTextInputBoundsHeight = 120;
+	private const double HoverPreviewWidth = 560;
+	private const double HoverPreviewMaxHeight = 520;
+	private const double HoverPreviewImageMaxWidth = 560;
+	private const double HoverPreviewImageMaxHeight = 420;
+	private const int HoverPreviewImageMaxPixelWidth = 1680;
+	private const int HoverPreviewImageMaxPixelHeight = 1260;
 	private readonly TextBox _searchBox;
 	private readonly ScrollViewer _scrollViewer;
 	private readonly StackPanel _listPanel;
@@ -62,6 +72,8 @@ internal sealed class ClipboardHistoryWindow : Window
 		ShowInTaskbar = false;
 		ShowActivated = false;
 		Focusable = false;
+		UseLayoutRounding = true;
+		SnapsToDevicePixels = true;
 		Icon = LoadIcon();
 		SourceInitialized += (_, _) =>
 		{
@@ -132,6 +144,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		{
 			if (!IsVisible)
 			{
+				CloseOpenPreviews();
 				// 外側クリック時は背後アプリへ Click を成立させないため、対応する MouseUp までフックを残す。
 				if (!_suppressOutsideMouseButtonUp)
 				{
@@ -411,6 +424,11 @@ internal sealed class ClipboardHistoryWindow : Window
 			return false;
 		}
 
+		if (IsPointInsideOpenPreview(point))
+		{
+			return false;
+		}
+
 		IntPtr windowHandle = GetWindowHandle();
 		IntPtr windowAtPoint = NativeMethods.WindowFromPoint(point);
 		if (IsSameRootWindow(windowAtPoint, windowHandle))
@@ -420,6 +438,11 @@ internal sealed class ClipboardHistoryWindow : Window
 
 		outsideWindow = windowAtPoint;
 		return true;
+	}
+
+	private bool IsPointInsideOpenPreview(NativeMethods.NativePoint point)
+	{
+		return _listPanel.Children.OfType<HistoryItemControl>().Any(item => item.IsPointInsidePreview(point));
 	}
 
 	private void HideFromOutsideClick(NativeMethods.NativePoint point, IntPtr clickedWindow)
@@ -734,7 +757,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		bool shouldSelectFirstItem = _selectedItemIndex < 0 && !_listPanel.Children.OfType<HistoryItemControl>().Any();
 		foreach (var entry in entries)
 		{
-			var item = new HistoryItemControl(entry);
+			var item = new HistoryItemControl(entry, LoadHistoryHoverPreviewAsync);
 			item.Activated += (_, _) => PasteEntry(entry);
 			_listPanel.Children.Add(item);
 		}
@@ -856,9 +879,18 @@ internal sealed class ClipboardHistoryWindow : Window
 
 	private void ClearHistoryControls()
 	{
+		CloseOpenPreviews();
 		_listPanel.Children.Clear();
 		_selectedItemIndex = -1;
 		_scrollViewer.ScrollToTop();
+	}
+
+	private void CloseOpenPreviews()
+	{
+		foreach (var item in _listPanel.Children.OfType<HistoryItemControl>())
+		{
+			item.ClosePreview();
+		}
 	}
 
 	private bool SelectFirstHistoryItem()
@@ -1512,9 +1544,52 @@ internal sealed class ClipboardHistoryWindow : Window
 			Id = summary.Id,
 			Kind = summary.Kind,
 			LastWriteTime = summary.CreatedAt,
-			PreviewText = summary.PreviewText,
-			Thumbnail = CreateThumbnail(summary.ThumbnailBytes)
+			PreviewText = CreatePreviewText(summary),
+			Thumbnail = CreateThumbnail(summary)
 		};
+	}
+
+	private static string CreatePreviewText(ClipboardHistorySummary summary)
+	{
+		if (summary.Kind != ClipboardHistoryKind.Html)
+		{
+			return summary.PreviewText;
+		}
+
+		try
+		{
+			ClipboardStoredContent? content = ClipboardDatabase.LoadContent(summary.Id);
+			if (content == null || content.Kind != ClipboardHistoryKind.Html)
+			{
+				return summary.PreviewText;
+			}
+
+			string plainText = ClipboardHistoryMetadata.CreateSearchableText(content.Bytes, content.Kind);
+			return ClipboardHistoryMetadata.CreatePreviewText(plainText, summary.PreviewText);
+		}
+		catch (Exception ex)
+		{
+			Logger.Debug($"ClipboardHistoryWindow: HTML プレビューの再生成に失敗しました。Id={summary.Id} Error={ex.Message}");
+			return summary.PreviewText;
+		}
+	}
+
+	private static ImageSource? CreateThumbnail(ClipboardHistorySummary summary)
+	{
+		ImageSource? thumbnail = CreateThumbnail(summary.ThumbnailBytes);
+		if (summary.Kind != ClipboardHistoryKind.Image || IsHighResolutionThumbnail(thumbnail))
+		{
+			return thumbnail;
+		}
+
+		return CreateThumbnailFromContent(summary.Id) ?? thumbnail;
+	}
+
+	private static bool IsHighResolutionThumbnail(ImageSource? thumbnail)
+	{
+		return thumbnail is BitmapSource bitmap &&
+			(bitmap.PixelWidth >= ClipboardHistoryMetadata.ThumbnailLogicalWidth * 2 ||
+				bitmap.PixelHeight >= ClipboardHistoryMetadata.ThumbnailLogicalHeight * 2);
 	}
 
 	private static ImageSource? CreateThumbnail(byte[]? bytes)
@@ -1541,6 +1616,149 @@ internal sealed class ClipboardHistoryWindow : Window
 		}
 	}
 
+	private static ImageSource? CreateThumbnailFromContent(long historyId)
+	{
+		try
+		{
+			ClipboardStoredContent? content = ClipboardDatabase.LoadContent(historyId);
+			if (content == null || content.Kind != ClipboardHistoryKind.Image)
+			{
+				return null;
+			}
+
+			return CreateDecodedImage(
+				content.Bytes,
+				ClipboardHistoryMetadata.ThumbnailPixelWidth,
+				ClipboardHistoryMetadata.ThumbnailPixelHeight);
+		}
+		catch (Exception ex)
+		{
+			Logger.Debug($"ClipboardHistoryWindow: 高解像度サムネイルの生成に失敗しました。Id={historyId} Error={ex.Message}");
+			return null;
+		}
+	}
+
+	private static Task<HistoryHoverPreview> LoadHistoryHoverPreviewAsync(
+		ClipboardHistoryEntry entry,
+		CancellationToken cancellationToken)
+	{
+		return Task.Run(() =>
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			ClipboardStoredContent? content = ClipboardDatabase.LoadContent(entry.Id);
+			cancellationToken.ThrowIfCancellationRequested();
+			if (content == null)
+			{
+				return new HistoryHoverPreview
+				{
+					Kind = entry.Kind,
+					Text = entry.PreviewText
+				};
+			}
+
+			if (content.Kind == ClipboardHistoryKind.Image)
+			{
+				return new HistoryHoverPreview
+				{
+					Kind = content.Kind,
+					Text = entry.PreviewText,
+					Image = CreateDecodedImage(content.Bytes, HoverPreviewImageMaxPixelWidth, HoverPreviewImageMaxPixelHeight)
+				};
+			}
+
+			string text = ClipboardHistoryMetadata.CreateDisplayText(content.Bytes, content.Kind);
+			if (string.IsNullOrWhiteSpace(text))
+			{
+				text = entry.PreviewText;
+			}
+
+			return new HistoryHoverPreview
+			{
+				Kind = content.Kind,
+				Text = TrimHoverPreviewText(text)
+			};
+		}, cancellationToken);
+	}
+
+	private static string TrimHoverPreviewText(string text)
+	{
+		return text.Length <= HoverPreviewMaxTextLength
+			? text
+			: text[..HoverPreviewMaxTextLength].TrimEnd() + "\n...";
+	}
+
+	private static ImageSource? CreateDecodedImage(byte[] bytes, int maxPixelWidth, int maxPixelHeight)
+	{
+		if (bytes.Length == 0)
+		{
+			return null;
+		}
+
+		try
+		{
+			(int Width, int Height)? pixelSize = TryGetBitmapPixelSize(bytes);
+			using var stream = new MemoryStream(bytes);
+			var image = new BitmapImage();
+			image.BeginInit();
+			image.CacheOption = BitmapCacheOption.OnLoad;
+			image.StreamSource = stream;
+			ConfigureDecodePixelSize(image, pixelSize, maxPixelWidth, maxPixelHeight);
+			image.EndInit();
+			image.Freeze();
+			return image;
+		}
+		catch
+		{
+			return null;
+		}
+	}
+
+	private static (int Width, int Height)? TryGetBitmapPixelSize(byte[] bytes)
+	{
+		try
+		{
+			using var stream = new MemoryStream(bytes);
+			BitmapDecoder decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.None);
+			BitmapFrame frame = decoder.Frames[0];
+			return frame.PixelWidth > 0 && frame.PixelHeight > 0
+				? (frame.PixelWidth, frame.PixelHeight)
+				: null;
+		}
+		catch
+		{
+			return null;
+		}
+	}
+
+	private static void ConfigureDecodePixelSize(
+		BitmapImage image,
+		(int Width, int Height)? pixelSize,
+		int maxPixelWidth,
+		int maxPixelHeight)
+	{
+		if (pixelSize is not { } size)
+		{
+			return;
+		}
+
+		double widthScale = (double)maxPixelWidth / size.Width;
+		double heightScale = (double)maxPixelHeight / size.Height;
+		double scale = Math.Min(widthScale, heightScale);
+		if (!double.IsFinite(scale) || scale <= 0 || scale >= 1)
+		{
+			return;
+		}
+
+		if (widthScale < heightScale)
+		{
+			image.DecodePixelWidth = Math.Max(1, (int)Math.Round(size.Width * scale));
+		}
+		else
+		{
+			image.DecodePixelHeight = Math.Max(1, (int)Math.Round(size.Height * scale));
+		}
+	}
+
 	private static BitmapFrame? LoadIcon()
 	{
 		string path = Path.Combine(AppContext.BaseDirectory, "Clipboard.ico");
@@ -1561,6 +1779,13 @@ internal sealed class ClipboardHistoryWindow : Window
 		public ImageSource? Thumbnail { get; init; }
 	}
 
+	private sealed class HistoryHoverPreview
+	{
+		public required ClipboardHistoryKind Kind { get; init; }
+		public string? Text { get; init; }
+		public ImageSource? Image { get; init; }
+	}
+
 	private sealed class HistoryItemControl : Border
 	{
 		private static readonly Brush NormalBackground = Brushes.White;
@@ -1568,7 +1793,13 @@ internal sealed class ClipboardHistoryWindow : Window
 		private static readonly Brush SelectedBackground = new SolidColorBrush(Color.FromRgb(220, 232, 255));
 		private static readonly Brush NormalBorderBrush = new SolidColorBrush(Color.FromRgb(216, 220, 226));
 		private static readonly Brush SelectedBorderBrush = new SolidColorBrush(Color.FromRgb(70, 116, 218));
+		private readonly ClipboardHistoryEntry _entry;
+		private readonly Func<ClipboardHistoryEntry, CancellationToken, Task<HistoryHoverPreview>> _previewLoader;
+		private readonly Popup _previewPopup;
+		private CancellationTokenSource? _previewCancellation;
 		private bool _isSelected;
+		private bool _isMouseOverPreview;
+		private int _previewHideVersion;
 
 		public event EventHandler? Activated;
 
@@ -1587,27 +1818,70 @@ internal sealed class ClipboardHistoryWindow : Window
 			}
 		}
 
-		public HistoryItemControl(ClipboardHistoryEntry entry)
+		public HistoryItemControl(
+			ClipboardHistoryEntry entry,
+			Func<ClipboardHistoryEntry, CancellationToken, Task<HistoryHoverPreview>> previewLoader)
 		{
+			_entry = entry;
+			_previewLoader = previewLoader;
 			Margin = new Thickness(0, 0, 0, 8);
 			Padding = new Thickness(10);
 			Background = NormalBackground;
 			BorderBrush = NormalBorderBrush;
 			BorderThickness = new Thickness(1);
 			Cursor = Cursors.Hand;
-			Height = entry.Kind == ClipboardHistoryKind.Image ? 92 : 78;
+			Height = entry.Kind == ClipboardHistoryKind.Image
+				? ClipboardHistoryMetadata.ThumbnailLogicalHeight + 22
+				: 78;
 			HorizontalAlignment = HorizontalAlignment.Stretch;
 			Focusable = true;
 			Child = CreateContent(entry);
+			_previewPopup = CreatePreviewPopup();
 
-			MouseEnter += (_, _) => UpdateVisualState();
-			MouseLeave += (_, _) => UpdateVisualState();
+			MouseEnter += (_, _) =>
+			{
+				UpdateVisualState();
+				BeginShowPreview();
+			};
+			MouseLeave += (_, _) =>
+			{
+				UpdateVisualState();
+				BeginHidePreview();
+			};
 			MouseLeftButtonUp += (_, _) => Activate();
+			Unloaded += (_, _) => HidePreview();
 		}
 
 		public void Activate()
 		{
 			Activated?.Invoke(this, EventArgs.Empty);
+		}
+
+		public void ClosePreview()
+		{
+			HidePreview();
+		}
+
+		public bool IsPointInsidePreview(NativeMethods.NativePoint point)
+		{
+			if (!_previewPopup.IsOpen ||
+				_previewPopup.Child is not FrameworkElement child ||
+				child.ActualWidth <= 0 ||
+				child.ActualHeight <= 0)
+			{
+				return false;
+			}
+
+			try
+			{
+				Point topLeft = child.PointToScreen(new Point(0, 0));
+				Point bottomRight = child.PointToScreen(new Point(child.ActualWidth, child.ActualHeight));
+				return new Rect(topLeft, bottomRight).Contains(new Point(point.X, point.Y));
+			}
+			catch (InvalidOperationException)
+			{
+				return false;
+			}
 		}
 
 		private void UpdateVisualState()
@@ -1616,24 +1890,238 @@ internal sealed class ClipboardHistoryWindow : Window
 			BorderBrush = IsSelected ? SelectedBorderBrush : NormalBorderBrush;
 		}
 
+		private Popup CreatePreviewPopup()
+		{
+			return new Popup
+			{
+				PlacementTarget = this,
+				Placement = PlacementMode.Right,
+				HorizontalOffset = 8,
+				VerticalOffset = -6,
+				AllowsTransparency = true,
+				StaysOpen = true,
+				PopupAnimation = PopupAnimation.None
+			};
+		}
+
+		private async void BeginShowPreview()
+		{
+			_previewHideVersion++;
+			if (_previewPopup.IsOpen && _previewPopup.Child != null)
+			{
+				return;
+			}
+
+			CancelPreviewLoad();
+			var cancellationTokenSource = new CancellationTokenSource();
+			_previewCancellation = cancellationTokenSource;
+
+			try
+			{
+				await Task.Delay(HoverPreviewDelayMilliseconds, cancellationTokenSource.Token);
+				if (!IsPreviewRequested(cancellationTokenSource))
+				{
+					return;
+				}
+
+				HistoryHoverPreview preview = await _previewLoader(_entry, cancellationTokenSource.Token);
+				if (!IsPreviewRequested(cancellationTokenSource))
+				{
+					return;
+				}
+
+				ShowPreviewContent(CreatePreviewContent(preview));
+			}
+			catch (OperationCanceledException)
+			{
+			}
+			catch (Exception ex)
+			{
+				Logger.Error(ex, $"ClipboardHistoryWindow: QuickView の表示に失敗しました。Id={_entry.Id}");
+				if (IsPreviewRequested(cancellationTokenSource))
+				{
+					ShowPreviewContent(CreateTextPreviewContent("プレビューを表示できません"));
+				}
+			}
+			finally
+			{
+				if (_previewCancellation == cancellationTokenSource)
+				{
+					_previewCancellation = null;
+				}
+			}
+		}
+
+		private void ShowPreviewContent(FrameworkElement content)
+		{
+			SetPreviewContent(content);
+			_previewPopup.IsOpen = true;
+		}
+
+		private bool IsPreviewRequested(CancellationTokenSource cancellationTokenSource)
+		{
+			return _previewCancellation == cancellationTokenSource &&
+				!cancellationTokenSource.IsCancellationRequested &&
+				(IsMouseOver || _isMouseOverPreview);
+		}
+
+		private async void BeginHidePreview()
+		{
+			int hideVersion = ++_previewHideVersion;
+			await Task.Delay(HoverPreviewHideDelayMilliseconds);
+			if (hideVersion == _previewHideVersion && !IsMouseOver && !_isMouseOverPreview)
+			{
+				HidePreview();
+			}
+		}
+
+		private void HidePreview()
+		{
+			CancelPreviewLoad();
+			_isMouseOverPreview = false;
+			_previewPopup.IsOpen = false;
+			_previewPopup.Child = null;
+		}
+
+		private void CancelPreviewLoad()
+		{
+			if (_previewCancellation is { IsCancellationRequested: false })
+			{
+				_previewCancellation.Cancel();
+			}
+
+			_previewCancellation = null;
+		}
+
+		private void SetPreviewContent(FrameworkElement content)
+		{
+			content.MouseEnter += (_, _) =>
+			{
+				_isMouseOverPreview = true;
+				_previewHideVersion++;
+			};
+			content.MouseLeave += (_, _) =>
+			{
+				_isMouseOverPreview = false;
+				BeginHidePreview();
+			};
+			_previewPopup.Child = content;
+		}
+
+		private FrameworkElement CreatePreviewContent(HistoryHoverPreview preview)
+		{
+			if (preview.Kind == ClipboardHistoryKind.Image)
+			{
+				return CreateImagePreviewContent(preview);
+			}
+
+			return CreateTextPreviewContent(preview.Text);
+		}
+
+		private FrameworkElement CreateImagePreviewContent(HistoryHoverPreview preview)
+		{
+			var stackPanel = new StackPanel
+			{
+				MaxWidth = HoverPreviewWidth
+			};
+
+			if (preview.Image != null)
+			{
+				var image = new Image
+				{
+					Source = preview.Image,
+					Stretch = Stretch.Uniform,
+					MaxWidth = HoverPreviewImageMaxWidth,
+					MaxHeight = HoverPreviewImageMaxHeight,
+					SnapsToDevicePixels = true
+				};
+				RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.HighQuality);
+				stackPanel.Children.Add(image);
+			}
+
+			if (!string.IsNullOrWhiteSpace(preview.Text))
+			{
+				var textBlock = CreatePreviewTextBlock(preview.Text);
+				textBlock.Margin = stackPanel.Children.Count == 0 ? new Thickness(0) : new Thickness(0, 8, 0, 0);
+				stackPanel.Children.Add(textBlock);
+			}
+
+			if (stackPanel.Children.Count == 0)
+			{
+				stackPanel.Children.Add(CreatePreviewTextBlock("プレビューを表示できません"));
+			}
+
+			return CreatePreviewContainer(stackPanel);
+		}
+
+		private FrameworkElement CreateTextPreviewContent(string? text)
+		{
+			var textBlock = CreatePreviewTextBlock(text);
+			var scrollViewer = new ScrollViewer
+			{
+				Content = textBlock,
+				Width = HoverPreviewWidth,
+				MaxHeight = HoverPreviewMaxHeight,
+				VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+				HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
+			};
+
+			return CreatePreviewContainer(scrollViewer);
+		}
+
+		private static TextBlock CreatePreviewTextBlock(string? text)
+		{
+			return new TextBlock
+			{
+				Text = string.IsNullOrWhiteSpace(text) ? "内容を表示できません" : text,
+				Foreground = new SolidColorBrush(Color.FromRgb(36, 40, 48)),
+				TextWrapping = TextWrapping.Wrap,
+				LineHeight = 18,
+				FontSize = 13
+			};
+		}
+
+		private static Border CreatePreviewContainer(UIElement child)
+		{
+			return new Border
+			{
+				Child = child,
+				Padding = new Thickness(10),
+				MaxWidth = HoverPreviewWidth + 24,
+				MaxHeight = HoverPreviewMaxHeight + 24,
+				Background = Brushes.White,
+				BorderBrush = new SolidColorBrush(Color.FromRgb(176, 184, 198)),
+				BorderThickness = new Thickness(1),
+				SnapsToDevicePixels = true
+			};
+		}
+
 		private static Grid CreateContent(ClipboardHistoryEntry entry)
 		{
 			var grid = new Grid();
 			if (entry.Kind == ClipboardHistoryKind.Image)
 			{
-				grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
+				grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(ClipboardHistoryMetadata.ThumbnailLogicalWidth + 12) });
 				grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+				Image? thumbnailImage = null;
+				if (entry.Thumbnail != null)
+				{
+					thumbnailImage = new Image
+					{
+						Source = entry.Thumbnail,
+						Stretch = Stretch.Uniform,
+						SnapsToDevicePixels = true
+					};
+					RenderOptions.SetBitmapScalingMode(thumbnailImage, BitmapScalingMode.HighQuality);
+				}
 
 				var thumbnailBox = new Border
 				{
-					Width = 86,
-					Height = 66,
+					Width = ClipboardHistoryMetadata.ThumbnailLogicalWidth,
+					Height = ClipboardHistoryMetadata.ThumbnailLogicalHeight,
 					Background = new SolidColorBrush(Color.FromRgb(238, 238, 238)),
-					Child = entry.Thumbnail == null ? null : new Image
-					{
-						Source = entry.Thumbnail,
-						Stretch = Stretch.Uniform
-					}
+					Child = thumbnailImage
 				};
 				Grid.SetColumn(thumbnailBox, 0);
 				grid.Children.Add(thumbnailBox);
