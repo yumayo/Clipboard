@@ -25,6 +25,7 @@ internal static class Program
 
 		try
 		{
+			AppTheme.Initialize(application);
 			ClipboardDatabase.Initialize();
 			if (!MigrationProgressWindow.RunIfNeeded())
 			{
@@ -138,6 +139,8 @@ internal sealed class TrayNotifyIcon : IDisposable
 	{
 		_icon = LoadIcon();
 		_contextMenu = CreateContextMenu();
+		AppTheme.ApplyContextMenu(_contextMenu);
+		AppTheme.ThemeChanged += AppTheme_ThemeChanged;
 		_notifyIcon = new WinForms.NotifyIcon
 		{
 			Text = "クリップボード",
@@ -155,12 +158,18 @@ internal sealed class TrayNotifyIcon : IDisposable
 		}
 
 		_isDisposed = true;
+		AppTheme.ThemeChanged -= AppTheme_ThemeChanged;
 		_notifyIcon.Visible = false;
 		_notifyIcon.ContextMenuStrip = null;
 		_contextMenu.Close();
 		_contextMenu.Dispose();
 		_notifyIcon.Dispose();
 		_icon.Dispose();
+	}
+
+	private void AppTheme_ThemeChanged(object? sender, EventArgs e)
+	{
+		AppTheme.ApplyContextMenu(_contextMenu);
 	}
 
 	private WinForms.ContextMenuStrip CreateContextMenu()

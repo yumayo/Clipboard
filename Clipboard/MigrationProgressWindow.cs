@@ -27,11 +27,13 @@ internal sealed class MigrationProgressWindow : Window
 		Height = 190;
 		ShowInTaskbar = true;
 		Icon = LoadIcon();
+		AppTheme.ApplyWindow(this);
 
 		var root = new Grid
 		{
 			Margin = new Thickness(18)
 		};
+		root.SetResourceReference(Panel.BackgroundProperty, AppTheme.WindowBackgroundBrushKey);
 		root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 		root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 		root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -42,9 +44,9 @@ internal sealed class MigrationProgressWindow : Window
 			Text = "旧データをSQLiteへ移行しています...",
 			FontSize = 15,
 			FontWeight = FontWeights.Bold,
-			Foreground = new SolidColorBrush(Color.FromRgb(32, 32, 32)),
 			TextWrapping = TextWrapping.Wrap
 		};
+		_messageText.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
 		Grid.SetRow(_messageText, 0);
 		root.Children.Add(_messageText);
 
@@ -52,9 +54,9 @@ internal sealed class MigrationProgressWindow : Window
 		{
 			Text = "",
 			Margin = new Thickness(0, 10, 0, 0),
-			Foreground = new SolidColorBrush(Color.FromRgb(96, 96, 96)),
 			TextTrimming = TextTrimming.CharacterEllipsis
 		};
+		_detailText.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.MutedTextBrushKey);
 		Grid.SetRow(_detailText, 1);
 		root.Children.Add(_detailText);
 
@@ -66,6 +68,7 @@ internal sealed class MigrationProgressWindow : Window
 			Maximum = 1,
 			IsIndeterminate = true
 		};
+		AppTheme.ApplyProgressBar(_progressBar);
 		Grid.SetRow(_progressBar, 2);
 		root.Children.Add(_progressBar);
 
@@ -73,9 +76,9 @@ internal sealed class MigrationProgressWindow : Window
 		{
 			Text = "",
 			Margin = new Thickness(0, 8, 0, 0),
-			Foreground = new SolidColorBrush(Color.FromRgb(96, 96, 96)),
 			TextAlignment = TextAlignment.Right
 		};
+		_countText.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.MutedTextBrushKey);
 		Grid.SetRow(_countText, 3);
 		root.Children.Add(_countText);
 

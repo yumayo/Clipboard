@@ -78,6 +78,8 @@ internal static class NativeMethods
 	public const uint SWP_NOACTIVATE = 0x0010;
 	public const uint SWP_FRAMECHANGED = 0x0020;
 	public const uint GA_ROOT = 2;
+	public const int DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19;
+	public const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
 
 	[StructLayout(LayoutKind.Sequential)]
 	public struct KbdLlHookStruct
@@ -339,6 +341,9 @@ internal static class NativeMethods
 	[DllImport("user32.dll", SetLastError = true)]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
+
+	[DllImport("dwmapi.dll", PreserveSig = true)]
+	public static extern int DwmSetWindowAttribute(IntPtr hwnd, int dwAttribute, ref int pvAttribute, int cbAttribute);
 
 	[DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
 	[return: MarshalAs(UnmanagedType.Bool)]

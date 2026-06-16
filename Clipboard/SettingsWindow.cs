@@ -17,11 +17,13 @@ internal sealed class SettingsWindow : Window
 		Width = 420;
 		Height = 230;
 		Icon = LoadIcon();
+		AppTheme.ApplyWindow(this);
 
 		var root = new Grid
 		{
 			Margin = new Thickness(16)
 		};
+		root.SetResourceReference(Panel.BackgroundProperty, AppTheme.WindowBackgroundBrushKey);
 		root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 		root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 		root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -31,6 +33,7 @@ internal sealed class SettingsWindow : Window
 			Text = "連結文字",
 			Margin = new Thickness(0, 0, 0, 8)
 		};
+		label.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
 		Grid.SetRow(label, 0);
 		root.Children.Add(label);
 
@@ -42,6 +45,7 @@ internal sealed class SettingsWindow : Window
 			VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
 			Text = ToTextBoxNewLines(ClipboardSettings.GetCopy().ConcatenationSeparator)
 		};
+		AppTheme.ApplyTextBox(_separatorTextBox);
 		Grid.SetRow(_separatorTextBox, 1);
 		root.Children.Add(_separatorTextBox);
 
@@ -61,6 +65,7 @@ internal sealed class SettingsWindow : Window
 			Margin = new Thickness(0, 0, 8, 0),
 			IsDefault = true
 		};
+		AppTheme.ApplyButton(saveButton);
 		saveButton.Click += SaveButton_Click;
 		buttonPanel.Children.Add(saveButton);
 
@@ -71,6 +76,7 @@ internal sealed class SettingsWindow : Window
 			Height = 28,
 			IsCancel = true
 		};
+		AppTheme.ApplyButton(cancelButton);
 		buttonPanel.Children.Add(cancelButton);
 		root.Children.Add(buttonPanel);
 

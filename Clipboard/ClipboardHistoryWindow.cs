@@ -75,16 +75,15 @@ internal sealed class ClipboardHistoryWindow : Window
 		UseLayoutRounding = true;
 		SnapsToDevicePixels = true;
 		Icon = LoadIcon();
+		AppTheme.ApplyWindow(this);
 		SourceInitialized += (_, _) =>
 		{
 			_windowHandle = new WindowInteropHelper(this).Handle;
 			HideMinimizeAndMaximizeButtons();
 		};
 
-		var rootPanel = new DockPanel
-		{
-			Background = new SolidColorBrush(Color.FromRgb(245, 246, 248))
-		};
+		var rootPanel = new DockPanel();
+		rootPanel.SetResourceReference(Panel.BackgroundProperty, AppTheme.WindowBackgroundBrushKey);
 
 		var searchPanel = new Grid
 		{
@@ -93,24 +92,24 @@ internal sealed class ClipboardHistoryWindow : Window
 		searchPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 		searchPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-		searchPanel.Children.Add(new TextBlock
+		var searchLabel = new TextBlock
 		{
 			Text = "検索",
 			VerticalAlignment = VerticalAlignment.Center,
 			Margin = new Thickness(0, 0, 8, 0),
-			Foreground = new SolidColorBrush(Color.FromRgb(64, 64, 64)),
 			FontWeight = FontWeights.Bold
-		});
+		};
+		searchLabel.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
+		searchPanel.Children.Add(searchLabel);
 
 		_searchBox = new TextBox
 		{
 			MinHeight = 32,
 			Padding = new Thickness(8, 5, 8, 5),
 			VerticalContentAlignment = VerticalAlignment.Center,
-			BorderBrush = new SolidColorBrush(Color.FromRgb(188, 194, 204)),
-			Background = Brushes.White,
 			ToolTip = "履歴を検索"
 		};
+		AppTheme.ApplyTextBox(_searchBox);
 		_searchBox.TextChanged += (_, _) =>
 		{
 			if (_hasLoadedHistory || _historyEntries.Count > 0)
@@ -134,9 +133,9 @@ internal sealed class ClipboardHistoryWindow : Window
 		{
 			Content = _listPanel,
 			VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-			HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-			Background = new SolidColorBrush(Color.FromRgb(245, 246, 248))
+			HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
 		};
+		_scrollViewer.SetResourceReference(Control.BackgroundProperty, AppTheme.WindowBackgroundBrushKey);
 		_scrollViewer.ScrollChanged += (_, _) => TryBeginLoadMoreHistory();
 		rootPanel.Children.Add(_scrollViewer);
 		Content = rootPanel;
@@ -867,14 +866,15 @@ internal sealed class ClipboardHistoryWindow : Window
 
 	private void AddMessage(string text)
 	{
-		_listPanel.Children.Add(new TextBlock
+		var message = new TextBlock
 		{
 			Text = text,
 			Height = 80,
 			TextAlignment = TextAlignment.Center,
-			VerticalAlignment = VerticalAlignment.Center,
-			Foreground = new SolidColorBrush(Color.FromRgb(96, 96, 96))
-		});
+			VerticalAlignment = VerticalAlignment.Center
+		};
+		message.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.MutedTextBrushKey);
+		_listPanel.Children.Add(message);
 	}
 
 	private void ClearHistoryControls()
@@ -1786,11 +1786,6 @@ internal sealed class ClipboardHistoryWindow : Window
 
 	private sealed class HistoryItemControl : Border
 	{
-		private static readonly Brush NormalBackground = Brushes.White;
-		private static readonly Brush HoverBackground = new SolidColorBrush(Color.FromRgb(232, 240, 254));
-		private static readonly Brush SelectedBackground = new SolidColorBrush(Color.FromRgb(220, 232, 255));
-		private static readonly Brush NormalBorderBrush = new SolidColorBrush(Color.FromRgb(216, 220, 226));
-		private static readonly Brush SelectedBorderBrush = new SolidColorBrush(Color.FromRgb(70, 116, 218));
 		private readonly ClipboardHistoryEntry _entry;
 		private readonly Func<ClipboardHistoryEntry, CancellationToken, Task<HistoryHoverPreview>> _previewLoader;
 		private readonly Popup _previewPopup;
@@ -1824,8 +1819,6 @@ internal sealed class ClipboardHistoryWindow : Window
 			_previewLoader = previewLoader;
 			Margin = new Thickness(0, 0, 0, 8);
 			Padding = new Thickness(10);
-			Background = NormalBackground;
-			BorderBrush = NormalBorderBrush;
 			BorderThickness = new Thickness(1);
 			Cursor = Cursors.Hand;
 			Height = entry.Kind == ClipboardHistoryKind.Image
@@ -1835,6 +1828,7 @@ internal sealed class ClipboardHistoryWindow : Window
 			Focusable = true;
 			Child = CreateContent(entry);
 			_previewPopup = CreatePreviewPopup();
+			UpdateVisualState();
 
 			MouseEnter += (_, _) =>
 			{
@@ -1884,8 +1878,12 @@ internal sealed class ClipboardHistoryWindow : Window
 
 		private void UpdateVisualState()
 		{
-			Background = IsSelected ? SelectedBackground : IsMouseOver ? HoverBackground : NormalBackground;
-			BorderBrush = IsSelected ? SelectedBorderBrush : NormalBorderBrush;
+			SetResourceReference(
+				Border.BackgroundProperty,
+				IsSelected ? AppTheme.SurfaceSelectedBrushKey : IsMouseOver ? AppTheme.SurfaceHoverBrushKey : AppTheme.SurfaceBrushKey);
+			SetResourceReference(
+				Border.BorderBrushProperty,
+				IsSelected ? AppTheme.AccentBorderBrushKey : AppTheme.BorderBrushKey);
 		}
 
 		private Popup CreatePreviewPopup()
@@ -2063,35 +2061,38 @@ internal sealed class ClipboardHistoryWindow : Window
 				VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
 				HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
 			};
+			scrollViewer.SetResourceReference(Control.BackgroundProperty, AppTheme.PreviewBackgroundBrushKey);
 
 			return CreatePreviewContainer(scrollViewer);
 		}
 
 		private static TextBlock CreatePreviewTextBlock(string? text)
 		{
-			return new TextBlock
+			var textBlock = new TextBlock
 			{
 				Text = string.IsNullOrWhiteSpace(text) ? "内容を表示できません" : text,
-				Foreground = new SolidColorBrush(Color.FromRgb(36, 40, 48)),
 				TextWrapping = TextWrapping.Wrap,
 				LineHeight = 18,
 				FontSize = 13
 			};
+			textBlock.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
+			return textBlock;
 		}
 
 		private static Border CreatePreviewContainer(UIElement child)
 		{
-			return new Border
+			var border = new Border
 			{
 				Child = child,
 				Padding = new Thickness(10),
 				MaxWidth = HoverPreviewWidth + 24,
 				MaxHeight = HoverPreviewMaxHeight + 24,
-				Background = Brushes.White,
-				BorderBrush = new SolidColorBrush(Color.FromRgb(176, 184, 198)),
 				BorderThickness = new Thickness(1),
 				SnapsToDevicePixels = true
 			};
+			border.SetResourceReference(Border.BackgroundProperty, AppTheme.PreviewBackgroundBrushKey);
+			border.SetResourceReference(Border.BorderBrushProperty, AppTheme.PreviewBorderBrushKey);
+			return border;
 		}
 
 		private static Grid CreateContent(ClipboardHistoryEntry entry)
@@ -2118,9 +2119,9 @@ internal sealed class ClipboardHistoryWindow : Window
 				{
 					Width = ClipboardHistoryMetadata.ThumbnailLogicalWidth,
 					Height = ClipboardHistoryMetadata.ThumbnailLogicalHeight,
-					Background = new SolidColorBrush(Color.FromRgb(238, 238, 238)),
 					Child = thumbnailImage
 				};
+				thumbnailBox.SetResourceReference(Border.BackgroundProperty, AppTheme.ThumbnailBackgroundBrushKey);
 				Grid.SetColumn(thumbnailBox, 0);
 				grid.Children.Add(thumbnailBox);
 			}
@@ -2132,11 +2133,11 @@ internal sealed class ClipboardHistoryWindow : Window
 			var previewLabel = new TextBlock
 			{
 				Text = entry.PreviewText,
-				Foreground = new SolidColorBrush(Color.FromRgb(48, 48, 48)),
 				TextWrapping = TextWrapping.Wrap,
 				TextTrimming = TextTrimming.CharacterEllipsis,
 				VerticalAlignment = VerticalAlignment.Stretch
 			};
+			previewLabel.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
 
 			Grid.SetColumn(previewLabel, entry.Kind == ClipboardHistoryKind.Image ? 1 : 0);
 			grid.Children.Add(previewLabel);
