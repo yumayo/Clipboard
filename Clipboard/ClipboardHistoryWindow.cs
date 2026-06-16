@@ -1543,7 +1543,6 @@ internal sealed class ClipboardHistoryWindow : Window
 		{
 			Id = summary.Id,
 			Kind = summary.Kind,
-			LastWriteTime = summary.CreatedAt,
 			PreviewText = CreatePreviewText(summary),
 			Thumbnail = CreateThumbnail(summary)
 		};
@@ -1774,7 +1773,6 @@ internal sealed class ClipboardHistoryWindow : Window
 	{
 		public required long Id { get; init; }
 		public required ClipboardHistoryKind Kind { get; init; }
-		public required DateTime LastWriteTime { get; init; }
 		public required string PreviewText { get; init; }
 		public ImageSource? Thumbnail { get; init; }
 	}
@@ -2131,61 +2129,18 @@ internal sealed class ClipboardHistoryWindow : Window
 				grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 			}
 
-			var textGrid = new Grid();
-			textGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(24) });
-			textGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-
-			var headerGrid = new Grid();
-			headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(80) });
-			headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-
-			var kindLabel = new TextBlock
-			{
-				Text = GetKindText(entry.Kind),
-				FontWeight = FontWeights.Bold,
-				Foreground = new SolidColorBrush(Color.FromRgb(32, 32, 32)),
-				VerticalAlignment = VerticalAlignment.Center
-			};
-			headerGrid.Children.Add(kindLabel);
-
-			var dateLabel = new TextBlock
-			{
-				Text = entry.LastWriteTime.ToString("yyyy/MM/dd HH:mm:ss"),
-				Foreground = new SolidColorBrush(Color.FromRgb(112, 112, 112)),
-				TextAlignment = TextAlignment.Right,
-				VerticalAlignment = VerticalAlignment.Center,
-				TextTrimming = TextTrimming.CharacterEllipsis
-			};
-			Grid.SetColumn(dateLabel, 1);
-			headerGrid.Children.Add(dateLabel);
-
-			Grid.SetRow(headerGrid, 0);
-			textGrid.Children.Add(headerGrid);
-
 			var previewLabel = new TextBlock
 			{
 				Text = entry.PreviewText,
 				Foreground = new SolidColorBrush(Color.FromRgb(48, 48, 48)),
 				TextWrapping = TextWrapping.Wrap,
-				TextTrimming = TextTrimming.CharacterEllipsis
+				TextTrimming = TextTrimming.CharacterEllipsis,
+				VerticalAlignment = VerticalAlignment.Stretch
 			};
-			Grid.SetRow(previewLabel, 1);
-			textGrid.Children.Add(previewLabel);
 
-			Grid.SetColumn(textGrid, entry.Kind == ClipboardHistoryKind.Image ? 1 : 0);
-			grid.Children.Add(textGrid);
+			Grid.SetColumn(previewLabel, entry.Kind == ClipboardHistoryKind.Image ? 1 : 0);
+			grid.Children.Add(previewLabel);
 			return grid;
-		}
-
-		private static string GetKindText(ClipboardHistoryKind kind)
-		{
-			return kind switch
-			{
-				ClipboardHistoryKind.Image => "画像",
-				ClipboardHistoryKind.Html => "HTML",
-				ClipboardHistoryKind.Rtf => "RTF",
-				_ => "文字列"
-			};
 		}
 	}
 }
