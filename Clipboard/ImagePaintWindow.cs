@@ -17,6 +17,13 @@ internal sealed class ImagePaintWindow : Window
 	private const double MinZoom = 0.05;
 	private const double MaxZoom = 8;
 	private const double ZoomStep = 1.1;
+	private const double OutlineNumberGap = 4;
+	private const double OutlineNumberFontSize = 18;
+	private static readonly string[] CircledNumberTexts =
+	{
+		"①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩",
+		"⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳"
+	};
 	private readonly BitmapSource _sourceImage;
 	private readonly ScaleTransform _zoomTransform = new(1, 1);
 	private readonly Grid _zoomContainer;
@@ -26,6 +33,7 @@ internal sealed class ImagePaintWindow : Window
 	private readonly Button _redOutlineButton;
 	private readonly List<Rectangle> _completedRectangles = new();
 	private readonly List<Rectangle> _redoRectangles = new();
+	private readonly Dictionary<Rectangle, TextBlock> _outlineNumberLabels = new();
 	private PaintMode _paintMode = PaintMode.RedOutlineRectangle;
 	private Point _dragStartPoint;
 	private Rectangle? _dragRectangle;
@@ -229,6 +237,7 @@ internal sealed class ImagePaintWindow : Window
 		{
 			_completedRectangles.Add(rectangle);
 			_redoRectangles.Clear();
+			UpdateOutlineNumberLabels();
 		}
 		else
 		{
@@ -295,6 +304,7 @@ internal sealed class ImagePaintWindow : Window
 		_completedRectangles.RemoveAt(_completedRectangles.Count - 1);
 		_overlayCanvas.Children.Remove(rectangle);
 		_redoRectangles.Add(rectangle);
+		UpdateOutlineNumberLabels();
 	}
 
 	private void Redo()
@@ -314,6 +324,7 @@ internal sealed class ImagePaintWindow : Window
 		_redoRectangles.RemoveAt(_redoRectangles.Count - 1);
 		_overlayCanvas.Children.Add(rectangle);
 		_completedRectangles.Add(rectangle);
+		UpdateOutlineNumberLabels();
 	}
 
 	private void CompleteActiveDrag()
@@ -328,6 +339,7 @@ internal sealed class ImagePaintWindow : Window
 		{
 			_completedRectangles.Add(rectangle);
 			_redoRectangles.Clear();
+			UpdateOutlineNumberLabels();
 		}
 		else
 		{
@@ -347,6 +359,202 @@ internal sealed class ImagePaintWindow : Window
 		_overlayCanvas.ReleaseMouseCapture();
 		_overlayCanvas.Children.Remove(rectangle);
 		_dragRectangle = null;
+	}
+
+	private void UpdateOutlineNumberLabels()
+	{
+		foreach (TextBlock label in _outlineNumberLabels.Values)
+		{
+			_overlayCanvas.Children.Remove(label);
+		}
+
+		_outlineNumberLabels.Clear();
+		int outlineCount = CountOutlineRectangles();
+		if (outlineCount < 2)
+		{
+			return;
+		}
+
+		var placedLabelBounds = new List<Rect>();
+		int outlineNumber = 1;
+		foreach (Rectangle rectangle in _completedRectangles)
+		{
+			if (!IsOutlineRectangle(rectangle))
+			{
+				continue;
+			}
+
+			var label = CreateOutlineNumberLabel(outlineNumber);
+			PositionOutlineNumberLabel(rectangle, label, placedLabelBounds);
+			_outlineNumberLabels[rectangle] = label;
+			_overlayCanvas.Children.Add(label);
+			outlineNumber++;
+		}
+	}
+
+	private int CountOutlineRectangles()
+	{
+		int count = 0;
+		foreach (Rectangle rectangle in _completedRectangles)
+		{
+			if (IsOutlineRectangle(rectangle))
+			{
+				count++;
+			}
+		}
+
+		return count;
+	}
+
+	private static bool IsOutlineRectangle(Rectangle rectangle)
+	{
+		return rectangle.Stroke is SolidColorBrush brush && brush.Color == Colors.Red;
+	}
+
+	private static TextBlock CreateOutlineNumberLabel(int number)
+	{
+		return new TextBlock
+		{
+			Text = GetOutlineNumberText(number),
+			Foreground = Brushes.Red,
+			FontSize = OutlineNumberFontSize,
+			FontWeight = FontWeights.Bold,
+			IsHitTestVisible = false
+		};
+	}
+
+	private static string GetOutlineNumberText(int number)
+	{
+		if (number >= 1 && number <= CircledNumberTexts.Length)
+		{
+			return CircledNumberTexts[number - 1];
+		}
+
+		return number.ToString(System.Globalization.CultureInfo.InvariantCulture);
+	}
+
+	private void PositionOutlineNumberLabel(
+		Rectangle rectangle,
+		TextBlock label,
+		List<Rect> placedLabelBounds)
+	{
+		label.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+		Size labelSize = label.DesiredSize;
+		if (labelSize.Width <= 0 || labelSize.Height <= 0)
+		{
+			labelSize = new Size(20, 22);
+		}
+
+		Rect rectangleBounds = GetRectangleBounds(rectangle);
+		Rect[] candidates =
+		{
+			new(rectangleBounds.Left - labelSize.Width - OutlineNumberGap, rectangleBounds.Top, labelSize.Width, labelSize.Height),
+			new(rectangleBounds.Right + OutlineNumberGap, rectangleBounds.Top, labelSize.Width, labelSize.Height),
+			new(rectangleBounds.Left, rectangleBounds.Top - labelSize.Height - OutlineNumberGap, labelSize.Width, labelSize.Height),
+			new(rectangleBounds.Left, rectangleBounds.Bottom + OutlineNumberGap, labelSize.Width, labelSize.Height),
+			new(rectangleBounds.Left + OutlineNumberGap, rectangleBounds.Top + OutlineNumberGap, labelSize.Width, labelSize.Height)
+		};
+
+		Rect labelBounds = ChooseOutlineNumberBounds(candidates, rectangle, placedLabelBounds);
+		Canvas.SetLeft(label, labelBounds.Left);
+		Canvas.SetTop(label, labelBounds.Top);
+		placedLabelBounds.Add(labelBounds);
+	}
+
+	private Rect ChooseOutlineNumberBounds(
+		Rect[] candidates,
+		Rectangle rectangle,
+		List<Rect> placedLabelBounds)
+	{
+		for (int i = 0; i < candidates.Length - 1; i++)
+		{
+			if (CanPlaceOutlineNumber(candidates[i], rectangle, placedLabelBounds, allowInsideOwnRectangle: false))
+			{
+				return candidates[i];
+			}
+		}
+
+		Rect insideCandidate = candidates[^1];
+		if (CanPlaceOutlineNumber(insideCandidate, rectangle, placedLabelBounds, allowInsideOwnRectangle: true))
+		{
+			return insideCandidate;
+		}
+
+		foreach (Rect candidate in candidates)
+		{
+			if (IsInsideCanvas(candidate) && !IntersectsAny(candidate, placedLabelBounds))
+			{
+				return candidate;
+			}
+		}
+
+		return ClampToCanvas(insideCandidate);
+	}
+
+	private bool CanPlaceOutlineNumber(
+		Rect candidate,
+		Rectangle ownRectangle,
+		List<Rect> placedLabelBounds,
+		bool allowInsideOwnRectangle)
+	{
+		if (!IsInsideCanvas(candidate) || IntersectsAny(candidate, placedLabelBounds))
+		{
+			return false;
+		}
+
+		foreach (Rectangle rectangle in _completedRectangles)
+		{
+			if (allowInsideOwnRectangle && ReferenceEquals(rectangle, ownRectangle))
+			{
+				continue;
+			}
+
+			if (candidate.IntersectsWith(GetRectangleBounds(rectangle)))
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	private bool IsInsideCanvas(Rect bounds)
+	{
+		return bounds.Left >= 0 &&
+			bounds.Top >= 0 &&
+			bounds.Right <= _overlayCanvas.Width &&
+			bounds.Bottom <= _overlayCanvas.Height;
+	}
+
+	private static bool IntersectsAny(Rect bounds, List<Rect> others)
+	{
+		foreach (Rect other in others)
+		{
+			if (bounds.IntersectsWith(other))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private Rect ClampToCanvas(Rect bounds)
+	{
+		double left = Math.Max(0, Math.Min(bounds.Left, _overlayCanvas.Width - bounds.Width));
+		double top = Math.Max(0, Math.Min(bounds.Top, _overlayCanvas.Height - bounds.Height));
+		return new Rect(left, top, bounds.Width, bounds.Height);
+	}
+
+	private static Rect GetRectangleBounds(Rectangle rectangle)
+	{
+		double left = Canvas.GetLeft(rectangle);
+		double top = Canvas.GetTop(rectangle);
+		return new Rect(
+			double.IsNaN(left) ? 0 : left,
+			double.IsNaN(top) ? 0 : top,
+			rectangle.Width,
+			rectangle.Height);
 	}
 
 	private BitmapSource RenderPaintedImage()
