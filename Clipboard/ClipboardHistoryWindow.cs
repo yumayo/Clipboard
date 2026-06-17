@@ -16,6 +16,8 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using Shape = System.Windows.Shapes.Shape;
+using ShapePath = System.Windows.Shapes.Path;
 
 namespace Clipboard;
 
@@ -761,6 +763,7 @@ internal sealed class ClipboardHistoryWindow : Window
 			AddDateSeparatorIfNeeded(entry.CreatedAt.Date);
 			var item = new HistoryItemControl(entry, LoadHistoryHoverPreviewAsync);
 			item.Activated += (_, _) => PasteEntry(entry);
+			item.PaintRequested += (_, _) => OpenImagePaintWindow(entry);
 			_listPanel.Children.Add(item);
 		}
 
@@ -883,6 +886,34 @@ internal sealed class ClipboardHistoryWindow : Window
 	{
 		Hide();
 		ClipboardManager.PasteHistoryEntry(entry.Id, _targetWindow, _targetUsesTerminalInput);
+	}
+
+	private async void OpenImagePaintWindow(ClipboardHistoryEntry entry)
+	{
+		if (entry.Kind != ClipboardHistoryKind.Image)
+		{
+			return;
+		}
+
+		try
+		{
+			ClipboardStoredContent? content = await Task.Run(() => ClipboardDatabase.LoadContent(entry.Id));
+			if (content == null || content.Kind != ClipboardHistoryKind.Image || content.Bytes.Length == 0)
+			{
+				throw new InvalidOperationException("画像履歴を読み込めませんでした。");
+			}
+
+			CloseOpenPreviews();
+			Hide();
+			var paintWindow = new ImagePaintWindow(content.Bytes);
+			paintWindow.Show();
+			paintWindow.Activate();
+		}
+		catch (Exception ex)
+		{
+			Logger.Error(ex, $"ClipboardHistoryWindow: ペイント画面を開けませんでした。Id={entry.Id}");
+			MessageBox.Show(this, "ペイント画面を開けませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
+		}
 	}
 
 	private void AddMessage(string text)
@@ -1858,6 +1889,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		private int _previewHideVersion;
 
 		public event EventHandler? Activated;
+		public event EventHandler? PaintRequested;
 
 		public DateTime CreatedDate => _entry.CreatedAt.Date;
 
@@ -2160,13 +2192,14 @@ internal sealed class ClipboardHistoryWindow : Window
 			return border;
 		}
 
-		private static Grid CreateContent(ClipboardHistoryEntry entry)
+		private Grid CreateContent(ClipboardHistoryEntry entry)
 		{
 			var grid = new Grid();
 			if (entry.Kind == ClipboardHistoryKind.Image)
 			{
 				grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(ClipboardHistoryMetadata.ThumbnailLogicalWidth + 12) });
 				grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+				grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
 				Image? thumbnailImage = null;
 				if (entry.Thumbnail != null)
@@ -2189,6 +2222,10 @@ internal sealed class ClipboardHistoryWindow : Window
 				thumbnailBox.SetResourceReference(Border.BackgroundProperty, AppTheme.ThumbnailBackgroundBrushKey);
 				Grid.SetColumn(thumbnailBox, 0);
 				grid.Children.Add(thumbnailBox);
+
+				var paintButton = CreatePaintButton();
+				Grid.SetColumn(paintButton, 2);
+				grid.Children.Add(paintButton);
 			}
 			else
 			{
@@ -2200,13 +2237,72 @@ internal sealed class ClipboardHistoryWindow : Window
 				Text = entry.PreviewText,
 				TextWrapping = TextWrapping.Wrap,
 				TextTrimming = TextTrimming.CharacterEllipsis,
-				VerticalAlignment = VerticalAlignment.Stretch
+				VerticalAlignment = VerticalAlignment.Stretch,
+				Margin = entry.Kind == ClipboardHistoryKind.Image ? new Thickness(0, 0, 8, 0) : new Thickness(0)
 			};
 			previewLabel.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
 
 			Grid.SetColumn(previewLabel, entry.Kind == ClipboardHistoryKind.Image ? 1 : 0);
 			grid.Children.Add(previewLabel);
 			return grid;
+		}
+
+		private Button CreatePaintButton()
+		{
+			var button = new Button
+			{
+				Content = CreatePaintIcon(),
+				Width = 40,
+				Height = 32,
+				VerticalAlignment = VerticalAlignment.Center,
+				HorizontalAlignment = HorizontalAlignment.Right,
+				Focusable = false,
+				Cursor = Cursors.Hand
+			};
+			AppTheme.ApplyButton(button);
+			button.Click += (_, e) =>
+			{
+				e.Handled = true;
+				PaintRequested?.Invoke(this, EventArgs.Empty);
+			};
+			return button;
+		}
+
+		private static Viewbox CreatePaintIcon()
+		{
+			var canvas = new Canvas
+			{
+				Width = 20,
+				Height = 20
+			};
+
+			canvas.Children.Add(CreateIconPath("M3.5,5.5 L14.5,5.5 L14.5,16.5 L3.5,16.5 Z", 1.6));
+			canvas.Children.Add(CreateIconPath("M6,13.5 C7.5,10.5 10.5,10.5 12,7.5", 1.8));
+			canvas.Children.Add(CreateIconPath("M16,3.5 L16,8.5 M13.5,6 L18.5,6", 1.8));
+
+			return new Viewbox
+			{
+				Child = canvas,
+				Width = 18,
+				Height = 18,
+				Stretch = Stretch.Uniform
+			};
+		}
+
+		private static ShapePath CreateIconPath(string pathData, double strokeThickness)
+		{
+			var path = new ShapePath
+			{
+				Data = Geometry.Parse(pathData),
+				Fill = Brushes.Transparent,
+				StrokeThickness = strokeThickness,
+				StrokeStartLineCap = PenLineCap.Round,
+				StrokeEndLineCap = PenLineCap.Round,
+				StrokeLineJoin = PenLineJoin.Round,
+				SnapsToDevicePixels = true
+			};
+			path.SetResourceReference(Shape.StrokeProperty, AppTheme.TextBrushKey);
+			return path;
 		}
 	}
 }

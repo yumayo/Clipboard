@@ -119,6 +119,11 @@ public static class ClipboardManager
 		}
 	}
 
+	internal static void CopyImageToClipboard(BitmapSource image)
+	{
+		SetClipboardWithRetry(() => System.Windows.Clipboard.SetImage(image), "Image", suppressNextClipboardSave: false);
+	}
+
 	private static IntPtr SetHook(NativeMethods.LowLevelKeyboardProc proc)
 	{
 		using var curProcess = Process.GetCurrentProcess();
@@ -595,30 +600,42 @@ public static class ClipboardManager
 		SetClipboardWithRetry(() => System.Windows.Clipboard.SetDataObject(dataObject, true), "Rtf");
 	}
 
-	private static void SetClipboardWithRetry(Action setClipboard, string contentType)
+	private static void SetClipboardWithRetry(Action setClipboard, string contentType, bool suppressNextClipboardSave = true)
 	{
 		for (int attempt = 1; attempt <= ClipboardSetRetryCount; attempt++)
 		{
 			try
 			{
-				_suppressNextClipboardSave = true;
+				if (suppressNextClipboardSave)
+				{
+					_suppressNextClipboardSave = true;
+				}
+
 				setClipboard();
 				return;
 			}
 			catch (Exception ex) when (IsClipboardOpenFailure(ex))
 			{
-				_suppressNextClipboardSave = false;
+				if (suppressNextClipboardSave)
+				{
+					_suppressNextClipboardSave = false;
+				}
+
 				if (attempt >= ClipboardSetRetryCount)
 				{
 					throw;
 				}
 
-				Logger.Debug($"ClipboardManager: クリップボードへの復元を再試行します。Type={contentType} Attempt={attempt}/{ClipboardSetRetryCount} Error={ex.Message}");
+				Logger.Debug($"ClipboardManager: クリップボードへの書き込みを再試行します。Type={contentType} Attempt={attempt}/{ClipboardSetRetryCount} Error={ex.Message}");
 				Thread.Sleep(ClipboardSetRetryDelayMilliseconds);
 			}
 			catch
 			{
-				_suppressNextClipboardSave = false;
+				if (suppressNextClipboardSave)
+				{
+					_suppressNextClipboardSave = false;
+				}
+
 				throw;
 			}
 		}
