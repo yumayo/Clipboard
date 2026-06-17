@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -48,6 +49,7 @@ internal sealed class ClipboardHistoryWindow : Window
 	private IntPtr _windowHandle;
 	private IntPtr _suppressedOutsideMouseButtonUpMessage;
 	private int _selectedItemIndex = -1;
+	private DateTime? _lastDisplayedHistoryDate;
 	private bool _isLoadingHistory;
 	private bool _isLoadingMoreHistory;
 	private bool _hasLoadedHistory;
@@ -756,6 +758,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		bool shouldSelectFirstItem = _selectedItemIndex < 0 && !_listPanel.Children.OfType<HistoryItemControl>().Any();
 		foreach (var entry in entries)
 		{
+			AddDateSeparatorIfNeeded(entry.CreatedAt.Date);
 			var item = new HistoryItemControl(entry, LoadHistoryHoverPreviewAsync);
 			item.Activated += (_, _) => PasteEntry(entry);
 			_listPanel.Children.Add(item);
@@ -765,6 +768,24 @@ internal sealed class ClipboardHistoryWindow : Window
 		{
 			SelectFirstHistoryItem();
 		}
+	}
+
+	private void AddDateSeparatorIfNeeded(DateTime entryDate)
+	{
+		DateTime? lastDisplayedDate = _lastDisplayedHistoryDate;
+		if (!lastDisplayedDate.HasValue)
+		{
+			lastDisplayedDate = _listPanel.Children.OfType<HistoryItemControl>().LastOrDefault()?.CreatedDate;
+		}
+
+		if (lastDisplayedDate == entryDate)
+		{
+			_lastDisplayedHistoryDate = entryDate;
+			return;
+		}
+
+		_listPanel.Children.Add(new HistoryDateSeparatorControl(entryDate));
+		_lastDisplayedHistoryDate = entryDate;
 	}
 
 	private void CompleteHistoryFilterDisplay(int totalEntryCount, int matchedEntryCount)
@@ -882,6 +903,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		CloseOpenPreviews();
 		_listPanel.Children.Clear();
 		_selectedItemIndex = -1;
+		_lastDisplayedHistoryDate = null;
 		_scrollViewer.ScrollToTop();
 	}
 
@@ -1543,6 +1565,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		{
 			Id = summary.Id,
 			Kind = summary.Kind,
+			CreatedAt = summary.CreatedAt,
 			PreviewText = CreatePreviewText(summary),
 			Thumbnail = CreateThumbnail(summary)
 		};
@@ -1773,6 +1796,7 @@ internal sealed class ClipboardHistoryWindow : Window
 	{
 		public required long Id { get; init; }
 		public required ClipboardHistoryKind Kind { get; init; }
+		public required DateTime CreatedAt { get; init; }
 		public required string PreviewText { get; init; }
 		public ImageSource? Thumbnail { get; init; }
 	}
@@ -1782,6 +1806,45 @@ internal sealed class ClipboardHistoryWindow : Window
 		public required ClipboardHistoryKind Kind { get; init; }
 		public string? Text { get; init; }
 		public ImageSource? Image { get; init; }
+	}
+
+	private sealed class HistoryDateSeparatorControl : Border
+	{
+		private static readonly CultureInfo JapaneseCulture = CultureInfo.GetCultureInfo("ja-JP");
+
+		public HistoryDateSeparatorControl(DateTime date)
+		{
+			Margin = new Thickness(0, 8, 0, 6);
+			Padding = new Thickness(2, 0, 2, 0);
+			Focusable = false;
+			var label = new TextBlock
+			{
+				Text = FormatDate(date),
+				FontSize = 12,
+				FontWeight = FontWeights.SemiBold
+			};
+			label.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.MutedTextBrushKey);
+			Child = label;
+		}
+
+		private static string FormatDate(DateTime date)
+		{
+			DateTime today = DateTime.Today;
+			if (date == today)
+			{
+				return $"今日 {date.ToString("M月d日 (ddd)", JapaneseCulture)}";
+			}
+
+			if (date == today.AddDays(-1))
+			{
+				return $"昨日 {date.ToString("M月d日 (ddd)", JapaneseCulture)}";
+			}
+
+			string format = date.Year == today.Year
+				? "M月d日 (ddd)"
+				: "yyyy年M月d日 (ddd)";
+			return date.ToString(format, JapaneseCulture);
+		}
 	}
 
 	private sealed class HistoryItemControl : Border
@@ -1795,6 +1858,8 @@ internal sealed class ClipboardHistoryWindow : Window
 		private int _previewHideVersion;
 
 		public event EventHandler? Activated;
+
+		public DateTime CreatedDate => _entry.CreatedAt.Date;
 
 		public bool IsSelected
 		{
