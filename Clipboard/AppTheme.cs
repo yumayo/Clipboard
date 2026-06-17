@@ -389,9 +389,13 @@ internal static class AppTheme
 				xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
 				xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
 				xmlns:primitives="clr-namespace:System.Windows.Controls.Primitives;assembly=PresentationFramework"
+				xmlns:sys="clr-namespace:System;assembly=mscorlib"
 				TargetType="{x:Type primitives:ScrollBar}">
 				<Grid Background="{DynamicResource AppTheme.ScrollBarTrackBrush}" SnapsToDevicePixels="True">
 					<primitives:Track x:Name="PART_Track" Orientation="Vertical" IsDirectionReversed="True" Margin="2,0,2,0">
+						<primitives:Track.Resources>
+							<sys:Double x:Key="{x:Static SystemParameters.VerticalScrollBarButtonHeightKey}">64</sys:Double>
+						</primitives:Track.Resources>
 						<primitives:Track.DecreaseRepeatButton>
 							<primitives:RepeatButton Command="{x:Static primitives:ScrollBar.PageUpCommand}" Focusable="False">
 								<primitives:RepeatButton.Template>
@@ -411,7 +415,7 @@ internal static class AppTheme
 							</primitives:RepeatButton>
 						</primitives:Track.IncreaseRepeatButton>
 						<primitives:Track.Thumb>
-							<primitives:Thumb MinWidth="8" MinHeight="32">
+							<primitives:Thumb MinWidth="8">
 								<primitives:Thumb.Style>
 									<Style TargetType="{x:Type primitives:Thumb}">
 										<Setter Property="Background" Value="{DynamicResource AppTheme.ScrollBarThumbBrush}" />
@@ -448,9 +452,13 @@ internal static class AppTheme
 				xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
 				xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
 				xmlns:primitives="clr-namespace:System.Windows.Controls.Primitives;assembly=PresentationFramework"
+				xmlns:sys="clr-namespace:System;assembly=mscorlib"
 				TargetType="{x:Type primitives:ScrollBar}">
 				<Grid Background="{DynamicResource AppTheme.ScrollBarTrackBrush}" SnapsToDevicePixels="True">
 					<primitives:Track x:Name="PART_Track" Orientation="Horizontal" Margin="0,2,0,2">
+						<primitives:Track.Resources>
+							<sys:Double x:Key="{x:Static SystemParameters.HorizontalScrollBarButtonWidthKey}">64</sys:Double>
+						</primitives:Track.Resources>
 						<primitives:Track.DecreaseRepeatButton>
 							<primitives:RepeatButton Command="{x:Static primitives:ScrollBar.PageLeftCommand}" Focusable="False">
 								<primitives:RepeatButton.Template>
@@ -470,7 +478,7 @@ internal static class AppTheme
 							</primitives:RepeatButton>
 						</primitives:Track.IncreaseRepeatButton>
 						<primitives:Track.Thumb>
-							<primitives:Thumb MinWidth="32" MinHeight="8">
+							<primitives:Thumb MinHeight="8">
 								<primitives:Thumb.Style>
 									<Style TargetType="{x:Type primitives:Thumb}">
 										<Setter Property="Background" Value="{DynamicResource AppTheme.ScrollBarThumbBrush}" />
