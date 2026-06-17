@@ -392,7 +392,7 @@ internal static class AppTheme
 				xmlns:sys="clr-namespace:System;assembly=mscorlib"
 				TargetType="{x:Type primitives:ScrollBar}">
 				<Grid Background="{DynamicResource AppTheme.ScrollBarTrackBrush}" SnapsToDevicePixels="True">
-					<primitives:Track x:Name="PART_Track" Orientation="Vertical" IsDirectionReversed="True" Margin="2,0,2,0">
+					<primitives:Track x:Name="PART_Track" Orientation="Vertical" IsDirectionReversed="True">
 						<primitives:Track.Resources>
 							<sys:Double x:Key="{x:Static SystemParameters.VerticalScrollBarButtonHeightKey}">64</sys:Double>
 						</primitives:Track.Resources>
@@ -422,7 +422,7 @@ internal static class AppTheme
 										<Setter Property="Template">
 											<Setter.Value>
 												<ControlTemplate TargetType="{x:Type primitives:Thumb}">
-													<Border Background="{TemplateBinding Background}" CornerRadius="4" SnapsToDevicePixels="True" />
+													<Border Background="{TemplateBinding Background}" CornerRadius="0" SnapsToDevicePixels="True" />
 												</ControlTemplate>
 											</Setter.Value>
 										</Setter>
@@ -455,7 +455,7 @@ internal static class AppTheme
 				xmlns:sys="clr-namespace:System;assembly=mscorlib"
 				TargetType="{x:Type primitives:ScrollBar}">
 				<Grid Background="{DynamicResource AppTheme.ScrollBarTrackBrush}" SnapsToDevicePixels="True">
-					<primitives:Track x:Name="PART_Track" Orientation="Horizontal" Margin="0,2,0,2">
+					<primitives:Track x:Name="PART_Track" Orientation="Horizontal">
 						<primitives:Track.Resources>
 							<sys:Double x:Key="{x:Static SystemParameters.HorizontalScrollBarButtonWidthKey}">64</sys:Double>
 						</primitives:Track.Resources>
@@ -485,7 +485,7 @@ internal static class AppTheme
 										<Setter Property="Template">
 											<Setter.Value>
 												<ControlTemplate TargetType="{x:Type primitives:Thumb}">
-													<Border Background="{TemplateBinding Background}" CornerRadius="4" SnapsToDevicePixels="True" />
+													<Border Background="{TemplateBinding Background}" CornerRadius="0" SnapsToDevicePixels="True" />
 												</ControlTemplate>
 											</Setter.Value>
 										</Setter>
