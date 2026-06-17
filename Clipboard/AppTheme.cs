@@ -411,7 +411,7 @@ internal static class AppTheme
 							</primitives:RepeatButton>
 						</primitives:Track.IncreaseRepeatButton>
 						<primitives:Track.Thumb>
-							<primitives:Thumb MinWidth="8" MinHeight="8">
+							<primitives:Thumb MinWidth="8" MinHeight="32">
 								<primitives:Thumb.Style>
 									<Style TargetType="{x:Type primitives:Thumb}">
 										<Setter Property="Background" Value="{DynamicResource AppTheme.ScrollBarThumbBrush}" />
@@ -470,7 +470,7 @@ internal static class AppTheme
 							</primitives:RepeatButton>
 						</primitives:Track.IncreaseRepeatButton>
 						<primitives:Track.Thumb>
-							<primitives:Thumb MinWidth="8" MinHeight="8">
+							<primitives:Thumb MinWidth="32" MinHeight="8">
 								<primitives:Thumb.Style>
 									<Style TargetType="{x:Type primitives:Thumb}">
 										<Setter Property="Background" Value="{DynamicResource AppTheme.ScrollBarThumbBrush}" />
