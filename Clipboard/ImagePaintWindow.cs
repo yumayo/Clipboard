@@ -6,19 +6,36 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Ellipse = System.Windows.Shapes.Ellipse;
+using Polygon = System.Windows.Shapes.Polygon;
+using Polyline = System.Windows.Shapes.Polyline;
 using Rectangle = System.Windows.Shapes.Rectangle;
 
 namespace Clipboard;
 
 internal sealed class ImagePaintWindow : Window
 {
-	private const double RedStrokeThickness = 4;
 	private const double ToolbarHeight = 48;
 	private const double MinZoom = 0.05;
 	private const double MaxZoom = 8;
 	private const double ZoomStep = 1.1;
 	private const double OutlineNumberGap = 4;
 	private const double OutlineNumberFontSize = 18;
+	private const double PaintStrokeThicknessHeightRatio = 1.0 / 256.0;
+	private const double ArrowTailLength = 36;
+	private const double ArrowHeadLengthStrokeMultiplier = 5.5;
+	private const double ArrowHeadWidthStrokeMultiplier = 4.65;
+	private const double MinArrowHeadLength = 23;
+	private const double MinArrowHeadWidth = 20;
+	private const double ArrowLineEndHeadInsetRatio = 0.55;
+	private const double ArrowResizeHandleSize = 18;
+	private const double ArrowBendDistanceRatio = 0.55;
+	private const double ArrowTextPadding = 6;
+	private const double ArrowTextFontSizeHeightRatio = 1.0 / 64.0;
+	private const double MinArrowTextFontSize = 8;
+	private const double MinArrowTextRectangleWidth = 36;
+	private const double MinArrowTextRectangleHeight = 24;
+	private const string ArrowTextFontFamilyName = "Meiryo UI";
+	private static readonly SolidColorBrush ArrowBrush = CreateFrozenBrush(Color.FromRgb(226, 104, 0));
 	private static readonly string[] CircledNumberTexts =
 	{
 		"①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩",
@@ -31,16 +48,24 @@ internal sealed class ImagePaintWindow : Window
 	private readonly Canvas _overlayCanvas;
 	private readonly Button _blackFillButton;
 	private readonly Button _redOutlineButton;
-	private readonly List<Rectangle> _completedRectangles = new();
-	private readonly List<Rectangle> _redoRectangles = new();
+	private readonly Button _arrowTextButton;
+	private readonly TextBox _fontSizeTextBox;
+	private readonly List<UIElement> _completedElements = new();
+	private readonly List<UIElement> _redoElements = new();
 	private readonly Dictionary<Rectangle, TextBlock> _outlineNumberLabels = new();
+	private readonly double _paintStrokeThickness;
+	private double _currentArrowTextFontSize;
+	private bool _isUpdatingFontSizeTextBox;
+	private ArrowTextRectangle? _activeArrowTextRectangle;
 	private PaintMode _paintMode = PaintMode.RedOutlineRectangle;
 	private Point _dragStartPoint;
-	private Rectangle? _dragRectangle;
+	private UIElement? _dragElement;
 
 	public ImagePaintWindow(byte[] imageBytes)
 	{
 		_sourceImage = LoadImage(imageBytes);
+		_paintStrokeThickness = CalculatePaintStrokeThickness(_sourceImage.PixelHeight);
+		_currentArrowTextFontSize = CalculateDefaultArrowTextFontSize(_sourceImage.PixelHeight);
 		double windowWidth = Math.Min(SystemParameters.WorkArea.Width - 80, Math.Max(520, _sourceImage.PixelWidth + 36));
 		double windowHeight = Math.Min(SystemParameters.WorkArea.Height - 80, Math.Max(420, _sourceImage.PixelHeight + ToolbarHeight + 36));
 
@@ -74,6 +99,14 @@ internal sealed class ImagePaintWindow : Window
 		_redOutlineButton.Click += (_, _) => SetPaintMode(PaintMode.RedOutlineRectangle);
 		toolbar.Children.Add(_redOutlineButton);
 
+		_arrowTextButton = CreateModeButton("矢印矩形", CreateArrowTextRectangleIcon());
+		_arrowTextButton.Margin = new Thickness(8, 0, 0, 0);
+		_arrowTextButton.Click += (_, _) => SetPaintMode(PaintMode.ArrowTextRectangle);
+		toolbar.Children.Add(_arrowTextButton);
+
+		_fontSizeTextBox = CreateFontSizeTextBox(_currentArrowTextFontSize);
+		toolbar.Children.Add(CreateFontSizeEditor(_fontSizeTextBox));
+
 		var image = new Image
 		{
 			Source = _sourceImage,
@@ -89,7 +122,8 @@ internal sealed class ImagePaintWindow : Window
 			Width = _sourceImage.PixelWidth,
 			Height = _sourceImage.PixelHeight,
 			Background = Brushes.Transparent,
-			Cursor = Cursors.Cross
+			Cursor = Cursors.Cross,
+			Focusable = true
 		};
 		_overlayCanvas.MouseLeftButtonDown += OverlayCanvas_MouseLeftButtonDown;
 		_overlayCanvas.MouseMove += OverlayCanvas_MouseMove;
@@ -124,33 +158,107 @@ internal sealed class ImagePaintWindow : Window
 		root.Children.Add(scrollViewer);
 
 		Content = root;
+		AddHandler(Keyboard.PreviewKeyDownEvent, new KeyEventHandler(ImagePaintWindow_PreviewKeyDown), true);
 		SetPaintMode(_paintMode);
 	}
 
-	protected override void OnPreviewKeyDown(KeyEventArgs e)
+	private void ImagePaintWindow_PreviewKeyDown(object sender, KeyEventArgs e)
 	{
-		if ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control && e.Key == Key.S)
+		bool isControlPressed = (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control;
+		Key key = GetInputKey(e);
+		bool isTextInputSource = IsTextInputSource(e.OriginalSource);
+
+		if (key == Key.Escape && isTextInputSource)
+		{
+			ExitTextInputMode();
+			e.Handled = true;
+			return;
+		}
+
+		if (isControlPressed && key == Key.S)
 		{
 			SaveToClipboardAndClose();
 			e.Handled = true;
 			return;
 		}
 
-		if ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control && e.Key == Key.Z)
+		if (isTextInputSource && isControlPressed && IsUndoRedoKey(key))
 		{
+			return;
+		}
+
+		if (isControlPressed && key == Key.Z)
+		{
+			if ((Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift)
+			{
+				Redo();
+				e.Handled = true;
+				return;
+			}
+
 			Undo();
 			e.Handled = true;
 			return;
 		}
 
-		if ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control && e.Key == Key.Y)
+		if (isControlPressed && key == Key.Y)
 		{
 			Redo();
 			e.Handled = true;
 			return;
 		}
+	}
 
-		base.OnPreviewKeyDown(e);
+	private static Key GetInputKey(KeyEventArgs e)
+	{
+		return e.Key switch
+		{
+			Key.System => e.SystemKey,
+			Key.ImeProcessed => e.ImeProcessedKey,
+			Key.DeadCharProcessed => e.DeadCharProcessedKey,
+			_ => e.Key
+		};
+	}
+
+	private static bool IsUndoRedoKey(Key key)
+	{
+		return key is Key.Z or Key.Y;
+	}
+
+	private static bool IsTextInputSource(object source)
+	{
+		return source is DependencyObject dependencyObject &&
+			FindVisualParent<TextBox>(dependencyObject) is { IsKeyboardFocusWithin: true };
+	}
+
+	private void ExitTextInputMode()
+	{
+		SetActiveArrowTextRectangle(null);
+		FocusPaintSurface();
+	}
+
+	private static T? FindVisualParent<T>(DependencyObject dependencyObject)
+		where T : DependencyObject
+	{
+		DependencyObject? current = dependencyObject;
+		while (current != null)
+		{
+			if (current is T match)
+			{
+				return match;
+			}
+
+			try
+			{
+				current = VisualTreeHelper.GetParent(current);
+			}
+			catch (InvalidOperationException)
+			{
+				return null;
+			}
+		}
+
+		return null;
 	}
 
 	private void ScrollViewer_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
@@ -203,59 +311,64 @@ internal sealed class ImagePaintWindow : Window
 
 	private void OverlayCanvas_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
 	{
-		CancelActiveDrag();
-		_dragStartPoint = ClampToCanvas(e.GetPosition(_overlayCanvas));
-		var rectangle = CreateRectangle(_paintMode);
-		_dragRectangle = rectangle;
-		Canvas.SetLeft(rectangle, _dragStartPoint.X);
-		Canvas.SetTop(rectangle, _dragStartPoint.Y);
-		_overlayCanvas.Children.Add(rectangle);
-		_overlayCanvas.CaptureMouse();
-		e.Handled = true;
-	}
-
-	private void OverlayCanvas_MouseMove(object sender, MouseEventArgs e)
-	{
-		if (_dragRectangle is not { })
+		if (IsExistingPaintElementSource(e.OriginalSource))
 		{
 			return;
 		}
 
-		UpdateDragRectangle(ClampToCanvas(e.GetPosition(_overlayCanvas)));
+		CancelActiveDrag();
+		_dragStartPoint = ClampToCanvas(e.GetPosition(_overlayCanvas));
+		var element = CreatePaintElement(_paintMode);
+		_dragElement = element;
+		UpdateDragElement(_dragStartPoint);
+		_overlayCanvas.Children.Add(element);
+		_overlayCanvas.CaptureMouse();
+		e.Handled = true;
+	}
+
+	private static bool IsExistingPaintElementSource(object source)
+	{
+		return source is DependencyObject dependencyObject &&
+			FindVisualParent<ArrowTextRectangle>(dependencyObject) != null;
+	}
+
+	private void OverlayCanvas_MouseMove(object sender, MouseEventArgs e)
+	{
+		if (_dragElement is not { })
+		{
+			return;
+		}
+
+		UpdateDragElement(ClampToCanvas(e.GetPosition(_overlayCanvas)));
 		e.Handled = true;
 	}
 
 	private void OverlayCanvas_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
 	{
-		if (_dragRectangle is not { } rectangle)
+		if (_dragElement is not { })
 		{
 			return;
 		}
 
-		UpdateDragRectangle(ClampToCanvas(e.GetPosition(_overlayCanvas)));
-		if (IsDrawableRectangle(rectangle))
-		{
-			_completedRectangles.Add(rectangle);
-			_redoRectangles.Clear();
-			UpdateOutlineNumberLabels();
-		}
-		else
-		{
-			_overlayCanvas.Children.Remove(rectangle);
-		}
-
-		_dragRectangle = null;
-		_overlayCanvas.ReleaseMouseCapture();
+		UpdateDragElement(ClampToCanvas(e.GetPosition(_overlayCanvas)));
+		CompleteActiveDrag(focusTextInput: true);
 		e.Handled = true;
 	}
 
-	private void UpdateDragRectangle(Point currentPoint)
+	private void UpdateDragElement(Point currentPoint)
 	{
-		if (_dragRectangle is not { } rectangle)
+		if (_dragElement is Rectangle rectangle)
 		{
-			return;
+			UpdateRectangleBounds(rectangle, currentPoint);
 		}
+		else if (_dragElement is ArrowTextRectangle arrowTextRectangle)
+		{
+			arrowTextRectangle.Update(_dragStartPoint, currentPoint);
+		}
+	}
 
+	private void UpdateRectangleBounds(Rectangle rectangle, Point currentPoint)
+	{
 		double left = Math.Min(_dragStartPoint.X, currentPoint.X);
 		double top = Math.Min(_dragStartPoint.Y, currentPoint.Y);
 		double width = Math.Abs(currentPoint.X - _dragStartPoint.X);
@@ -264,6 +377,16 @@ internal sealed class ImagePaintWindow : Window
 		Canvas.SetTop(rectangle, top);
 		rectangle.Width = width;
 		rectangle.Height = height;
+	}
+
+	private static bool IsDrawableElement(UIElement element)
+	{
+		return element switch
+		{
+			Rectangle rectangle => IsDrawableRectangle(rectangle),
+			ArrowTextRectangle arrowTextRectangle => arrowTextRectangle.IsDrawable,
+			_ => false
+		};
 	}
 
 	private static bool IsDrawableRectangle(Rectangle rectangle)
@@ -275,7 +398,7 @@ internal sealed class ImagePaintWindow : Window
 	{
 		try
 		{
-			CompleteActiveDrag();
+			CompleteActiveDrag(focusTextInput: false);
 
 			ClipboardManager.CopyImageToClipboard(RenderPaintedImage());
 			Close();
@@ -289,76 +412,122 @@ internal sealed class ImagePaintWindow : Window
 
 	private void Undo()
 	{
-		if (_dragRectangle != null)
+		if (_dragElement != null)
 		{
 			CancelActiveDrag();
 			return;
 		}
 
-		if (_completedRectangles.Count == 0)
+		if (_completedElements.Count == 0)
 		{
 			return;
 		}
 
-		Rectangle rectangle = _completedRectangles[^1];
-		_completedRectangles.RemoveAt(_completedRectangles.Count - 1);
-		_overlayCanvas.Children.Remove(rectangle);
-		_redoRectangles.Add(rectangle);
+		UIElement element = _completedElements[^1];
+		_completedElements.RemoveAt(_completedElements.Count - 1);
+		_overlayCanvas.Children.Remove(element);
+		_redoElements.Add(element);
+		if (element is ArrowTextRectangle arrowTextRectangle && ReferenceEquals(_activeArrowTextRectangle, arrowTextRectangle))
+		{
+			SetActiveArrowTextRectangle(null);
+		}
+
 		UpdateOutlineNumberLabels();
+		FocusCurrentEditableElement();
 	}
 
 	private void Redo()
 	{
-		if (_dragRectangle != null)
+		if (_dragElement != null)
 		{
 			CancelActiveDrag();
 			return;
 		}
 
-		if (_redoRectangles.Count == 0)
+		if (_redoElements.Count == 0)
 		{
 			return;
 		}
 
-		Rectangle rectangle = _redoRectangles[^1];
-		_redoRectangles.RemoveAt(_redoRectangles.Count - 1);
-		_overlayCanvas.Children.Add(rectangle);
-		_completedRectangles.Add(rectangle);
+		UIElement element = _redoElements[^1];
+		_redoElements.RemoveAt(_redoElements.Count - 1);
+		_overlayCanvas.Children.Add(element);
+		_completedElements.Add(element);
 		UpdateOutlineNumberLabels();
+		if (element is ArrowTextRectangle arrowTextRectangle)
+		{
+			SetActiveArrowTextRectangle(arrowTextRectangle);
+			arrowTextRectangle.FocusTextInput();
+		}
+		else
+		{
+			FocusPaintSurface();
+		}
 	}
 
-	private void CompleteActiveDrag()
+	private void ArrowTextRectangle_TextInputFocused(object? sender, EventArgs e)
 	{
-		if (_dragRectangle is not { } rectangle)
+		if (sender is ArrowTextRectangle arrowTextRectangle)
+		{
+			SetActiveArrowTextRectangle(arrowTextRectangle);
+		}
+	}
+
+	private void FocusCurrentEditableElement()
+	{
+		if (_completedElements.Count > 0 && _completedElements[^1] is ArrowTextRectangle arrowTextRectangle)
+		{
+			SetActiveArrowTextRectangle(arrowTextRectangle);
+			arrowTextRectangle.FocusTextInput();
+			return;
+		}
+
+		SetActiveArrowTextRectangle(null);
+		FocusPaintSurface();
+	}
+
+	private void FocusPaintSurface()
+	{
+		_overlayCanvas.Focus();
+	}
+
+	private void CompleteActiveDrag(bool focusTextInput)
+	{
+		if (_dragElement is not { } element)
 		{
 			return;
 		}
 
 		_overlayCanvas.ReleaseMouseCapture();
-		if (IsDrawableRectangle(rectangle))
+		if (IsDrawableElement(element))
 		{
-			_completedRectangles.Add(rectangle);
-			_redoRectangles.Clear();
+			_completedElements.Add(element);
+			_redoElements.Clear();
 			UpdateOutlineNumberLabels();
+			if (focusTextInput && element is ArrowTextRectangle arrowTextRectangle)
+			{
+				SetActiveArrowTextRectangle(arrowTextRectangle);
+				arrowTextRectangle.FocusTextInput();
+			}
 		}
 		else
 		{
-			_overlayCanvas.Children.Remove(rectangle);
+			_overlayCanvas.Children.Remove(element);
 		}
 
-		_dragRectangle = null;
+		_dragElement = null;
 	}
 
 	private void CancelActiveDrag()
 	{
-		if (_dragRectangle is not { } rectangle)
+		if (_dragElement is not { } element)
 		{
 			return;
 		}
 
 		_overlayCanvas.ReleaseMouseCapture();
-		_overlayCanvas.Children.Remove(rectangle);
-		_dragRectangle = null;
+		_overlayCanvas.Children.Remove(element);
+		_dragElement = null;
 	}
 
 	private void UpdateOutlineNumberLabels()
@@ -377,9 +546,9 @@ internal sealed class ImagePaintWindow : Window
 
 		var placedLabelBounds = new List<Rect>();
 		int outlineNumber = 1;
-		foreach (Rectangle rectangle in _completedRectangles)
+		foreach (UIElement element in _completedElements)
 		{
-			if (!IsOutlineRectangle(rectangle))
+			if (element is not Rectangle rectangle || !IsOutlineRectangle(rectangle))
 			{
 				continue;
 			}
@@ -395,9 +564,9 @@ internal sealed class ImagePaintWindow : Window
 	private int CountOutlineRectangles()
 	{
 		int count = 0;
-		foreach (Rectangle rectangle in _completedRectangles)
+		foreach (UIElement element in _completedElements)
 		{
-			if (IsOutlineRectangle(rectangle))
+			if (element is Rectangle rectangle && IsOutlineRectangle(rectangle))
 			{
 				count++;
 			}
@@ -502,20 +671,36 @@ internal sealed class ImagePaintWindow : Window
 			return false;
 		}
 
-		foreach (Rectangle rectangle in _completedRectangles)
+		foreach (UIElement element in _completedElements)
 		{
-			if (allowInsideOwnRectangle && ReferenceEquals(rectangle, ownRectangle))
+			if (allowInsideOwnRectangle && ReferenceEquals(element, ownRectangle))
 			{
 				continue;
 			}
 
-			if (candidate.IntersectsWith(GetRectangleBounds(rectangle)))
+			if (TryGetPaintElementBounds(element, out Rect bounds) && candidate.IntersectsWith(bounds))
 			{
 				return false;
 			}
 		}
 
 		return true;
+	}
+
+	private static bool TryGetPaintElementBounds(UIElement element, out Rect bounds)
+	{
+		switch (element)
+		{
+			case Rectangle rectangle:
+				bounds = GetRectangleBounds(rectangle);
+				return true;
+			case ArrowTextRectangle arrowTextRectangle:
+				bounds = arrowTextRectangle.TextRectangleBounds;
+				return true;
+			default:
+				bounds = Rect.Empty;
+				return false;
+		}
 	}
 
 	private bool IsInsideCanvas(Rect bounds)
@@ -559,6 +744,7 @@ internal sealed class ImagePaintWindow : Window
 
 	private BitmapSource RenderPaintedImage()
 	{
+		PrepareTextInputsForRender();
 		_paintSurface.Measure(new Size(_sourceImage.PixelWidth, _sourceImage.PixelHeight));
 		_paintSurface.Arrange(new Rect(0, 0, _sourceImage.PixelWidth, _sourceImage.PixelHeight));
 		_paintSurface.UpdateLayout();
@@ -574,11 +760,32 @@ internal sealed class ImagePaintWindow : Window
 		return bitmap;
 	}
 
+	private void PrepareTextInputsForRender()
+	{
+		foreach (UIElement element in _completedElements)
+		{
+			if (element is ArrowTextRectangle arrowTextRectangle)
+			{
+				arrowTextRectangle.PrepareForRender();
+			}
+		}
+
+		if (_dragElement is ArrowTextRectangle activeArrowTextRectangle)
+		{
+			activeArrowTextRectangle.PrepareForRender();
+		}
+
+		_overlayCanvas.Focusable = true;
+		_overlayCanvas.Focus();
+		Keyboard.ClearFocus();
+	}
+
 	private void SetPaintMode(PaintMode mode)
 	{
 		_paintMode = mode;
 		UpdateModeButton(_blackFillButton, mode == PaintMode.BlackFillRectangle);
 		UpdateModeButton(_redOutlineButton, mode == PaintMode.RedOutlineRectangle);
+		UpdateModeButton(_arrowTextButton, mode == PaintMode.ArrowTextRectangle);
 	}
 
 	private static Button CreateModeButton(string text, UIElement icon)
@@ -611,6 +818,120 @@ internal sealed class ImagePaintWindow : Window
 		return button;
 	}
 
+	private StackPanel CreateFontSizeEditor(TextBox textBox)
+	{
+		var label = new TextBlock
+		{
+			Text = "文字サイズ",
+			Margin = new Thickness(12, 0, 6, 0),
+			VerticalAlignment = VerticalAlignment.Center
+		};
+		label.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
+
+		var editor = new StackPanel
+		{
+			Orientation = Orientation.Horizontal,
+			VerticalAlignment = VerticalAlignment.Center
+		};
+		editor.Children.Add(label);
+		editor.Children.Add(textBox);
+		return editor;
+	}
+
+	private TextBox CreateFontSizeTextBox(double fontSize)
+	{
+		var textBox = new TextBox
+		{
+			Text = FormatFontSize(fontSize),
+			Width = 64,
+			Height = 30,
+			VerticalContentAlignment = VerticalAlignment.Center
+		};
+		AppTheme.ApplyTextBox(textBox);
+		textBox.TextChanged += (_, _) => TryApplyFontSizeText(restoreInvalidValue: false);
+		textBox.LostKeyboardFocus += (_, _) => TryApplyFontSizeText(restoreInvalidValue: true);
+		textBox.PreviewKeyDown += FontSizeTextBox_PreviewKeyDown;
+		return textBox;
+	}
+
+	private void FontSizeTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
+	{
+		if (e.Key != Key.Enter)
+		{
+			return;
+		}
+
+		TryApplyFontSizeText(restoreInvalidValue: true);
+		_overlayCanvas.Focusable = true;
+		_overlayCanvas.Focus();
+		e.Handled = true;
+	}
+
+	private bool TryApplyFontSizeText(bool restoreInvalidValue)
+	{
+		if (_isUpdatingFontSizeTextBox)
+		{
+			return true;
+		}
+
+		if (!TryParseFontSize(_fontSizeTextBox.Text, out double fontSize))
+		{
+			if (restoreInvalidValue)
+			{
+				UpdateFontSizeTextBox(_activeArrowTextRectangle?.TextFontSize ?? _currentArrowTextFontSize);
+			}
+
+			return false;
+		}
+
+		_currentArrowTextFontSize = fontSize;
+		_activeArrowTextRectangle?.SetTextFontSize(fontSize);
+		return true;
+	}
+
+	private void SetActiveArrowTextRectangle(ArrowTextRectangle? arrowTextRectangle)
+	{
+		_activeArrowTextRectangle = arrowTextRectangle;
+		if (arrowTextRectangle != null)
+		{
+			_currentArrowTextFontSize = arrowTextRectangle.TextFontSize;
+		}
+
+		UpdateFontSizeTextBox(_currentArrowTextFontSize);
+	}
+
+	private void UpdateFontSizeTextBox(double fontSize)
+	{
+		_isUpdatingFontSizeTextBox = true;
+		_fontSizeTextBox.Text = FormatFontSize(fontSize);
+		_isUpdatingFontSizeTextBox = false;
+	}
+
+	private static bool TryParseFontSize(string text, out double fontSize)
+	{
+		string trimmedText = text.Trim();
+		if (!double.TryParse(
+				trimmedText,
+				System.Globalization.NumberStyles.Float,
+				System.Globalization.CultureInfo.CurrentCulture,
+				out fontSize) &&
+			!double.TryParse(
+				trimmedText,
+				System.Globalization.NumberStyles.Float,
+				System.Globalization.CultureInfo.InvariantCulture,
+				out fontSize))
+		{
+			return false;
+		}
+
+		return double.IsFinite(fontSize) && fontSize > 0;
+	}
+
+	private static string FormatFontSize(double fontSize)
+	{
+		return fontSize.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+	}
+
 	private static Ellipse CreateFillIcon()
 	{
 		return new Ellipse
@@ -637,6 +958,53 @@ internal sealed class ImagePaintWindow : Window
 		};
 	}
 
+	private static Canvas CreateArrowTextRectangleIcon()
+	{
+		var icon = new Canvas
+		{
+			Width = 18,
+			Height = 16
+		};
+
+		var arrowLine = new Polyline
+		{
+			Stroke = ArrowBrush,
+			StrokeThickness = 1.6,
+			StrokeLineJoin = PenLineJoin.Round,
+			Points = new PointCollection
+			{
+				new(2, 2),
+				new(2, 10),
+				new(7, 10)
+			}
+		};
+		var arrowHead = new Polygon
+		{
+			Fill = ArrowBrush,
+			Points = new PointCollection
+			{
+				new(2, 2),
+				new(0, 6),
+				new(4, 6)
+			}
+		};
+		var rectangle = new Rectangle
+		{
+			Width = 10,
+			Height = 7,
+			Fill = Brushes.White,
+			Stroke = ArrowBrush,
+			StrokeThickness = 1.4
+		};
+		Canvas.SetLeft(rectangle, 7);
+		Canvas.SetTop(rectangle, 7);
+
+		icon.Children.Add(arrowLine);
+		icon.Children.Add(arrowHead);
+		icon.Children.Add(rectangle);
+		return icon;
+	}
+
 	private static void UpdateModeButton(Button button, bool selected)
 	{
 		button.FontWeight = selected ? FontWeights.SemiBold : FontWeights.Normal;
@@ -646,7 +1014,23 @@ internal sealed class ImagePaintWindow : Window
 			selected ? AppTheme.AccentBorderBrushKey : AppTheme.InputBorderBrushKey);
 	}
 
-	private static Rectangle CreateRectangle(PaintMode mode)
+	private UIElement CreatePaintElement(PaintMode mode)
+	{
+		if (mode == PaintMode.ArrowTextRectangle)
+		{
+			var arrowTextRectangle = new ArrowTextRectangle(
+				_overlayCanvas.Width,
+				_overlayCanvas.Height,
+				_paintStrokeThickness,
+				_currentArrowTextFontSize);
+			arrowTextRectangle.TextInputFocused += ArrowTextRectangle_TextInputFocused;
+			return arrowTextRectangle;
+		}
+
+		return CreateRectangle(mode, _paintStrokeThickness);
+	}
+
+	private static Rectangle CreateRectangle(PaintMode mode, double strokeThickness)
 	{
 		return mode switch
 		{
@@ -654,7 +1038,7 @@ internal sealed class ImagePaintWindow : Window
 			{
 				Fill = Brushes.Transparent,
 				Stroke = Brushes.Red,
-				StrokeThickness = RedStrokeThickness,
+				StrokeThickness = strokeThickness,
 				SnapsToDevicePixels = true
 			},
 			_ => new Rectangle
@@ -666,11 +1050,591 @@ internal sealed class ImagePaintWindow : Window
 		};
 	}
 
+	private static double CalculatePaintStrokeThickness(double canvasHeight)
+	{
+		return canvasHeight * PaintStrokeThicknessHeightRatio;
+	}
+
+	private static double CalculateDefaultArrowTextFontSize(double canvasHeight)
+	{
+		return Math.Max(MinArrowTextFontSize, canvasHeight * ArrowTextFontSizeHeightRatio);
+	}
+
+	private static SolidColorBrush CreateFrozenBrush(Color color)
+	{
+		var brush = new SolidColorBrush(color);
+		brush.Freeze();
+		return brush;
+	}
+
 	private Point ClampToCanvas(Point point)
 	{
 		return new Point(
 			Math.Max(0, Math.Min(point.X, _overlayCanvas.Width)),
 			Math.Max(0, Math.Min(point.Y, _overlayCanvas.Height)));
+	}
+
+	private sealed class ArrowTextRectangle : Canvas
+	{
+		private readonly double _canvasWidth;
+		private readonly double _canvasHeight;
+		private readonly double _strokeThickness;
+		private readonly double _arrowHeadLength;
+		private readonly double _arrowHeadWidth;
+		private readonly Rectangle _rectangle;
+		private readonly Polyline _arrowLine;
+		private readonly Polygon _arrowHead;
+		private readonly TextBox _textBox;
+		private readonly Dictionary<ResizeHandleKind, Rectangle> _resizeHandles = new();
+		private Rect _textRectangleBounds = Rect.Empty;
+		private Point _arrowTip;
+		private Point _arrowDragStartPoint;
+		private Point _arrowDragStartTip;
+		private double _arrowDragGrabAlongDirection;
+		private double _arrowDragGrabAlongNormal;
+		private Point _rectangleDragStartPoint;
+		private Rect _rectangleDragStartBounds = Rect.Empty;
+		private Point _resizeDragStartPoint;
+		private Rect _resizeDragStartBounds = Rect.Empty;
+		private ResizeHandleKind _activeResizeHandle;
+		private bool _isArrowTipCustomized;
+		private bool _isDraggingArrowTip;
+		private bool _isDraggingRectangle;
+		private bool _isResizingRectangle;
+
+		public ArrowTextRectangle(double canvasWidth, double canvasHeight, double strokeThickness, double textFontSize)
+		{
+			_canvasWidth = canvasWidth;
+			_canvasHeight = canvasHeight;
+			_strokeThickness = strokeThickness;
+			_arrowHeadLength = Math.Max(MinArrowHeadLength, strokeThickness * ArrowHeadLengthStrokeMultiplier);
+			_arrowHeadWidth = Math.Max(MinArrowHeadWidth, strokeThickness * ArrowHeadWidthStrokeMultiplier);
+			Width = canvasWidth;
+			Height = canvasHeight;
+			ClipToBounds = false;
+
+			_arrowLine = new Polyline
+			{
+				Stroke = ArrowBrush,
+				StrokeThickness = strokeThickness,
+				StrokeLineJoin = PenLineJoin.Round,
+				StrokeStartLineCap = PenLineCap.Round,
+				StrokeEndLineCap = PenLineCap.Flat,
+				IsHitTestVisible = false
+			};
+			_arrowHead = new Polygon
+			{
+				Fill = ArrowBrush,
+				Cursor = Cursors.SizeAll,
+				IsHitTestVisible = true
+			};
+			_arrowHead.MouseLeftButtonDown += ArrowHead_MouseLeftButtonDown;
+			_arrowHead.MouseMove += ArrowHead_MouseMove;
+			_arrowHead.MouseLeftButtonUp += ArrowHead_MouseLeftButtonUp;
+			_rectangle = new Rectangle
+			{
+				Fill = Brushes.White,
+				Stroke = ArrowBrush,
+				StrokeThickness = strokeThickness,
+				SnapsToDevicePixels = true,
+				Cursor = Cursors.SizeAll
+			};
+			_rectangle.MouseLeftButtonDown += Rectangle_MouseLeftButtonDown;
+			_rectangle.MouseMove += Rectangle_MouseMove;
+			_rectangle.MouseLeftButtonUp += Rectangle_MouseLeftButtonUp;
+			_textBox = new TextBox
+			{
+				AcceptsReturn = true,
+				Background = Brushes.Transparent,
+				BorderThickness = new Thickness(0),
+				CaretBrush = Brushes.Black,
+				FontFamily = new FontFamily(ArrowTextFontFamilyName),
+				FontSize = textFontSize,
+				Foreground = Brushes.Black,
+				HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+				MinHeight = 0,
+				MinWidth = 0,
+				Padding = new Thickness(0),
+				TextWrapping = TextWrapping.Wrap,
+				VerticalScrollBarVisibility = ScrollBarVisibility.Disabled
+			};
+			_textBox.GotKeyboardFocus += (_, _) => TextInputFocused?.Invoke(this, EventArgs.Empty);
+
+			foreach (ResizeHandleKind resizeHandleKind in Enum.GetValues<ResizeHandleKind>())
+			{
+				_resizeHandles.Add(resizeHandleKind, CreateResizeHandle(resizeHandleKind));
+			}
+
+			Children.Add(_arrowLine);
+			Children.Add(_arrowHead);
+			Children.Add(_rectangle);
+			Children.Add(_textBox);
+			foreach (Rectangle resizeHandle in _resizeHandles.Values)
+			{
+				Children.Add(resizeHandle);
+			}
+		}
+
+		public event EventHandler? TextInputFocused;
+
+		public Rect TextRectangleBounds => _textRectangleBounds;
+
+		public double TextFontSize => _textBox.FontSize;
+
+		public bool IsDrawable =>
+			_textRectangleBounds.Width >= MinArrowTextRectangleWidth &&
+			_textRectangleBounds.Height >= MinArrowTextRectangleHeight;
+
+		public void Update(Point startPoint, Point currentPoint)
+		{
+			double left = Math.Min(startPoint.X, currentPoint.X);
+			double top = Math.Min(startPoint.Y, currentPoint.Y);
+			double width = Math.Abs(currentPoint.X - startPoint.X);
+			double height = Math.Abs(currentPoint.Y - startPoint.Y);
+			SetTextRectangleBounds(new Rect(left, top, width, height));
+
+			if (!_isArrowTipCustomized)
+			{
+				_arrowTip = CalculateDefaultArrowTip(_textRectangleBounds);
+			}
+
+			UpdateArrow(_textRectangleBounds);
+		}
+
+		private void SetTextRectangleBounds(Rect bounds)
+		{
+			_textRectangleBounds = bounds;
+			Canvas.SetLeft(_rectangle, bounds.Left);
+			Canvas.SetTop(_rectangle, bounds.Top);
+			_rectangle.Width = bounds.Width;
+			_rectangle.Height = bounds.Height;
+
+			double textInset = _strokeThickness + ArrowTextPadding;
+			Canvas.SetLeft(_textBox, bounds.Left + textInset);
+			Canvas.SetTop(_textBox, bounds.Top + textInset);
+			_textBox.Width = Math.Max(0, bounds.Width - textInset * 2);
+			_textBox.Height = Math.Max(0, bounds.Height - textInset * 2);
+			PositionResizeHandles(bounds);
+		}
+
+		public void FocusTextInput()
+		{
+			_textBox.Focus();
+			_textBox.CaretIndex = _textBox.Text.Length;
+		}
+
+		public void SetTextFontSize(double fontSize)
+		{
+			_textBox.FontSize = fontSize;
+		}
+
+		public void PrepareForRender()
+		{
+			if (_textBox.SelectionLength > 0)
+			{
+				_textBox.Select(_textBox.CaretIndex, 0);
+			}
+		}
+
+		private void Rectangle_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+		{
+			_isDraggingRectangle = true;
+			_isArrowTipCustomized = true;
+			_rectangleDragStartPoint = e.GetPosition(this);
+			_rectangleDragStartBounds = _textRectangleBounds;
+			_rectangle.CaptureMouse();
+			e.Handled = true;
+		}
+
+		private void Rectangle_MouseMove(object sender, MouseEventArgs e)
+		{
+			if (!_isDraggingRectangle)
+			{
+				return;
+			}
+
+			MoveTextRectangle(e.GetPosition(this) - _rectangleDragStartPoint);
+			e.Handled = true;
+		}
+
+		private void Rectangle_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+		{
+			if (!_isDraggingRectangle)
+			{
+				return;
+			}
+
+			MoveTextRectangle(e.GetPosition(this) - _rectangleDragStartPoint);
+			_isDraggingRectangle = false;
+			_rectangle.ReleaseMouseCapture();
+			e.Handled = true;
+		}
+
+		private void MoveTextRectangle(Vector offset)
+		{
+			Rect movedBounds = _rectangleDragStartBounds;
+			movedBounds.Offset(offset.X, offset.Y);
+			SetTextRectangleBounds(ClampRectangleToBounds(movedBounds));
+			UpdateArrow(_textRectangleBounds);
+		}
+
+		private Rectangle CreateResizeHandle(ResizeHandleKind resizeHandleKind)
+		{
+			var resizeHandle = new Rectangle
+			{
+				Width = ArrowResizeHandleSize,
+				Height = ArrowResizeHandleSize,
+				Fill = Brushes.Transparent,
+				Stroke = Brushes.Transparent,
+				Cursor = GetResizeHandleCursor(resizeHandleKind),
+				Tag = resizeHandleKind
+			};
+			resizeHandle.MouseLeftButtonDown += ResizeHandle_MouseLeftButtonDown;
+			resizeHandle.MouseMove += ResizeHandle_MouseMove;
+			resizeHandle.MouseLeftButtonUp += ResizeHandle_MouseLeftButtonUp;
+			return resizeHandle;
+		}
+
+		private static Cursor GetResizeHandleCursor(ResizeHandleKind resizeHandleKind)
+		{
+			return resizeHandleKind is ResizeHandleKind.TopLeft or ResizeHandleKind.BottomRight
+				? Cursors.SizeNWSE
+				: Cursors.SizeNESW;
+		}
+
+		private void PositionResizeHandles(Rect bounds)
+		{
+			PositionResizeHandle(ResizeHandleKind.TopLeft, bounds.Left, bounds.Top);
+			PositionResizeHandle(ResizeHandleKind.TopRight, bounds.Right, bounds.Top);
+			PositionResizeHandle(ResizeHandleKind.BottomLeft, bounds.Left, bounds.Bottom);
+			PositionResizeHandle(ResizeHandleKind.BottomRight, bounds.Right, bounds.Bottom);
+		}
+
+		private void PositionResizeHandle(ResizeHandleKind resizeHandleKind, double x, double y)
+		{
+			if (!_resizeHandles.TryGetValue(resizeHandleKind, out Rectangle? resizeHandle))
+			{
+				return;
+			}
+
+			Canvas.SetLeft(resizeHandle, x - ArrowResizeHandleSize / 2);
+			Canvas.SetTop(resizeHandle, y - ArrowResizeHandleSize / 2);
+		}
+
+		private void ResizeHandle_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+		{
+			if (sender is not Rectangle resizeHandle || resizeHandle.Tag is not ResizeHandleKind resizeHandleKind)
+			{
+				return;
+			}
+
+			_isResizingRectangle = true;
+			_isArrowTipCustomized = true;
+			_activeResizeHandle = resizeHandleKind;
+			_resizeDragStartPoint = e.GetPosition(this);
+			_resizeDragStartBounds = _textRectangleBounds;
+			resizeHandle.CaptureMouse();
+			e.Handled = true;
+		}
+
+		private void ResizeHandle_MouseMove(object sender, MouseEventArgs e)
+		{
+			if (!_isResizingRectangle)
+			{
+				return;
+			}
+
+			ResizeTextRectangle(e.GetPosition(this) - _resizeDragStartPoint);
+			e.Handled = true;
+		}
+
+		private void ResizeHandle_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+		{
+			if (!_isResizingRectangle)
+			{
+				return;
+			}
+
+			ResizeTextRectangle(e.GetPosition(this) - _resizeDragStartPoint);
+			_isResizingRectangle = false;
+			if (sender is Rectangle resizeHandle)
+			{
+				resizeHandle.ReleaseMouseCapture();
+			}
+
+			e.Handled = true;
+		}
+
+		private void ResizeTextRectangle(Vector offset)
+		{
+			if (_resizeDragStartBounds.IsEmpty)
+			{
+				return;
+			}
+
+			double left = _resizeDragStartBounds.Left;
+			double top = _resizeDragStartBounds.Top;
+			double right = _resizeDragStartBounds.Right;
+			double bottom = _resizeDragStartBounds.Bottom;
+			double minWidth = Math.Min(MinArrowTextRectangleWidth, _canvasWidth);
+			double minHeight = Math.Min(MinArrowTextRectangleHeight, _canvasHeight);
+
+			if (_activeResizeHandle is ResizeHandleKind.TopLeft or ResizeHandleKind.BottomLeft)
+			{
+				left = Clamp(left + offset.X, 0, Math.Max(0, right - minWidth));
+			}
+			else
+			{
+				right = Clamp(right + offset.X, Math.Min(_canvasWidth, left + minWidth), _canvasWidth);
+			}
+
+			if (_activeResizeHandle is ResizeHandleKind.TopLeft or ResizeHandleKind.TopRight)
+			{
+				top = Clamp(top + offset.Y, 0, Math.Max(0, bottom - minHeight));
+			}
+			else
+			{
+				bottom = Clamp(bottom + offset.Y, Math.Min(_canvasHeight, top + minHeight), _canvasHeight);
+			}
+
+			SetTextRectangleBounds(new Rect(left, top, right - left, bottom - top));
+			UpdateArrow(_textRectangleBounds);
+		}
+
+		private void ArrowHead_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+		{
+			_isDraggingArrowTip = true;
+			_isArrowTipCustomized = true;
+			_arrowDragStartPoint = e.GetPosition(this);
+			_arrowDragStartTip = _arrowTip;
+			Vector arrowDirection = GetArrowDirection(_textRectangleBounds, _arrowTip, out _, out _);
+			arrowDirection.Normalize();
+			Vector arrowNormal = new(-arrowDirection.Y, arrowDirection.X);
+			Vector grabOffset = _arrowDragStartPoint - _arrowTip;
+			_arrowDragGrabAlongDirection = Vector.Multiply(grabOffset, arrowDirection);
+			_arrowDragGrabAlongNormal = Vector.Multiply(grabOffset, arrowNormal);
+			_arrowHead.CaptureMouse();
+			e.Handled = true;
+		}
+
+		private void ArrowHead_MouseMove(object sender, MouseEventArgs e)
+		{
+			if (!_isDraggingArrowTip)
+			{
+				return;
+			}
+
+			MoveArrowTipFromDragPoint(e.GetPosition(this));
+			e.Handled = true;
+		}
+
+		private void ArrowHead_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+		{
+			if (!_isDraggingArrowTip)
+			{
+				return;
+			}
+
+			MoveArrowTipFromDragPoint(e.GetPosition(this));
+			_isDraggingArrowTip = false;
+			_arrowHead.ReleaseMouseCapture();
+			e.Handled = true;
+		}
+
+		private void MoveArrowTipFromDragPoint(Point dragPoint)
+		{
+			Point tipPoint = _arrowDragStartTip + (dragPoint - _arrowDragStartPoint);
+			for (int i = 0; i < 3; i++)
+			{
+				Vector arrowDirection = GetArrowDirection(_textRectangleBounds, tipPoint, out _, out _);
+				arrowDirection.Normalize();
+				Vector arrowNormal = new(-arrowDirection.Y, arrowDirection.X);
+				tipPoint = dragPoint -
+					arrowDirection * _arrowDragGrabAlongDirection -
+					arrowNormal * _arrowDragGrabAlongNormal;
+				tipPoint = ClampToBounds(tipPoint);
+			}
+
+			MoveArrowTip(tipPoint);
+		}
+
+		private void MoveArrowTip(Point point)
+		{
+			_arrowTip = ClampToBounds(point);
+			UpdateArrow(_textRectangleBounds);
+		}
+
+		private Point CalculateDefaultArrowTip(Rect rectangleBounds)
+		{
+			double leftSpace = rectangleBounds.Left;
+			double rightSpace = Math.Max(0, _canvasWidth - rectangleBounds.Right);
+			bool useLeft = leftSpace >= rightSpace;
+			double attachX = useLeft ? rectangleBounds.Left : rectangleBounds.Right;
+			double horizontalLength = Math.Min(ArrowTailLength, useLeft ? leftSpace : rightSpace);
+			double bendX = useLeft
+				? Math.Max(0, attachX - horizontalLength)
+				: Math.Min(_canvasWidth, attachX + horizontalLength);
+
+			double topSpace = rectangleBounds.Top;
+			double bottomSpace = Math.Max(0, _canvasHeight - rectangleBounds.Bottom);
+			bool useUp = topSpace >= bottomSpace;
+			double tipY = useUp
+				? Math.Max(0, rectangleBounds.Top - Math.Min(ArrowTailLength, topSpace))
+				: Math.Min(_canvasHeight, rectangleBounds.Bottom + Math.Min(ArrowTailLength, bottomSpace));
+
+			return new Point(bendX, tipY);
+		}
+
+		private void UpdateArrow(Rect rectangleBounds)
+		{
+			Point tipPoint = ClampToBounds(_arrowTip);
+			_arrowTip = tipPoint;
+			Vector arrowDirection = GetArrowDirection(rectangleBounds, tipPoint, out Point attachPoint, out Point bendPoint);
+
+			Point lineEndPoint = GetArrowLineEndPoint(tipPoint, bendPoint, attachPoint, arrowDirection);
+			_arrowLine.Points = new PointCollection
+			{
+				attachPoint,
+				bendPoint,
+				lineEndPoint
+			};
+
+			UpdateArrowHead(tipPoint, arrowDirection);
+		}
+
+		private Vector GetArrowDirection(Rect rectangleBounds, Point tipPoint, out Point attachPoint, out Point bendPoint)
+		{
+			attachPoint = GetArrowAttachPoint(rectangleBounds, tipPoint, out ArrowAttachSide attachSide);
+			bendPoint = GetArrowBendPoint(attachPoint, tipPoint, attachSide);
+			Vector arrowDirection = tipPoint - bendPoint;
+			if (arrowDirection.LengthSquared < 0.001)
+			{
+				arrowDirection = tipPoint - attachPoint;
+			}
+
+			if (arrowDirection.LengthSquared < 0.001)
+			{
+				arrowDirection = attachSide switch
+				{
+					ArrowAttachSide.Left => new Vector(-1, 0),
+					ArrowAttachSide.Right => new Vector(1, 0),
+					ArrowAttachSide.Top => new Vector(0, -1),
+					_ => new Vector(0, 1)
+				};
+			}
+
+			return arrowDirection;
+		}
+
+		private static Point GetArrowBendPoint(Point attachPoint, Point tipPoint, ArrowAttachSide attachSide)
+		{
+			return attachSide is ArrowAttachSide.Left or ArrowAttachSide.Right
+				? new Point(attachPoint.X + (tipPoint.X - attachPoint.X) * ArrowBendDistanceRatio, attachPoint.Y)
+				: new Point(attachPoint.X, attachPoint.Y + (tipPoint.Y - attachPoint.Y) * ArrowBendDistanceRatio);
+		}
+
+		private Point GetArrowLineEndPoint(Point tipPoint, Point bendPoint, Point attachPoint, Vector arrowDirection)
+		{
+			double tipSegmentLength = (tipPoint - bendPoint).Length;
+			if (tipSegmentLength < 0.001)
+			{
+				tipSegmentLength = (tipPoint - attachPoint).Length;
+			}
+
+			double inset = Math.Min(_arrowHeadLength * ArrowLineEndHeadInsetRatio, Math.Max(_strokeThickness, tipSegmentLength * 0.8));
+			arrowDirection.Normalize();
+			return tipPoint - arrowDirection * inset;
+		}
+
+		private Point GetArrowAttachPoint(Rect rectangleBounds, Point tipPoint, out ArrowAttachSide attachSide)
+		{
+			double leftOverflow = Math.Max(0, rectangleBounds.Left - tipPoint.X);
+			double rightOverflow = Math.Max(0, tipPoint.X - rectangleBounds.Right);
+			double topOverflow = Math.Max(0, rectangleBounds.Top - tipPoint.Y);
+			double bottomOverflow = Math.Max(0, tipPoint.Y - rectangleBounds.Bottom);
+			double horizontalOverflow = Math.Max(leftOverflow, rightOverflow);
+			double verticalOverflow = Math.Max(topOverflow, bottomOverflow);
+
+			if (horizontalOverflow >= verticalOverflow && horizontalOverflow > 0)
+			{
+				attachSide = leftOverflow >= rightOverflow ? ArrowAttachSide.Left : ArrowAttachSide.Right;
+			}
+			else if (verticalOverflow > 0)
+			{
+				attachSide = topOverflow >= bottomOverflow ? ArrowAttachSide.Top : ArrowAttachSide.Bottom;
+			}
+			else
+			{
+				double leftDistance = Math.Abs(tipPoint.X - rectangleBounds.Left);
+				double rightDistance = Math.Abs(rectangleBounds.Right - tipPoint.X);
+				double topDistance = Math.Abs(tipPoint.Y - rectangleBounds.Top);
+				double bottomDistance = Math.Abs(rectangleBounds.Bottom - tipPoint.Y);
+				double minDistance = Math.Min(Math.Min(leftDistance, rightDistance), Math.Min(topDistance, bottomDistance));
+				attachSide = minDistance == leftDistance
+					? ArrowAttachSide.Left
+					: minDistance == rightDistance
+						? ArrowAttachSide.Right
+						: minDistance == topDistance
+							? ArrowAttachSide.Top
+							: ArrowAttachSide.Bottom;
+			}
+
+			return attachSide switch
+			{
+				ArrowAttachSide.Left => new Point(rectangleBounds.Left, rectangleBounds.Top + rectangleBounds.Height / 2),
+				ArrowAttachSide.Right => new Point(rectangleBounds.Right, rectangleBounds.Top + rectangleBounds.Height / 2),
+				ArrowAttachSide.Top => new Point(rectangleBounds.Left + rectangleBounds.Width / 2, rectangleBounds.Top),
+				_ => new Point(rectangleBounds.Left + rectangleBounds.Width / 2, rectangleBounds.Bottom)
+			};
+		}
+
+		private Point ClampToBounds(Point point)
+		{
+			return new Point(
+				Clamp(point.X, 0, _canvasWidth),
+				Clamp(point.Y, 0, _canvasHeight));
+		}
+
+		private Rect ClampRectangleToBounds(Rect bounds)
+		{
+			double left = Clamp(bounds.Left, 0, Math.Max(0, _canvasWidth - bounds.Width));
+			double top = Clamp(bounds.Top, 0, Math.Max(0, _canvasHeight - bounds.Height));
+			return new Rect(left, top, bounds.Width, bounds.Height);
+		}
+
+		private static double Clamp(double value, double min, double max)
+		{
+			return Math.Max(min, Math.Min(value, max));
+		}
+
+		private void UpdateArrowHead(Point tipPoint, Vector direction)
+		{
+			direction.Normalize();
+			Vector normal = new(-direction.Y, direction.X);
+			Point baseCenter = tipPoint - direction * _arrowHeadLength;
+			_arrowHead.Points = new PointCollection
+			{
+				tipPoint,
+				baseCenter + normal * (_arrowHeadWidth / 2),
+				baseCenter - normal * (_arrowHeadWidth / 2)
+			};
+		}
+
+		private enum ArrowAttachSide
+		{
+			Left,
+			Right,
+			Top,
+			Bottom
+		}
+
+		private enum ResizeHandleKind
+		{
+			TopLeft,
+			TopRight,
+			BottomLeft,
+			BottomRight
+		}
 	}
 
 	private static BitmapSource LoadImage(byte[] imageBytes)
@@ -704,6 +1668,7 @@ internal sealed class ImagePaintWindow : Window
 	private enum PaintMode
 	{
 		BlackFillRectangle,
-		RedOutlineRectangle
+		RedOutlineRectangle,
+		ArrowTextRectangle
 	}
 }
