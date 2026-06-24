@@ -264,6 +264,36 @@ internal static class ClipboardDatabase
 		}
 	}
 
+	public static void DeleteHistory(IReadOnlyCollection<long> ids)
+	{
+		if (ids.Count == 0)
+		{
+			return;
+		}
+
+		Initialize();
+		lock (Sync)
+		{
+			using var connection = OpenConnection();
+			using var transaction = connection.BeginTransaction();
+			using var command = connection.CreateCommand();
+			command.Transaction = transaction;
+			var parameterNames = new List<string>(ids.Count);
+			int index = 0;
+			foreach (long id in ids)
+			{
+				string parameterName = $"$id{index}";
+				parameterNames.Add(parameterName);
+				AddParameter(command, parameterName, id);
+				index++;
+			}
+
+			command.CommandText = $"DELETE FROM clipboard_history WHERE id IN ({string.Join(", ", parameterNames)});";
+			command.ExecuteNonQuery();
+			transaction.Commit();
+		}
+	}
+
 	public static ClipboardStoredContent? LoadContent(long id)
 	{
 		Initialize();

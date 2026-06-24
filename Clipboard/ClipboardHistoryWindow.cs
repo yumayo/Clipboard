@@ -41,6 +41,8 @@ internal sealed class ClipboardHistoryWindow : Window
 	private readonly TextBox _searchBox;
 	private readonly ScrollViewer _scrollViewer;
 	private readonly StackPanel _listPanel;
+	private readonly Border _selectionFooter;
+	private readonly TextBlock _selectionCountLabel;
 	private readonly List<ClipboardHistoryEntry> _historyEntries = new();
 	private readonly NativeMethods.LowLevelMouseProc _outsideClickProc;
 	private CancellationTokenSource? _loadHistoryCancellation;
@@ -127,6 +129,10 @@ internal sealed class ClipboardHistoryWindow : Window
 
 		DockPanel.SetDock(searchPanel, Dock.Top);
 		rootPanel.Children.Add(searchPanel);
+
+		_selectionFooter = CreateSelectionFooter(out _selectionCountLabel);
+		DockPanel.SetDock(_selectionFooter, Dock.Bottom);
+		rootPanel.Children.Add(_selectionFooter);
 
 		_listPanel = new StackPanel
 		{
@@ -299,6 +305,138 @@ internal sealed class ClipboardHistoryWindow : Window
 		CancelHistoryFilter();
 		IsClosed = true;
 		base.OnClosing(e);
+	}
+
+	private Border CreateSelectionFooter(out TextBlock countLabel)
+	{
+		var grid = new Grid();
+		grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+		grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+		countLabel = new TextBlock
+		{
+			VerticalAlignment = VerticalAlignment.Center,
+			Margin = new Thickness(0, 0, 8, 0)
+		};
+		countLabel.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
+		Grid.SetColumn(countLabel, 0);
+		grid.Children.Add(countLabel);
+
+		var deleteButton = new Button
+		{
+			Content = "選択したものを削除",
+			MinHeight = 32,
+			Padding = new Thickness(12, 5, 12, 5),
+			Focusable = false,
+			Cursor = Cursors.Hand
+		};
+		AppTheme.ApplyButton(deleteButton);
+		deleteButton.Click += (_, _) => DeleteCheckedHistoryItems();
+		Grid.SetColumn(deleteButton, 1);
+		grid.Children.Add(deleteButton);
+
+		var footer = new Border
+		{
+			Child = grid,
+			Padding = new Thickness(10, 8, 10, 10),
+			BorderThickness = new Thickness(0, 1, 0, 0),
+			Visibility = Visibility.Collapsed
+		};
+		footer.SetResourceReference(Border.BackgroundProperty, AppTheme.WindowBackgroundBrushKey);
+		footer.SetResourceReference(Border.BorderBrushProperty, AppTheme.BorderBrushKey);
+		return footer;
+	}
+
+	private void UpdateSelectionFooter()
+	{
+		int checkedCount = GetHistoryItems().Count(item => item.IsChecked);
+		if (checkedCount == 0)
+		{
+			_selectionFooter.Visibility = Visibility.Collapsed;
+			return;
+		}
+
+		_selectionCountLabel.Text = $"{checkedCount}件を選択中";
+		_selectionFooter.Visibility = Visibility.Visible;
+	}
+
+	// チェックが1つでも付いている選択モード中かどうか。フッターの表示状態と同期している。
+	private bool IsSelectionModeActive()
+	{
+		return _selectionFooter.Visibility == Visibility.Visible;
+	}
+
+	private void DeleteCheckedHistoryItems()
+	{
+		var checkedItems = GetHistoryItems().Where(item => item.IsChecked).ToList();
+		if (checkedItems.Count == 0)
+		{
+			UpdateSelectionFooter();
+			return;
+		}
+
+		var checkedIds = checkedItems.Select(item => item.EntryId).ToList();
+		try
+		{
+			ClipboardDatabase.DeleteHistory(checkedIds);
+		}
+		catch (Exception ex)
+		{
+			Logger.Error(ex, "ClipboardHistoryWindow: 選択した履歴の削除に失敗しました。");
+			MessageBox.Show(this, "選択した履歴を削除できませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
+			return;
+		}
+
+		var checkedIdSet = checkedIds.ToHashSet();
+		_historyEntries.RemoveAll(entry => checkedIdSet.Contains(entry.Id));
+		foreach (var item in checkedItems)
+		{
+			item.ClosePreview();
+			_listPanel.Children.Remove(item);
+		}
+
+		RemoveEmptyDateSeparators();
+		UpdateSelectionFooter();
+		RefreshSelectionAfterDeletion();
+	}
+
+	private void RemoveEmptyDateSeparators()
+	{
+		var children = _listPanel.Children;
+		for (int i = children.Count - 1; i >= 0; i--)
+		{
+			if (children[i] is not HistoryDateSeparatorControl)
+			{
+				continue;
+			}
+
+			bool hasFollowingItem = i + 1 < children.Count && children[i + 1] is HistoryItemControl;
+			if (!hasFollowingItem)
+			{
+				children.RemoveAt(i);
+			}
+		}
+
+		_lastDisplayedHistoryDate = _listPanel.Children.OfType<HistoryItemControl>().LastOrDefault()?.CreatedDate;
+	}
+
+	private void RefreshSelectionAfterDeletion()
+	{
+		var items = GetHistoryItems();
+		if (items.Count == 0)
+		{
+			_selectedItemIndex = -1;
+			if (!_listPanel.Children.OfType<UIElement>().Any())
+			{
+				AddMessage(string.IsNullOrWhiteSpace(_searchBox.Text) ? "履歴がありません" : "一致する履歴がありません");
+			}
+
+			return;
+		}
+
+		int index = _selectedItemIndex < 0 ? 0 : Math.Min(_selectedItemIndex, items.Count - 1);
+		_selectedItemIndex = -1;
+		SelectHistoryItem(index, items);
 	}
 
 	private void BeginDismissOnOutsideClick()
@@ -761,9 +899,10 @@ internal sealed class ClipboardHistoryWindow : Window
 		foreach (var entry in entries)
 		{
 			AddDateSeparatorIfNeeded(entry.CreatedAt.Date);
-			var item = new HistoryItemControl(entry, LoadHistoryHoverPreviewAsync);
+			var item = new HistoryItemControl(entry, LoadHistoryHoverPreviewAsync, IsSelectionModeActive);
 			item.Activated += (_, _) => PasteEntry(entry);
 			item.PaintRequested += (_, _) => OpenImagePaintWindow(entry);
+			item.CheckedChanged += (_, _) => UpdateSelectionFooter();
 			_listPanel.Children.Add(item);
 		}
 
@@ -936,6 +1075,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		_selectedItemIndex = -1;
 		_lastDisplayedHistoryDate = null;
 		_scrollViewer.ScrollToTop();
+		UpdateSelectionFooter();
 	}
 
 	private void CloseOpenPreviews()
@@ -1882,7 +2022,9 @@ internal sealed class ClipboardHistoryWindow : Window
 	{
 		private readonly ClipboardHistoryEntry _entry;
 		private readonly Func<ClipboardHistoryEntry, CancellationToken, Task<HistoryHoverPreview>> _previewLoader;
+		private readonly Func<bool> _isSelectionModeActive;
 		private readonly Popup _previewPopup;
+		private readonly CheckBox _selectionCheckBox;
 		private CancellationTokenSource? _previewCancellation;
 		private bool _isSelected;
 		private bool _isMouseOverPreview;
@@ -1890,8 +2032,13 @@ internal sealed class ClipboardHistoryWindow : Window
 
 		public event EventHandler? Activated;
 		public event EventHandler? PaintRequested;
+		public event EventHandler? CheckedChanged;
+
+		public long EntryId => _entry.Id;
 
 		public DateTime CreatedDate => _entry.CreatedAt.Date;
+
+		public bool IsChecked => _selectionCheckBox.IsChecked == true;
 
 		public bool IsSelected
 		{
@@ -1910,10 +2057,12 @@ internal sealed class ClipboardHistoryWindow : Window
 
 		public HistoryItemControl(
 			ClipboardHistoryEntry entry,
-			Func<ClipboardHistoryEntry, CancellationToken, Task<HistoryHoverPreview>> previewLoader)
+			Func<ClipboardHistoryEntry, CancellationToken, Task<HistoryHoverPreview>> previewLoader,
+			Func<bool> isSelectionModeActive)
 		{
 			_entry = entry;
 			_previewLoader = previewLoader;
+			_isSelectionModeActive = isSelectionModeActive;
 			Margin = new Thickness(0, 0, 0, 8);
 			Padding = new Thickness(10);
 			BorderThickness = new Thickness(1);
@@ -1923,7 +2072,8 @@ internal sealed class ClipboardHistoryWindow : Window
 				: 78;
 			HorizontalAlignment = HorizontalAlignment.Stretch;
 			Focusable = true;
-			Child = CreateContent(entry);
+			_selectionCheckBox = CreateSelectionCheckBox();
+			Child = CreateRootContent(entry);
 			_previewPopup = CreatePreviewPopup();
 			UpdateVisualState();
 
@@ -1937,13 +2087,26 @@ internal sealed class ClipboardHistoryWindow : Window
 				UpdateVisualState();
 				BeginHidePreview();
 			};
-			MouseLeftButtonUp += (_, _) => Activate();
+			MouseLeftButtonUp += (_, _) => OnItemClicked();
 			Unloaded += (_, _) => HidePreview();
 		}
 
 		public void Activate()
 		{
 			Activated?.Invoke(this, EventArgs.Empty);
+		}
+
+		private void OnItemClicked()
+		{
+			// チェックが1つでも付いている選択モード中は、アイテム本体のクリックを
+			// 貼り付けではなくチェックのトグルとして扱い、誤って貼り付けてしまうのを防ぐ。
+			if (_isSelectionModeActive())
+			{
+				_selectionCheckBox.IsChecked = !IsChecked;
+				return;
+			}
+
+			Activate();
 		}
 
 		public void ClosePreview()
@@ -1977,10 +2140,10 @@ internal sealed class ClipboardHistoryWindow : Window
 		{
 			SetResourceReference(
 				Border.BackgroundProperty,
-				IsSelected ? AppTheme.SurfaceSelectedBrushKey : IsMouseOver ? AppTheme.SurfaceHoverBrushKey : AppTheme.SurfaceBrushKey);
+				IsSelected || IsChecked ? AppTheme.SurfaceSelectedBrushKey : IsMouseOver ? AppTheme.SurfaceHoverBrushKey : AppTheme.SurfaceBrushKey);
 			SetResourceReference(
 				Border.BorderBrushProperty,
-				IsSelected ? AppTheme.AccentBorderBrushKey : AppTheme.BorderBrushKey);
+				IsSelected || IsChecked ? AppTheme.AccentBorderBrushKey : AppTheme.BorderBrushKey);
 		}
 
 		private Popup CreatePreviewPopup()
@@ -2190,6 +2353,47 @@ internal sealed class ClipboardHistoryWindow : Window
 			border.SetResourceReference(Border.BackgroundProperty, AppTheme.PreviewBackgroundBrushKey);
 			border.SetResourceReference(Border.BorderBrushProperty, AppTheme.PreviewBorderBrushKey);
 			return border;
+		}
+
+		private Grid CreateRootContent(ClipboardHistoryEntry entry)
+		{
+			var grid = new Grid();
+			grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+			grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+			Grid.SetColumn(_selectionCheckBox, 0);
+			grid.Children.Add(_selectionCheckBox);
+
+			Grid content = CreateContent(entry);
+			Grid.SetColumn(content, 1);
+			grid.Children.Add(content);
+			return grid;
+		}
+
+		private CheckBox CreateSelectionCheckBox()
+		{
+			var checkBox = new CheckBox
+			{
+				VerticalAlignment = VerticalAlignment.Center,
+				Margin = new Thickness(0, 0, 10, 0),
+				Focusable = false,
+				Cursor = Cursors.Hand,
+				ToolTip = "選択"
+			};
+			checkBox.SetResourceReference(Control.ForegroundProperty, AppTheme.TextBrushKey);
+			// ButtonBase がマウスイベントを処理するため、チェックボックスのクリックで
+			// 履歴の貼り付け(MouseLeftButtonUp -> Activate)は発生しない。
+			checkBox.Checked += (_, _) =>
+			{
+				UpdateVisualState();
+				CheckedChanged?.Invoke(this, EventArgs.Empty);
+			};
+			checkBox.Unchecked += (_, _) =>
+			{
+				UpdateVisualState();
+				CheckedChanged?.Invoke(this, EventArgs.Empty);
+			};
+			return checkBox;
 		}
 
 		private Grid CreateContent(ClipboardHistoryEntry entry)
