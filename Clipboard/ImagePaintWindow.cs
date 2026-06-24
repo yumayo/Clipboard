@@ -22,6 +22,9 @@ internal sealed class ImagePaintWindow : Window
 	private const double OutlineNumberFontSize = 18;
 	private const double PaintStrokeThicknessHeightRatio = 1.0 / 256.0;
 	private const double MinPaintStrokeThickness = 1;
+	private const double MinPaintRectangleWidth = 2;
+	private const double MinPaintRectangleHeight = 2;
+	private const double PaintRectangleResizeHandleSize = 18;
 	private const double ArrowTailLength = 36;
 	private const double ArrowHeadLengthStrokeMultiplier = 5.5;
 	private const double ArrowHeadWidthStrokeMultiplier = 4.65;
@@ -54,11 +57,12 @@ internal sealed class ImagePaintWindow : Window
 	private readonly TextBox _fontSizeTextBox;
 	private readonly List<UIElement> _completedElements = new();
 	private readonly List<UIElement> _redoElements = new();
-	private readonly Dictionary<Rectangle, TextBlock> _outlineNumberLabels = new();
+	private readonly Dictionary<PaintRectangle, TextBlock> _outlineNumberLabels = new();
 	private double _paintStrokeThickness;
 	private double _currentArrowTextFontSize;
 	private bool _isUpdatingStrokeThicknessTextBox;
 	private bool _isUpdatingFontSizeTextBox;
+	private PaintRectangle? _activePaintRectangle;
 	private ArrowTextRectangle? _activeArrowTextRectangle;
 	private PaintMode _paintMode = PaintMode.RedOutlineRectangle;
 	private Point _dragStartPoint;
@@ -323,6 +327,8 @@ internal sealed class ImagePaintWindow : Window
 		}
 
 		CancelActiveDrag();
+		SetActivePaintRectangle(null);
+		SetActiveArrowTextRectangle(null);
 		_dragStartPoint = ClampToCanvas(e.GetPosition(_overlayCanvas));
 		var element = CreatePaintElement(_paintMode);
 		_dragElement = element;
@@ -335,7 +341,8 @@ internal sealed class ImagePaintWindow : Window
 	private static bool IsExistingPaintElementSource(object source)
 	{
 		return source is DependencyObject dependencyObject &&
-			FindVisualParent<ArrowTextRectangle>(dependencyObject) != null;
+			(FindVisualParent<PaintRectangle>(dependencyObject) != null ||
+				FindVisualParent<ArrowTextRectangle>(dependencyObject) != null);
 	}
 
 	private void OverlayCanvas_MouseMove(object sender, MouseEventArgs e)
@@ -363,9 +370,9 @@ internal sealed class ImagePaintWindow : Window
 
 	private void UpdateDragElement(Point currentPoint)
 	{
-		if (_dragElement is Rectangle rectangle)
+		if (_dragElement is PaintRectangle paintRectangle)
 		{
-			UpdateRectangleBounds(rectangle, currentPoint);
+			paintRectangle.Update(_dragStartPoint, currentPoint);
 		}
 		else if (_dragElement is ArrowTextRectangle arrowTextRectangle)
 		{
@@ -373,31 +380,14 @@ internal sealed class ImagePaintWindow : Window
 		}
 	}
 
-	private void UpdateRectangleBounds(Rectangle rectangle, Point currentPoint)
-	{
-		double left = Math.Min(_dragStartPoint.X, currentPoint.X);
-		double top = Math.Min(_dragStartPoint.Y, currentPoint.Y);
-		double width = Math.Abs(currentPoint.X - _dragStartPoint.X);
-		double height = Math.Abs(currentPoint.Y - _dragStartPoint.Y);
-		Canvas.SetLeft(rectangle, left);
-		Canvas.SetTop(rectangle, top);
-		rectangle.Width = width;
-		rectangle.Height = height;
-	}
-
 	private static bool IsDrawableElement(UIElement element)
 	{
 		return element switch
 		{
-			Rectangle rectangle => IsDrawableRectangle(rectangle),
+			PaintRectangle paintRectangle => paintRectangle.IsDrawable,
 			ArrowTextRectangle arrowTextRectangle => arrowTextRectangle.IsDrawable,
 			_ => false
 		};
-	}
-
-	private static bool IsDrawableRectangle(Rectangle rectangle)
-	{
-		return rectangle.Width >= 2 && rectangle.Height >= 2;
 	}
 
 	private void SaveToClipboardAndClose()
@@ -433,6 +423,11 @@ internal sealed class ImagePaintWindow : Window
 		_completedElements.RemoveAt(_completedElements.Count - 1);
 		_overlayCanvas.Children.Remove(element);
 		_redoElements.Add(element);
+		if (element is PaintRectangle paintRectangle && ReferenceEquals(_activePaintRectangle, paintRectangle))
+		{
+			SetActivePaintRectangle(null);
+		}
+
 		if (element is ArrowTextRectangle arrowTextRectangle && ReferenceEquals(_activeArrowTextRectangle, arrowTextRectangle))
 		{
 			SetActiveArrowTextRectangle(null);
@@ -460,7 +455,12 @@ internal sealed class ImagePaintWindow : Window
 		_overlayCanvas.Children.Add(element);
 		_completedElements.Add(element);
 		UpdateOutlineNumberLabels();
-		if (element is ArrowTextRectangle arrowTextRectangle)
+		if (element is PaintRectangle paintRectangle)
+		{
+			SetActivePaintRectangle(paintRectangle);
+			FocusPaintSurface();
+		}
+		else if (element is ArrowTextRectangle arrowTextRectangle)
 		{
 			SetActiveArrowTextRectangle(arrowTextRectangle);
 			arrowTextRectangle.FocusTextInput();
@@ -468,6 +468,22 @@ internal sealed class ImagePaintWindow : Window
 		else
 		{
 			FocusPaintSurface();
+		}
+	}
+
+	private void PaintRectangle_Focused(object? sender, EventArgs e)
+	{
+		if (sender is PaintRectangle paintRectangle)
+		{
+			SetActivePaintRectangle(paintRectangle);
+		}
+	}
+
+	private void PaintRectangle_BoundsChanged(object? sender, EventArgs e)
+	{
+		if (sender is PaintRectangle paintRectangle && _completedElements.Contains(paintRectangle))
+		{
+			UpdateOutlineNumberLabels();
 		}
 	}
 
@@ -481,6 +497,13 @@ internal sealed class ImagePaintWindow : Window
 
 	private void FocusCurrentEditableElement()
 	{
+		if (_completedElements.Count > 0 && _completedElements[^1] is PaintRectangle paintRectangle)
+		{
+			SetActivePaintRectangle(paintRectangle);
+			FocusPaintSurface();
+			return;
+		}
+
 		if (_completedElements.Count > 0 && _completedElements[^1] is ArrowTextRectangle arrowTextRectangle)
 		{
 			SetActiveArrowTextRectangle(arrowTextRectangle);
@@ -488,6 +511,7 @@ internal sealed class ImagePaintWindow : Window
 			return;
 		}
 
+		SetActivePaintRectangle(null);
 		SetActiveArrowTextRectangle(null);
 		FocusPaintSurface();
 	}
@@ -510,7 +534,12 @@ internal sealed class ImagePaintWindow : Window
 			_completedElements.Add(element);
 			_redoElements.Clear();
 			UpdateOutlineNumberLabels();
-			if (focusTextInput && element is ArrowTextRectangle arrowTextRectangle)
+			if (focusTextInput && element is PaintRectangle paintRectangle)
+			{
+				SetActivePaintRectangle(paintRectangle);
+				FocusPaintSurface();
+			}
+			else if (focusTextInput && element is ArrowTextRectangle arrowTextRectangle)
 			{
 				SetActiveArrowTextRectangle(arrowTextRectangle);
 				arrowTextRectangle.FocusTextInput();
@@ -554,14 +583,14 @@ internal sealed class ImagePaintWindow : Window
 		int outlineNumber = 1;
 		foreach (UIElement element in _completedElements)
 		{
-			if (element is not Rectangle rectangle || !IsOutlineRectangle(rectangle))
+			if (element is not PaintRectangle paintRectangle || !paintRectangle.IsOutline)
 			{
 				continue;
 			}
 
 			var label = CreateOutlineNumberLabel(outlineNumber);
-			PositionOutlineNumberLabel(rectangle, label, placedLabelBounds);
-			_outlineNumberLabels[rectangle] = label;
+			PositionOutlineNumberLabel(paintRectangle, label, placedLabelBounds);
+			_outlineNumberLabels[paintRectangle] = label;
 			_overlayCanvas.Children.Add(label);
 			outlineNumber++;
 		}
@@ -572,18 +601,13 @@ internal sealed class ImagePaintWindow : Window
 		int count = 0;
 		foreach (UIElement element in _completedElements)
 		{
-			if (element is Rectangle rectangle && IsOutlineRectangle(rectangle))
+			if (element is PaintRectangle { IsOutline: true })
 			{
 				count++;
 			}
 		}
 
 		return count;
-	}
-
-	private static bool IsOutlineRectangle(Rectangle rectangle)
-	{
-		return rectangle.Stroke is SolidColorBrush brush && brush.Color == Colors.Red;
 	}
 
 	private static TextBlock CreateOutlineNumberLabel(int number)
@@ -609,7 +633,7 @@ internal sealed class ImagePaintWindow : Window
 	}
 
 	private void PositionOutlineNumberLabel(
-		Rectangle rectangle,
+		PaintRectangle paintRectangle,
 		TextBlock label,
 		List<Rect> placedLabelBounds)
 	{
@@ -620,7 +644,7 @@ internal sealed class ImagePaintWindow : Window
 			labelSize = new Size(20, 22);
 		}
 
-		Rect rectangleBounds = GetRectangleBounds(rectangle);
+		Rect rectangleBounds = paintRectangle.Bounds;
 		Rect[] candidates =
 		{
 			new(rectangleBounds.Left - labelSize.Width - OutlineNumberGap, rectangleBounds.Top, labelSize.Width, labelSize.Height),
@@ -630,7 +654,7 @@ internal sealed class ImagePaintWindow : Window
 			new(rectangleBounds.Left + OutlineNumberGap, rectangleBounds.Top + OutlineNumberGap, labelSize.Width, labelSize.Height)
 		};
 
-		Rect labelBounds = ChooseOutlineNumberBounds(candidates, rectangle, placedLabelBounds);
+		Rect labelBounds = ChooseOutlineNumberBounds(candidates, paintRectangle, placedLabelBounds);
 		Canvas.SetLeft(label, labelBounds.Left);
 		Canvas.SetTop(label, labelBounds.Top);
 		placedLabelBounds.Add(labelBounds);
@@ -638,19 +662,19 @@ internal sealed class ImagePaintWindow : Window
 
 	private Rect ChooseOutlineNumberBounds(
 		Rect[] candidates,
-		Rectangle rectangle,
+		PaintRectangle paintRectangle,
 		List<Rect> placedLabelBounds)
 	{
 		for (int i = 0; i < candidates.Length - 1; i++)
 		{
-			if (CanPlaceOutlineNumber(candidates[i], rectangle, placedLabelBounds, allowInsideOwnRectangle: false))
+			if (CanPlaceOutlineNumber(candidates[i], paintRectangle, placedLabelBounds, allowInsideOwnRectangle: false))
 			{
 				return candidates[i];
 			}
 		}
 
 		Rect insideCandidate = candidates[^1];
-		if (CanPlaceOutlineNumber(insideCandidate, rectangle, placedLabelBounds, allowInsideOwnRectangle: true))
+		if (CanPlaceOutlineNumber(insideCandidate, paintRectangle, placedLabelBounds, allowInsideOwnRectangle: true))
 		{
 			return insideCandidate;
 		}
@@ -668,7 +692,7 @@ internal sealed class ImagePaintWindow : Window
 
 	private bool CanPlaceOutlineNumber(
 		Rect candidate,
-		Rectangle ownRectangle,
+		PaintRectangle ownRectangle,
 		List<Rect> placedLabelBounds,
 		bool allowInsideOwnRectangle)
 	{
@@ -697,8 +721,8 @@ internal sealed class ImagePaintWindow : Window
 	{
 		switch (element)
 		{
-			case Rectangle rectangle:
-				bounds = GetRectangleBounds(rectangle);
+			case PaintRectangle paintRectangle:
+				bounds = paintRectangle.Bounds;
 				return true;
 			case ArrowTextRectangle arrowTextRectangle:
 				bounds = arrowTextRectangle.TextRectangleBounds;
@@ -735,17 +759,6 @@ internal sealed class ImagePaintWindow : Window
 		double left = Math.Max(0, Math.Min(bounds.Left, _overlayCanvas.Width - bounds.Width));
 		double top = Math.Max(0, Math.Min(bounds.Top, _overlayCanvas.Height - bounds.Height));
 		return new Rect(left, top, bounds.Width, bounds.Height);
-	}
-
-	private static Rect GetRectangleBounds(Rectangle rectangle)
-	{
-		double left = Canvas.GetLeft(rectangle);
-		double top = Canvas.GetTop(rectangle);
-		return new Rect(
-			double.IsNaN(left) ? 0 : left,
-			double.IsNaN(top) ? 0 : top,
-			rectangle.Width,
-			rectangle.Height);
 	}
 
 	private BitmapSource RenderPaintedImage()
@@ -912,7 +925,7 @@ internal sealed class ImagePaintWindow : Window
 		{
 			if (restoreInvalidValue)
 			{
-				UpdateStrokeThicknessTextBox(_activeArrowTextRectangle?.StrokeThickness ?? _paintStrokeThickness);
+				UpdateStrokeThicknessTextBox(GetActiveStrokeThickness());
 			}
 
 			return false;
@@ -957,16 +970,52 @@ internal sealed class ImagePaintWindow : Window
 
 	private void ApplyStrokeThicknessToActiveElement(double strokeThickness)
 	{
-		if (_dragElement is Rectangle rectangle && IsOutlineRectangle(rectangle))
+		if (_dragElement is PaintRectangle { IsOutline: true } draggingPaintRectangle)
 		{
-			rectangle.StrokeThickness = strokeThickness;
+			draggingPaintRectangle.SetStrokeThickness(strokeThickness);
 		}
 		else if (_dragElement is ArrowTextRectangle draggingArrowTextRectangle)
 		{
 			draggingArrowTextRectangle.SetStrokeThickness(strokeThickness);
 		}
 
+		if (_activePaintRectangle is { IsOutline: true } activePaintRectangle)
+		{
+			activePaintRectangle.SetStrokeThickness(strokeThickness);
+		}
+
 		_activeArrowTextRectangle?.SetStrokeThickness(strokeThickness);
+	}
+
+	private double GetActiveStrokeThickness()
+	{
+		if (_activeArrowTextRectangle != null)
+		{
+			return _activeArrowTextRectangle.StrokeThickness;
+		}
+
+		if (_activePaintRectangle is { IsOutline: true } activePaintRectangle)
+		{
+			return activePaintRectangle.StrokeThickness;
+		}
+
+		return _paintStrokeThickness;
+	}
+
+	private void SetActivePaintRectangle(PaintRectangle? paintRectangle)
+	{
+		_activePaintRectangle = paintRectangle;
+		if (paintRectangle != null)
+		{
+			_activeArrowTextRectangle = null;
+			if (paintRectangle.IsOutline)
+			{
+				_paintStrokeThickness = paintRectangle.StrokeThickness;
+			}
+		}
+
+		UpdateStrokeThicknessTextBox(GetActiveStrokeThickness());
+		UpdateFontSizeTextBox(_currentArrowTextFontSize);
 	}
 
 	private void SetActiveArrowTextRectangle(ArrowTextRectangle? arrowTextRectangle)
@@ -974,6 +1023,7 @@ internal sealed class ImagePaintWindow : Window
 		_activeArrowTextRectangle = arrowTextRectangle;
 		if (arrowTextRectangle != null)
 		{
+			_activePaintRectangle = null;
 			_currentArrowTextFontSize = arrowTextRectangle.TextFontSize;
 			_paintStrokeThickness = arrowTextRectangle.StrokeThickness;
 		}
@@ -1138,27 +1188,15 @@ internal sealed class ImagePaintWindow : Window
 			return arrowTextRectangle;
 		}
 
-		return CreateRectangle(mode, _paintStrokeThickness);
+		var paintRectangle = CreateRectangle(mode, _overlayCanvas.Width, _overlayCanvas.Height, _paintStrokeThickness);
+		paintRectangle.Focused += PaintRectangle_Focused;
+		paintRectangle.BoundsChanged += PaintRectangle_BoundsChanged;
+		return paintRectangle;
 	}
 
-	private static Rectangle CreateRectangle(PaintMode mode, double strokeThickness)
+	private static PaintRectangle CreateRectangle(PaintMode mode, double canvasWidth, double canvasHeight, double strokeThickness)
 	{
-		return mode switch
-		{
-			PaintMode.RedOutlineRectangle => new Rectangle
-			{
-				Fill = Brushes.Transparent,
-				Stroke = Brushes.Red,
-				StrokeThickness = strokeThickness,
-				SnapsToDevicePixels = true
-			},
-			_ => new Rectangle
-			{
-				Fill = Brushes.Black,
-				StrokeThickness = 0,
-				SnapsToDevicePixels = true
-			}
-		};
+		return new PaintRectangle(canvasWidth, canvasHeight, mode == PaintMode.RedOutlineRectangle, strokeThickness);
 	}
 
 	private static double CalculatePaintStrokeThickness(double canvasHeight)
@@ -1183,6 +1221,283 @@ internal sealed class ImagePaintWindow : Window
 		return new Point(
 			Math.Max(0, Math.Min(point.X, _overlayCanvas.Width)),
 			Math.Max(0, Math.Min(point.Y, _overlayCanvas.Height)));
+	}
+
+	private sealed class PaintRectangle : Canvas
+	{
+		private readonly double _canvasWidth;
+		private readonly double _canvasHeight;
+		private readonly bool _isOutline;
+		private readonly Rectangle _rectangle;
+		private readonly Dictionary<ResizeHandleKind, Rectangle> _resizeHandles = new();
+		private Rect _bounds = Rect.Empty;
+		private Point _moveDragStartPoint;
+		private Rect _moveDragStartBounds = Rect.Empty;
+		private Point _resizeDragStartPoint;
+		private Rect _resizeDragStartBounds = Rect.Empty;
+		private ResizeHandleKind _activeResizeHandle;
+		private bool _isMoving;
+		private bool _isResizing;
+
+		public PaintRectangle(double canvasWidth, double canvasHeight, bool isOutline, double strokeThickness)
+		{
+			_canvasWidth = canvasWidth;
+			_canvasHeight = canvasHeight;
+			_isOutline = isOutline;
+			Width = canvasWidth;
+			Height = canvasHeight;
+			ClipToBounds = false;
+
+			_rectangle = new Rectangle
+			{
+				Fill = isOutline ? null : Brushes.Black,
+				Stroke = isOutline ? Brushes.Red : Brushes.Transparent,
+				StrokeThickness = isOutline ? strokeThickness : 0,
+				SnapsToDevicePixels = true,
+				Cursor = Cursors.SizeAll
+			};
+			_rectangle.MouseLeftButtonDown += Rectangle_MouseLeftButtonDown;
+			_rectangle.MouseMove += Rectangle_MouseMove;
+			_rectangle.MouseLeftButtonUp += Rectangle_MouseLeftButtonUp;
+
+			foreach (ResizeHandleKind resizeHandleKind in Enum.GetValues<ResizeHandleKind>())
+			{
+				_resizeHandles.Add(resizeHandleKind, CreateResizeHandle(resizeHandleKind));
+			}
+
+			Children.Add(_rectangle);
+			foreach (Rectangle resizeHandle in _resizeHandles.Values)
+			{
+				Children.Add(resizeHandle);
+			}
+		}
+
+		public event EventHandler? Focused;
+
+		public event EventHandler? BoundsChanged;
+
+		public Rect Bounds => _bounds;
+
+		public bool IsOutline => _isOutline;
+
+		public double StrokeThickness => _rectangle.StrokeThickness;
+
+		public bool IsDrawable =>
+			_bounds.Width >= MinPaintRectangleWidth &&
+			_bounds.Height >= MinPaintRectangleHeight;
+
+		public void Update(Point startPoint, Point currentPoint)
+		{
+			double left = Math.Min(startPoint.X, currentPoint.X);
+			double top = Math.Min(startPoint.Y, currentPoint.Y);
+			double width = Math.Abs(currentPoint.X - startPoint.X);
+			double height = Math.Abs(currentPoint.Y - startPoint.Y);
+			SetBounds(new Rect(left, top, width, height));
+		}
+
+		public void SetStrokeThickness(double strokeThickness)
+		{
+			if (!_isOutline)
+			{
+				return;
+			}
+
+			_rectangle.StrokeThickness = strokeThickness;
+		}
+
+		private void SetBounds(Rect bounds)
+		{
+			_bounds = bounds;
+			Canvas.SetLeft(_rectangle, bounds.Left);
+			Canvas.SetTop(_rectangle, bounds.Top);
+			_rectangle.Width = bounds.Width;
+			_rectangle.Height = bounds.Height;
+			PositionResizeHandles(bounds);
+			BoundsChanged?.Invoke(this, EventArgs.Empty);
+		}
+
+		private void Rectangle_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+		{
+			Focused?.Invoke(this, EventArgs.Empty);
+			_isMoving = true;
+			_moveDragStartPoint = e.GetPosition(this);
+			_moveDragStartBounds = _bounds;
+			_rectangle.CaptureMouse();
+			e.Handled = true;
+		}
+
+		private void Rectangle_MouseMove(object sender, MouseEventArgs e)
+		{
+			if (!_isMoving)
+			{
+				return;
+			}
+
+			MoveRectangle(e.GetPosition(this) - _moveDragStartPoint);
+			e.Handled = true;
+		}
+
+		private void Rectangle_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+		{
+			if (!_isMoving)
+			{
+				return;
+			}
+
+			MoveRectangle(e.GetPosition(this) - _moveDragStartPoint);
+			_isMoving = false;
+			_rectangle.ReleaseMouseCapture();
+			e.Handled = true;
+		}
+
+		private void MoveRectangle(Vector offset)
+		{
+			Rect movedBounds = _moveDragStartBounds;
+			movedBounds.Offset(offset.X, offset.Y);
+			SetBounds(ClampRectangleToBounds(movedBounds));
+		}
+
+		private Rectangle CreateResizeHandle(ResizeHandleKind resizeHandleKind)
+		{
+			var resizeHandle = new Rectangle
+			{
+				Width = PaintRectangleResizeHandleSize,
+				Height = PaintRectangleResizeHandleSize,
+				Fill = Brushes.Transparent,
+				Stroke = Brushes.Transparent,
+				Cursor = GetResizeHandleCursor(resizeHandleKind),
+				Tag = resizeHandleKind
+			};
+			resizeHandle.MouseLeftButtonDown += ResizeHandle_MouseLeftButtonDown;
+			resizeHandle.MouseMove += ResizeHandle_MouseMove;
+			resizeHandle.MouseLeftButtonUp += ResizeHandle_MouseLeftButtonUp;
+			return resizeHandle;
+		}
+
+		private static Cursor GetResizeHandleCursor(ResizeHandleKind resizeHandleKind)
+		{
+			return resizeHandleKind is ResizeHandleKind.TopLeft or ResizeHandleKind.BottomRight
+				? Cursors.SizeNWSE
+				: Cursors.SizeNESW;
+		}
+
+		private void PositionResizeHandles(Rect bounds)
+		{
+			PositionResizeHandle(ResizeHandleKind.TopLeft, bounds.Left, bounds.Top);
+			PositionResizeHandle(ResizeHandleKind.TopRight, bounds.Right, bounds.Top);
+			PositionResizeHandle(ResizeHandleKind.BottomLeft, bounds.Left, bounds.Bottom);
+			PositionResizeHandle(ResizeHandleKind.BottomRight, bounds.Right, bounds.Bottom);
+		}
+
+		private void PositionResizeHandle(ResizeHandleKind resizeHandleKind, double x, double y)
+		{
+			if (!_resizeHandles.TryGetValue(resizeHandleKind, out Rectangle? resizeHandle))
+			{
+				return;
+			}
+
+			Canvas.SetLeft(resizeHandle, x - PaintRectangleResizeHandleSize / 2);
+			Canvas.SetTop(resizeHandle, y - PaintRectangleResizeHandleSize / 2);
+		}
+
+		private void ResizeHandle_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+		{
+			if (sender is not Rectangle resizeHandle || resizeHandle.Tag is not ResizeHandleKind resizeHandleKind)
+			{
+				return;
+			}
+
+			Focused?.Invoke(this, EventArgs.Empty);
+			_isResizing = true;
+			_activeResizeHandle = resizeHandleKind;
+			_resizeDragStartPoint = e.GetPosition(this);
+			_resizeDragStartBounds = _bounds;
+			resizeHandle.CaptureMouse();
+			e.Handled = true;
+		}
+
+		private void ResizeHandle_MouseMove(object sender, MouseEventArgs e)
+		{
+			if (!_isResizing)
+			{
+				return;
+			}
+
+			ResizeRectangle(e.GetPosition(this) - _resizeDragStartPoint);
+			e.Handled = true;
+		}
+
+		private void ResizeHandle_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+		{
+			if (!_isResizing)
+			{
+				return;
+			}
+
+			ResizeRectangle(e.GetPosition(this) - _resizeDragStartPoint);
+			_isResizing = false;
+			if (sender is Rectangle resizeHandle)
+			{
+				resizeHandle.ReleaseMouseCapture();
+			}
+
+			e.Handled = true;
+		}
+
+		private void ResizeRectangle(Vector offset)
+		{
+			if (_resizeDragStartBounds.IsEmpty)
+			{
+				return;
+			}
+
+			double left = _resizeDragStartBounds.Left;
+			double top = _resizeDragStartBounds.Top;
+			double right = _resizeDragStartBounds.Right;
+			double bottom = _resizeDragStartBounds.Bottom;
+			double minWidth = Math.Min(MinPaintRectangleWidth, _canvasWidth);
+			double minHeight = Math.Min(MinPaintRectangleHeight, _canvasHeight);
+
+			if (_activeResizeHandle is ResizeHandleKind.TopLeft or ResizeHandleKind.BottomLeft)
+			{
+				left = Clamp(left + offset.X, 0, Math.Max(0, right - minWidth));
+			}
+			else
+			{
+				right = Clamp(right + offset.X, Math.Min(_canvasWidth, left + minWidth), _canvasWidth);
+			}
+
+			if (_activeResizeHandle is ResizeHandleKind.TopLeft or ResizeHandleKind.TopRight)
+			{
+				top = Clamp(top + offset.Y, 0, Math.Max(0, bottom - minHeight));
+			}
+			else
+			{
+				bottom = Clamp(bottom + offset.Y, Math.Min(_canvasHeight, top + minHeight), _canvasHeight);
+			}
+
+			SetBounds(new Rect(left, top, right - left, bottom - top));
+		}
+
+		private Rect ClampRectangleToBounds(Rect bounds)
+		{
+			double left = Clamp(bounds.Left, 0, Math.Max(0, _canvasWidth - bounds.Width));
+			double top = Clamp(bounds.Top, 0, Math.Max(0, _canvasHeight - bounds.Height));
+			return new Rect(left, top, bounds.Width, bounds.Height);
+		}
+
+		private static double Clamp(double value, double min, double max)
+		{
+			return Math.Max(min, Math.Min(value, max));
+		}
+
+		private enum ResizeHandleKind
+		{
+			TopLeft,
+			TopRight,
+			BottomLeft,
+			BottomRight
+		}
 	}
 
 	private sealed class ArrowTextRectangle : Canvas
