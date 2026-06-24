@@ -4,7 +4,6 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Documents;
 using System.Windows.Interop;
@@ -30,7 +29,6 @@ public static class ClipboardManager
 	private const int ClipboardSetRetryCount = 20;
 	private const int ClipboardSetRetryDelayMilliseconds = 25;
 	private const int ClipboardOpenFailedErrorCode = unchecked((int)0x800401D0);
-	private const bool SkipClipboardDatabaseWrites = false;
 	private const char ByteOrderMark = '\uFEFF';
 	private const string ConsoleWindowClassName = "ConsoleWindowClass";
 	private const string WindowsTerminalClassName = "CASCADIA_HOSTING_WINDOW_CLASS";
@@ -39,7 +37,6 @@ public static class ClipboardManager
 	private static string _concatenatedText = string.Empty;
 	private static int _concatenationCount = 0;
 	private static readonly object _concatenationLock = new();
-	private static readonly object _clipboardAccessLock = new();
 
 	private static IntPtr _hookID = IntPtr.Zero;
 	private static NativeMethods.LowLevelKeyboardProc? _proc;
@@ -125,82 +122,11 @@ public static class ClipboardManager
 
 	internal static void CopyImageToClipboard(BitmapSource image, bool overwriteLatestHistory = false)
 	{
-		if (overwriteLatestHistory)
-		{
-			lock (_clipboardAccessLock)
-			{
-				SetClipboardWithRetry(
-					() => System.Windows.Clipboard.SetImage(image),
-					"Image",
-					suppressNextClipboardSave: false);
-				if (!SkipClipboardDatabaseWrites)
-				{
-					UpsertLatestImageHistory(image);
-				}
-			}
-
-			return;
-		}
-
 		SetClipboardWithRetry(
 			() => System.Windows.Clipboard.SetImage(image),
 			"Image",
 			suppressNextClipboardSave: false,
 			overwriteLatestHistoryOnNextClipboardSave: overwriteLatestHistory);
-	}
-
-	internal static Task CopyImageToClipboardAsync(BitmapSource image, bool overwriteLatestHistory = false)
-	{
-		return RunStaThreadAsync(
-			() => CopyImageToClipboard(image, overwriteLatestHistory),
-			"Clipboard Image Writer");
-	}
-
-	internal static Task CopyImageToClipboardAsync(
-		Func<BitmapSource> imageFactory,
-		bool overwriteLatestHistory = false,
-		Func<bool>? shouldCopy = null)
-	{
-		return RunStaThreadAsync(
-			() =>
-			{
-				if (shouldCopy != null && !shouldCopy())
-				{
-					return;
-				}
-
-				BitmapSource image = imageFactory();
-				if (shouldCopy != null && !shouldCopy())
-				{
-					return;
-				}
-
-				CopyImageToClipboard(image, overwriteLatestHistory);
-			},
-			"Clipboard Image Writer");
-	}
-
-	internal static Task UpsertLatestImageHistoryAsync(
-		Func<BitmapSource> imageFactory,
-		Func<bool>? shouldWrite = null)
-	{
-		return RunStaThreadAsync(
-			() =>
-			{
-				if (shouldWrite != null && !shouldWrite())
-				{
-					return;
-				}
-
-				BitmapSource image = imageFactory();
-				if (shouldWrite != null && !shouldWrite())
-				{
-					return;
-				}
-
-				UpsertLatestImageHistory(image);
-			},
-			"Clipboard Image History Writer");
 	}
 
 	private static IntPtr SetHook(NativeMethods.LowLevelKeyboardProc proc)
@@ -415,37 +341,6 @@ public static class ClipboardManager
 	}
 
 	public static void SaveClipboardToDatabase()
-	{
-		if (SkipClipboardDatabaseWrites)
-		{
-			_suppressNextClipboardSave = false;
-			_overwriteLatestHistoryOnNextClipboardSave = false;
-			Logger.Debug("ClipboardManager: 診断用にDB保存をスキップしています。");
-			return;
-		}
-
-		lock (_clipboardAccessLock)
-		{
-			SaveClipboardToDatabaseCore();
-		}
-	}
-
-	private static void SaveClipboardToDatabaseAsync()
-	{
-		if (SkipClipboardDatabaseWrites)
-		{
-			_suppressNextClipboardSave = false;
-			_overwriteLatestHistoryOnNextClipboardSave = false;
-			return;
-		}
-
-		_ = RunStaThreadAsync(SaveClipboardToDatabase, "Clipboard Database Writer")
-			.ContinueWith(
-				task => Logger.Error(task.Exception, "ClipboardManager: 非同期クリップボード保存タスクでエラーが発生しました。"),
-				TaskContinuationOptions.OnlyOnFaulted);
-	}
-
-	private static void SaveClipboardToDatabaseCore()
 	{
 		try
 		{
@@ -729,121 +624,55 @@ public static class ClipboardManager
 		bool suppressNextClipboardSave = true,
 		bool overwriteLatestHistoryOnNextClipboardSave = false)
 	{
-		lock (_clipboardAccessLock)
-		{
-			for (int attempt = 1; attempt <= ClipboardSetRetryCount; attempt++)
-			{
-				try
-				{
-					if (suppressNextClipboardSave)
-					{
-						_suppressNextClipboardSave = true;
-					}
-					if (overwriteLatestHistoryOnNextClipboardSave)
-					{
-						_overwriteLatestHistoryOnNextClipboardSave = true;
-					}
-
-					setClipboard();
-					return;
-				}
-				catch (Exception ex) when (IsClipboardOpenFailure(ex))
-				{
-					if (suppressNextClipboardSave)
-					{
-						_suppressNextClipboardSave = false;
-					}
-					if (overwriteLatestHistoryOnNextClipboardSave)
-					{
-						_overwriteLatestHistoryOnNextClipboardSave = false;
-					}
-
-					if (attempt >= ClipboardSetRetryCount)
-					{
-						throw;
-					}
-
-					Logger.Debug($"ClipboardManager: クリップボードへの書き込みを再試行します。Type={contentType} Attempt={attempt}/{ClipboardSetRetryCount} Error={ex.Message}");
-					Thread.Sleep(ClipboardSetRetryDelayMilliseconds);
-				}
-				catch
-				{
-					if (suppressNextClipboardSave)
-					{
-						_suppressNextClipboardSave = false;
-					}
-					if (overwriteLatestHistoryOnNextClipboardSave)
-					{
-						_overwriteLatestHistoryOnNextClipboardSave = false;
-					}
-
-					throw;
-				}
-			}
-		}
-	}
-
-	private static Task RunStaThreadAsync(Action action, string threadName)
-	{
-		var completion = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
-		var thread = new Thread(() =>
+		for (int attempt = 1; attempt <= ClipboardSetRetryCount; attempt++)
 		{
 			try
 			{
-				action();
-				completion.SetResult(null);
+				if (suppressNextClipboardSave)
+				{
+					_suppressNextClipboardSave = true;
+				}
+				if (overwriteLatestHistoryOnNextClipboardSave)
+				{
+					_overwriteLatestHistoryOnNextClipboardSave = true;
+				}
+
+				setClipboard();
+				return;
 			}
-			catch (Exception ex)
+			catch (Exception ex) when (IsClipboardOpenFailure(ex))
 			{
-				completion.SetException(ex);
+				if (suppressNextClipboardSave)
+				{
+					_suppressNextClipboardSave = false;
+				}
+				if (overwriteLatestHistoryOnNextClipboardSave)
+				{
+					_overwriteLatestHistoryOnNextClipboardSave = false;
+				}
+
+				if (attempt >= ClipboardSetRetryCount)
+				{
+					throw;
+				}
+
+				Logger.Debug($"ClipboardManager: クリップボードへの書き込みを再試行します。Type={contentType} Attempt={attempt}/{ClipboardSetRetryCount} Error={ex.Message}");
+				Thread.Sleep(ClipboardSetRetryDelayMilliseconds);
 			}
-		})
-		{
-			IsBackground = true,
-			Name = threadName
-		};
+			catch
+			{
+				if (suppressNextClipboardSave)
+				{
+					_suppressNextClipboardSave = false;
+				}
+				if (overwriteLatestHistoryOnNextClipboardSave)
+				{
+					_overwriteLatestHistoryOnNextClipboardSave = false;
+				}
 
-		try
-		{
-			thread.SetApartmentState(ApartmentState.STA);
-			thread.Start();
+				throw;
+			}
 		}
-		catch (Exception ex)
-		{
-			completion.SetException(ex);
-		}
-
-		return completion.Task;
-	}
-
-	private static void UpsertLatestImageHistory(BitmapSource image)
-	{
-		if (SkipClipboardDatabaseWrites)
-		{
-			Logger.Debug("ClipboardManager: 診断用にペイント画像の最新履歴上書きをスキップしています。");
-			return;
-		}
-
-		byte[] bytes = EncodeImageAsPng(image);
-		string currentContent = CalculateHash(bytes);
-		if (currentContent == _lastSavedContent)
-		{
-			Logger.Debug("ClipboardManager: 前回保存したペイント画像と同じのため、最新履歴の上書きをスキップします。");
-			return;
-		}
-
-		ClipboardDatabase.UpsertLatestHistory(ClipboardHistoryKind.Image, bytes, currentContent, DateTime.Now, displayName: "ペイント");
-		_lastSavedContent = currentContent;
-		Logger.Info($"ClipboardManager: ペイント画像で最新履歴を上書きしました。Kind={ClipboardHistoryKind.Image} Size={bytes.Length}");
-	}
-
-	private static byte[] EncodeImageAsPng(BitmapSource image)
-	{
-		using var stream = new MemoryStream();
-		var encoder = new PngBitmapEncoder();
-		encoder.Frames.Add(BitmapFrame.Create(image));
-		encoder.Save(stream);
-		return stream.ToArray();
 	}
 
 	private static bool IsClipboardOpenFailure(Exception exception)
@@ -1208,7 +1037,7 @@ public static class ClipboardManager
 
 			if (msg == NativeMethods.WM_CLIPBOARDUPDATE)
 			{
-				SaveClipboardToDatabaseAsync();
+				SaveClipboardToDatabase();
 			}
 
 			return IntPtr.Zero;
