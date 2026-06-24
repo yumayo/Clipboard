@@ -19,7 +19,6 @@ internal sealed class ImagePaintWindow : Window
 	private const double MaxZoom = 8;
 	private const double ZoomStep = 1.1;
 	private const double OutlineNumberGap = 4;
-	private const double OutlineNumberFontSize = 18;
 	private const double PaintStrokeThicknessHeightRatio = 1.0 / 256.0;
 	private const double MinPaintStrokeThickness = 1;
 	private const double MinPaintRectangleWidth = 2;
@@ -55,6 +54,7 @@ internal sealed class ImagePaintWindow : Window
 	private readonly Button _arrowTextButton;
 	private readonly TextBox _strokeThicknessTextBox;
 	private readonly TextBox _fontSizeTextBox;
+	private readonly CheckBox _outlineNumberCheckBox;
 	private readonly List<UIElement> _completedElements = new();
 	private readonly List<UIElement> _redoElements = new();
 	private readonly Dictionary<PaintRectangle, TextBlock> _outlineNumberLabels = new();
@@ -62,6 +62,7 @@ internal sealed class ImagePaintWindow : Window
 	private double _currentArrowTextFontSize;
 	private bool _isUpdatingStrokeThicknessTextBox;
 	private bool _isUpdatingFontSizeTextBox;
+	private bool _showOutlineNumbers = true;
 	private PaintRectangle? _activePaintRectangle;
 	private ArrowTextRectangle? _activeArrowTextRectangle;
 	private PaintMode _paintMode = PaintMode.RedOutlineRectangle;
@@ -116,6 +117,9 @@ internal sealed class ImagePaintWindow : Window
 
 		_fontSizeTextBox = CreateFontSizeTextBox(_currentArrowTextFontSize);
 		toolbar.Children.Add(CreateToolbarTextEditor("文字サイズ", _fontSizeTextBox));
+
+		_outlineNumberCheckBox = CreateOutlineNumberCheckBox();
+		toolbar.Children.Add(_outlineNumberCheckBox);
 
 		var image = new Image
 		{
@@ -573,6 +577,11 @@ internal sealed class ImagePaintWindow : Window
 		}
 
 		_outlineNumberLabels.Clear();
+		if (!_showOutlineNumbers)
+		{
+			return;
+		}
+
 		int outlineCount = CountOutlineRectangles();
 		if (outlineCount < 2)
 		{
@@ -610,13 +619,13 @@ internal sealed class ImagePaintWindow : Window
 		return count;
 	}
 
-	private static TextBlock CreateOutlineNumberLabel(int number)
+	private TextBlock CreateOutlineNumberLabel(int number)
 	{
 		return new TextBlock
 		{
 			Text = GetOutlineNumberText(number),
 			Foreground = Brushes.Red,
-			FontSize = OutlineNumberFontSize,
+			FontSize = _currentArrowTextFontSize,
 			FontWeight = FontWeights.Bold,
 			IsHitTestVisible = false
 		};
@@ -857,6 +866,32 @@ internal sealed class ImagePaintWindow : Window
 		return editor;
 	}
 
+	private CheckBox CreateOutlineNumberCheckBox()
+	{
+		var checkBox = new CheckBox
+		{
+			Content = "数字の番号を付ける",
+			IsChecked = true,
+			Margin = new Thickness(12, 0, 0, 0),
+			VerticalAlignment = VerticalAlignment.Center
+		};
+		checkBox.SetResourceReference(Control.ForegroundProperty, AppTheme.TextBrushKey);
+		checkBox.Checked += (_, _) => SetShowOutlineNumbers(true);
+		checkBox.Unchecked += (_, _) => SetShowOutlineNumbers(false);
+		return checkBox;
+	}
+
+	private void SetShowOutlineNumbers(bool showOutlineNumbers)
+	{
+		if (_showOutlineNumbers == showOutlineNumbers)
+		{
+			return;
+		}
+
+		_showOutlineNumbers = showOutlineNumbers;
+		UpdateOutlineNumberLabels();
+	}
+
 	private TextBox CreateStrokeThicknessTextBox(double strokeThickness)
 	{
 		var textBox = CreateToolbarTextBox(FormatSizeValue(strokeThickness));
@@ -960,6 +995,7 @@ internal sealed class ImagePaintWindow : Window
 
 		_currentArrowTextFontSize = fontSize;
 		_activeArrowTextRectangle?.SetTextFontSize(fontSize);
+		UpdateOutlineNumberLabels();
 		if (restoreInvalidValue)
 		{
 			UpdateFontSizeTextBox(fontSize);
@@ -1026,6 +1062,7 @@ internal sealed class ImagePaintWindow : Window
 			_activePaintRectangle = null;
 			_currentArrowTextFontSize = arrowTextRectangle.TextFontSize;
 			_paintStrokeThickness = arrowTextRectangle.StrokeThickness;
+			UpdateOutlineNumberLabels();
 		}
 
 		UpdateStrokeThicknessTextBox(_paintStrokeThickness);
