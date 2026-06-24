@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -63,6 +64,8 @@ internal sealed class ImagePaintWindow : Window
 	private bool _isUpdatingStrokeThicknessTextBox;
 	private bool _isUpdatingFontSizeTextBox;
 	private bool _showOutlineNumbers = true;
+	private bool _hasPaintChanges;
+	private bool _hasCopiedToClipboardBeforeClose;
 	private PaintRectangle? _activePaintRectangle;
 	private ArrowTextRectangle? _activeArrowTextRectangle;
 	private PaintMode _paintMode = PaintMode.RedOutlineRectangle;
@@ -189,7 +192,7 @@ internal sealed class ImagePaintWindow : Window
 			return;
 		}
 
-		if (isControlPressed && key == Key.S)
+		if (isControlPressed && (key == Key.S || key == Key.C))
 		{
 			SaveToClipboardAndClose();
 			e.Handled = true;
@@ -398,9 +401,8 @@ internal sealed class ImagePaintWindow : Window
 	{
 		try
 		{
-			CompleteActiveDrag(focusTextInput: false);
-
-			ClipboardManager.CopyImageToClipboard(RenderPaintedImage());
+			CopyPaintedImageToClipboard(requireChanges: false);
+			_hasCopiedToClipboardBeforeClose = true;
 			Close();
 		}
 		catch (Exception ex)
@@ -408,6 +410,18 @@ internal sealed class ImagePaintWindow : Window
 			Logger.Error(ex, "ImagePaintWindow: 編集画像をクリップボードにコピーできませんでした。");
 			MessageBox.Show(this, "編集画像をクリップボードにコピーできませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
 		}
+	}
+
+	private bool CopyPaintedImageToClipboard(bool requireChanges)
+	{
+		CompleteActiveDrag(focusTextInput: false);
+		if (requireChanges && !_hasPaintChanges)
+		{
+			return false;
+		}
+
+		ClipboardManager.CopyImageToClipboard(RenderPaintedImage());
+		return true;
 	}
 
 	private void Undo()
@@ -438,6 +452,7 @@ internal sealed class ImagePaintWindow : Window
 		}
 
 		UpdateOutlineNumberLabels();
+		MarkPaintChanged();
 		FocusCurrentEditableElement();
 	}
 
@@ -473,6 +488,8 @@ internal sealed class ImagePaintWindow : Window
 		{
 			FocusPaintSurface();
 		}
+
+		MarkPaintChanged();
 	}
 
 	private void PaintRectangle_Focused(object? sender, EventArgs e)
@@ -488,6 +505,7 @@ internal sealed class ImagePaintWindow : Window
 		if (sender is PaintRectangle paintRectangle && _completedElements.Contains(paintRectangle))
 		{
 			UpdateOutlineNumberLabels();
+			MarkPaintChanged();
 		}
 	}
 
@@ -525,6 +543,16 @@ internal sealed class ImagePaintWindow : Window
 		_overlayCanvas.Focus();
 	}
 
+	private void MarkPaintChanged()
+	{
+		if (!_hasPaintChanges && _completedElements.Count == 0 && _dragElement == null)
+		{
+			return;
+		}
+
+		_hasPaintChanges = true;
+	}
+
 	private void CompleteActiveDrag(bool focusTextInput)
 	{
 		if (_dragElement is not { } element)
@@ -538,6 +566,7 @@ internal sealed class ImagePaintWindow : Window
 			_completedElements.Add(element);
 			_redoElements.Clear();
 			UpdateOutlineNumberLabels();
+			MarkPaintChanged();
 			if (focusTextInput && element is PaintRectangle paintRectangle)
 			{
 				SetActivePaintRectangle(paintRectangle);
@@ -788,6 +817,26 @@ internal sealed class ImagePaintWindow : Window
 		return bitmap;
 	}
 
+	protected override void OnClosing(CancelEventArgs e)
+	{
+		if (!_hasCopiedToClipboardBeforeClose)
+		{
+			try
+			{
+				_hasCopiedToClipboardBeforeClose = CopyPaintedImageToClipboard(requireChanges: true);
+			}
+			catch (Exception ex)
+			{
+				Logger.Error(ex, "ImagePaintWindow: ウィンドウを閉じる前に編集画像をクリップボードにコピーできませんでした。");
+				MessageBox.Show(this, "編集画像をクリップボードにコピーできませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
+				e.Cancel = true;
+				return;
+			}
+		}
+
+		base.OnClosing(e);
+	}
+
 	private void PrepareTextInputsForRender()
 	{
 		foreach (UIElement element in _completedElements)
@@ -890,6 +939,7 @@ internal sealed class ImagePaintWindow : Window
 
 		_showOutlineNumbers = showOutlineNumbers;
 		UpdateOutlineNumberLabels();
+		MarkPaintChanged();
 	}
 
 	private TextBox CreateStrokeThicknessTextBox(double strokeThickness)
@@ -990,6 +1040,7 @@ internal sealed class ImagePaintWindow : Window
 			UpdateStrokeThicknessTextBox(strokeThickness);
 		}
 
+		MarkPaintChanged();
 		return true;
 	}
 
@@ -1018,6 +1069,7 @@ internal sealed class ImagePaintWindow : Window
 			UpdateFontSizeTextBox(fontSize);
 		}
 
+		MarkPaintChanged();
 		return true;
 	}
 
