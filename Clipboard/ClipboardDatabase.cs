@@ -170,6 +170,34 @@ internal static class ClipboardDatabase
 		}
 	}
 
+	public static void UpsertLatestHistory(
+		ClipboardHistoryKind kind,
+		byte[] content,
+		string contentHash,
+		DateTime createdAt,
+		string? displayName = null)
+	{
+		Initialize();
+		var metadata = ClipboardHistoryMetadata.Create(content, kind, createdAt, displayName, sourcePath: null);
+
+		lock (Sync)
+		{
+			using var connection = OpenConnection();
+			using var transaction = connection.BeginTransaction();
+			long? latestHistoryId = LoadLatestHistoryId(connection, transaction);
+			if (latestHistoryId.HasValue)
+			{
+				UpdateHistory(connection, transaction, latestHistoryId.Value, kind, content, contentHash, createdAt, metadata);
+			}
+			else
+			{
+				InsertHistory(connection, transaction, kind, content, contentHash, createdAt, metadata, sourceFilePath: null, sourceLastWriteTime: null);
+			}
+
+			transaction.Commit();
+		}
+	}
+
 	public static bool InsertLegacyHistoryIfMissing(
 		SqliteConnection connection,
 		SqliteTransaction transaction,
@@ -370,6 +398,55 @@ internal static class ClipboardDatabase
 		AddParameter(command, "$thumbnail", metadata.ThumbnailBytes);
 		AddParameter(command, "$source_file_path", sourceFilePath);
 		AddParameter(command, "$source_last_write_time_utc_ticks", sourceLastWriteTimeUtcTicks);
+		command.ExecuteNonQuery();
+	}
+
+	private static long? LoadLatestHistoryId(SqliteConnection connection, SqliteTransaction transaction)
+	{
+		using var command = connection.CreateCommand();
+		command.Transaction = transaction;
+		command.CommandText = "SELECT id FROM clipboard_history ORDER BY id DESC LIMIT 1;";
+		object? result = command.ExecuteScalar();
+		return result == null || result == DBNull.Value ? null : Convert.ToInt64(result);
+	}
+
+	private static void UpdateHistory(
+		SqliteConnection connection,
+		SqliteTransaction transaction,
+		long id,
+		ClipboardHistoryKind kind,
+		byte[] content,
+		string contentHash,
+		DateTime createdAt,
+		ClipboardHistoryMetadata metadata)
+	{
+		using var command = connection.CreateCommand();
+		command.Transaction = transaction;
+		command.CommandText =
+			"""
+			UPDATE clipboard_history
+			SET
+				kind = $kind,
+				extension = $extension,
+				created_at_utc_ticks = $created_at_utc_ticks,
+				content_hash = $content_hash,
+				content = $content,
+				preview_text = $preview_text,
+				search_text = $search_text,
+				thumbnail = $thumbnail,
+				source_file_path = NULL,
+				source_last_write_time_utc_ticks = NULL
+			WHERE id = $id;
+			""";
+		AddParameter(command, "$id", id);
+		AddParameter(command, "$kind", (int)kind);
+		AddParameter(command, "$extension", ClipboardHistoryMetadata.GetExtension(kind));
+		AddParameter(command, "$created_at_utc_ticks", createdAt.ToUniversalTime().Ticks);
+		AddParameter(command, "$content_hash", contentHash);
+		AddParameter(command, "$content", content);
+		AddParameter(command, "$preview_text", metadata.PreviewText);
+		AddParameter(command, "$search_text", metadata.SearchText);
+		AddParameter(command, "$thumbnail", metadata.ThumbnailBytes);
 		command.ExecuteNonQuery();
 	}
 
