@@ -55,7 +55,6 @@ public static class ClipboardManager
 
 	private static string _lastSavedContent = string.Empty;
 	private static bool _suppressNextClipboardSave = false;
-	private static bool _overwriteLatestHistoryOnNextClipboardSave = false;
 
 	public static void Start()
 	{
@@ -120,13 +119,9 @@ public static class ClipboardManager
 		}
 	}
 
-	internal static void CopyImageToClipboard(BitmapSource image, bool overwriteLatestHistory = false)
+	internal static void CopyImageToClipboard(BitmapSource image)
 	{
-		SetClipboardWithRetry(
-			() => System.Windows.Clipboard.SetImage(image),
-			"Image",
-			suppressNextClipboardSave: false,
-			overwriteLatestHistoryOnNextClipboardSave: overwriteLatestHistory);
+		SetClipboardWithRetry(() => System.Windows.Clipboard.SetImage(image), "Image", suppressNextClipboardSave: false);
 	}
 
 	private static IntPtr SetHook(NativeMethods.LowLevelKeyboardProc proc)
@@ -347,7 +342,6 @@ public static class ClipboardManager
 			if (_suppressNextClipboardSave)
 			{
 				_suppressNextClipboardSave = false;
-				_overwriteLatestHistoryOnNextClipboardSave = false;
 				Logger.Debug("ClipboardManager: 履歴からの復元のため、保存をスキップしました。");
 				return;
 			}
@@ -386,9 +380,6 @@ public static class ClipboardManager
 				}
 			}
 
-			bool overwriteLatestHistory = _overwriteLatestHistoryOnNextClipboardSave;
-			_overwriteLatestHistoryOnNextClipboardSave = false;
-
 			var (bytes, kind) = GetClipboardContentAsBytes();
 			string currentContent = CalculateHash(bytes);
 			if (currentContent == _lastSavedContent)
@@ -399,17 +390,8 @@ public static class ClipboardManager
 
 			if (bytes.Length > 0 && kind != ClipboardHistoryKind.Unknown)
 			{
-				if (overwriteLatestHistory)
-				{
-					ClipboardDatabase.UpsertLatestHistory(kind, bytes, currentContent, DateTime.Now, displayName: "ペイント");
-					Logger.Info($"ClipboardManager: ペイント自動保存の内容で最新履歴を上書きしました。Kind={kind} Size={bytes.Length}");
-				}
-				else
-				{
-					ClipboardDatabase.InsertHistory(kind, bytes, currentContent, DateTime.Now);
-					Logger.Info($"ClipboardManager: クリップボードの内容をDBに保存しました。Kind={kind} Size={bytes.Length}");
-				}
-
+				ClipboardDatabase.InsertHistory(kind, bytes, currentContent, DateTime.Now);
+				Logger.Info($"ClipboardManager: クリップボードの内容をDBに保存しました。Kind={kind} Size={bytes.Length}");
 				_lastSavedContent = currentContent;
 			}
 		}
@@ -618,11 +600,7 @@ public static class ClipboardManager
 		SetClipboardWithRetry(() => System.Windows.Clipboard.SetDataObject(dataObject, true), "Rtf");
 	}
 
-	private static void SetClipboardWithRetry(
-		Action setClipboard,
-		string contentType,
-		bool suppressNextClipboardSave = true,
-		bool overwriteLatestHistoryOnNextClipboardSave = false)
+	private static void SetClipboardWithRetry(Action setClipboard, string contentType, bool suppressNextClipboardSave = true)
 	{
 		for (int attempt = 1; attempt <= ClipboardSetRetryCount; attempt++)
 		{
@@ -631,10 +609,6 @@ public static class ClipboardManager
 				if (suppressNextClipboardSave)
 				{
 					_suppressNextClipboardSave = true;
-				}
-				if (overwriteLatestHistoryOnNextClipboardSave)
-				{
-					_overwriteLatestHistoryOnNextClipboardSave = true;
 				}
 
 				setClipboard();
@@ -645,10 +619,6 @@ public static class ClipboardManager
 				if (suppressNextClipboardSave)
 				{
 					_suppressNextClipboardSave = false;
-				}
-				if (overwriteLatestHistoryOnNextClipboardSave)
-				{
-					_overwriteLatestHistoryOnNextClipboardSave = false;
 				}
 
 				if (attempt >= ClipboardSetRetryCount)
@@ -664,10 +634,6 @@ public static class ClipboardManager
 				if (suppressNextClipboardSave)
 				{
 					_suppressNextClipboardSave = false;
-				}
-				if (overwriteLatestHistoryOnNextClipboardSave)
-				{
-					_overwriteLatestHistoryOnNextClipboardSave = false;
 				}
 
 				throw;

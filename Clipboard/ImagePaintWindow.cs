@@ -1,12 +1,10 @@
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using System.Windows.Threading;
 using Ellipse = System.Windows.Shapes.Ellipse;
 using Polygon = System.Windows.Shapes.Polygon;
 using Polyline = System.Windows.Shapes.Polyline;
@@ -17,7 +15,6 @@ namespace Clipboard;
 internal sealed class ImagePaintWindow : Window
 {
 	private const double ToolbarHeight = 48;
-	private const double AutoClipboardWriteDebounceMilliseconds = 350;
 	private const double MinZoom = 0.05;
 	private const double MaxZoom = 8;
 	private const double ZoomStep = 1.1;
@@ -48,7 +45,6 @@ internal sealed class ImagePaintWindow : Window
 		"⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳"
 	};
 	private readonly BitmapSource _sourceImage;
-	private readonly DispatcherTimer _autoClipboardWriteTimer;
 	private readonly ScaleTransform _zoomTransform = new(1, 1);
 	private readonly Grid _zoomContainer;
 	private readonly Grid _paintSurface;
@@ -67,8 +63,6 @@ internal sealed class ImagePaintWindow : Window
 	private bool _isUpdatingStrokeThicknessTextBox;
 	private bool _isUpdatingFontSizeTextBox;
 	private bool _showOutlineNumbers = true;
-	private bool _hasPaintChanges;
-	private bool _hasCopiedToClipboardBeforeClose;
 	private PaintRectangle? _activePaintRectangle;
 	private ArrowTextRectangle? _activeArrowTextRectangle;
 	private PaintMode _paintMode = PaintMode.RedOutlineRectangle;
@@ -80,11 +74,6 @@ internal sealed class ImagePaintWindow : Window
 		_sourceImage = LoadImage(imageBytes);
 		_paintStrokeThickness = CalculatePaintStrokeThickness(_sourceImage.PixelHeight);
 		_currentArrowTextFontSize = CalculateDefaultArrowTextFontSize(_sourceImage.PixelHeight);
-		_autoClipboardWriteTimer = new DispatcherTimer
-		{
-			Interval = TimeSpan.FromMilliseconds(AutoClipboardWriteDebounceMilliseconds)
-		};
-		_autoClipboardWriteTimer.Tick += AutoClipboardWriteTimer_Tick;
 		double windowWidth = Math.Min(SystemParameters.WorkArea.Width - 80, Math.Max(520, _sourceImage.PixelWidth + 36));
 		double windowHeight = Math.Min(SystemParameters.WorkArea.Height - 80, Math.Max(420, _sourceImage.PixelHeight + ToolbarHeight + 36));
 
@@ -200,7 +189,7 @@ internal sealed class ImagePaintWindow : Window
 			return;
 		}
 
-		if (isControlPressed && (key == Key.S || key == Key.C))
+		if (isControlPressed && key == Key.S)
 		{
 			SaveToClipboardAndClose();
 			e.Handled = true;
@@ -409,8 +398,9 @@ internal sealed class ImagePaintWindow : Window
 	{
 		try
 		{
-			CopyPaintedImageToClipboard(requireChanges: false);
-			_hasCopiedToClipboardBeforeClose = true;
+			CompleteActiveDrag(focusTextInput: false);
+
+			ClipboardManager.CopyImageToClipboard(RenderPaintedImage());
 			Close();
 		}
 		catch (Exception ex)
@@ -418,20 +408,6 @@ internal sealed class ImagePaintWindow : Window
 			Logger.Error(ex, "ImagePaintWindow: 編集画像をクリップボードにコピーできませんでした。");
 			MessageBox.Show(this, "編集画像をクリップボードにコピーできませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
 		}
-	}
-
-	private bool CopyPaintedImageToClipboard(bool requireChanges)
-	{
-		_autoClipboardWriteTimer.Stop();
-		CompleteActiveDrag(focusTextInput: false);
-		_autoClipboardWriteTimer.Stop();
-		if (requireChanges && !_hasPaintChanges)
-		{
-			return false;
-		}
-
-		ClipboardManager.CopyImageToClipboard(RenderPaintedImage(), overwriteLatestHistory: _hasPaintChanges);
-		return true;
 	}
 
 	private void Undo()
@@ -463,7 +439,6 @@ internal sealed class ImagePaintWindow : Window
 
 		UpdateOutlineNumberLabels();
 		FocusCurrentEditableElement();
-		MarkPaintChanged();
 	}
 
 	private void Redo()
@@ -498,8 +473,6 @@ internal sealed class ImagePaintWindow : Window
 		{
 			FocusPaintSurface();
 		}
-
-		MarkPaintChanged();
 	}
 
 	private void PaintRectangle_Focused(object? sender, EventArgs e)
@@ -515,15 +488,6 @@ internal sealed class ImagePaintWindow : Window
 		if (sender is PaintRectangle paintRectangle && _completedElements.Contains(paintRectangle))
 		{
 			UpdateOutlineNumberLabels();
-			MarkPaintChanged();
-		}
-	}
-
-	private void ArrowTextRectangle_Changed(object? sender, EventArgs e)
-	{
-		if (sender is ArrowTextRectangle arrowTextRectangle && _completedElements.Contains(arrowTextRectangle))
-		{
-			MarkPaintChanged();
 		}
 	}
 
@@ -561,48 +525,6 @@ internal sealed class ImagePaintWindow : Window
 		_overlayCanvas.Focus();
 	}
 
-	private void MarkPaintChanged()
-	{
-		if (!_hasPaintChanges && _completedElements.Count == 0 && _dragElement == null)
-		{
-			return;
-		}
-
-		_hasPaintChanges = true;
-		QueueAutoClipboardWrite();
-	}
-
-	private void QueueAutoClipboardWrite()
-	{
-		if (!_hasPaintChanges)
-		{
-			return;
-		}
-
-		_autoClipboardWriteTimer.Stop();
-		_autoClipboardWriteTimer.Start();
-	}
-
-	private void AutoClipboardWriteTimer_Tick(object? sender, EventArgs e)
-	{
-		_autoClipboardWriteTimer.Stop();
-		WritePaintedImageToClipboardAutomatically();
-	}
-
-	private void WritePaintedImageToClipboardAutomatically()
-	{
-		try
-		{
-			ClipboardManager.CopyImageToClipboard(
-				RenderPaintedImage(prepareTextInputsForRender: false),
-				overwriteLatestHistory: true);
-		}
-		catch (Exception ex)
-		{
-			Logger.Error(ex, "ImagePaintWindow: 編集画像の自動クリップボード書き込みに失敗しました。");
-		}
-	}
-
 	private void CompleteActiveDrag(bool focusTextInput)
 	{
 		if (_dragElement is not { } element)
@@ -626,8 +548,6 @@ internal sealed class ImagePaintWindow : Window
 				SetActiveArrowTextRectangle(arrowTextRectangle);
 				arrowTextRectangle.FocusTextInput();
 			}
-
-			MarkPaintChanged();
 		}
 		else
 		{
@@ -850,13 +770,9 @@ internal sealed class ImagePaintWindow : Window
 		return new Rect(left, top, bounds.Width, bounds.Height);
 	}
 
-	private BitmapSource RenderPaintedImage(bool prepareTextInputsForRender = true)
+	private BitmapSource RenderPaintedImage()
 	{
-		if (prepareTextInputsForRender)
-		{
-			PrepareTextInputsForRender();
-		}
-
+		PrepareTextInputsForRender();
 		_paintSurface.Measure(new Size(_sourceImage.PixelWidth, _sourceImage.PixelHeight));
 		_paintSurface.Arrange(new Rect(0, 0, _sourceImage.PixelWidth, _sourceImage.PixelHeight));
 		_paintSurface.UpdateLayout();
@@ -870,33 +786,6 @@ internal sealed class ImagePaintWindow : Window
 		bitmap.Render(_paintSurface);
 		bitmap.Freeze();
 		return bitmap;
-	}
-
-	protected override void OnClosing(CancelEventArgs e)
-	{
-		if (!_hasCopiedToClipboardBeforeClose)
-		{
-			try
-			{
-				_hasCopiedToClipboardBeforeClose = CopyPaintedImageToClipboard(requireChanges: true);
-			}
-			catch (Exception ex)
-			{
-				Logger.Error(ex, "ImagePaintWindow: ウィンドウを閉じる前に編集画像をクリップボードにコピーできませんでした。");
-				MessageBox.Show(this, "編集画像をクリップボードにコピーできませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
-				e.Cancel = true;
-				return;
-			}
-		}
-
-		_autoClipboardWriteTimer.Stop();
-		base.OnClosing(e);
-	}
-
-	protected override void OnClosed(EventArgs e)
-	{
-		_autoClipboardWriteTimer.Stop();
-		base.OnClosed(e);
 	}
 
 	private void PrepareTextInputsForRender()
@@ -1001,7 +890,6 @@ internal sealed class ImagePaintWindow : Window
 
 		_showOutlineNumbers = showOutlineNumbers;
 		UpdateOutlineNumberLabels();
-		MarkPaintChanged();
 	}
 
 	private TextBox CreateStrokeThicknessTextBox(double strokeThickness)
@@ -1097,7 +985,6 @@ internal sealed class ImagePaintWindow : Window
 
 		_paintStrokeThickness = strokeThickness;
 		ApplyStrokeThicknessToActiveElement(strokeThickness);
-		MarkPaintChanged();
 		if (restoreInvalidValue)
 		{
 			UpdateStrokeThicknessTextBox(strokeThickness);
@@ -1126,7 +1013,6 @@ internal sealed class ImagePaintWindow : Window
 		_currentArrowTextFontSize = fontSize;
 		_activeArrowTextRectangle?.SetTextFontSize(fontSize);
 		UpdateOutlineNumberLabels();
-		MarkPaintChanged();
 		if (restoreInvalidValue)
 		{
 			UpdateFontSizeTextBox(fontSize);
@@ -1369,7 +1255,6 @@ internal sealed class ImagePaintWindow : Window
 				_paintStrokeThickness,
 				_currentArrowTextFontSize);
 			arrowTextRectangle.TextInputFocused += ArrowTextRectangle_TextInputFocused;
-			arrowTextRectangle.Changed += ArrowTextRectangle_Changed;
 			return arrowTextRectangle;
 		}
 
@@ -1775,7 +1660,6 @@ internal sealed class ImagePaintWindow : Window
 				VerticalScrollBarVisibility = ScrollBarVisibility.Disabled
 			};
 			_textBox.GotKeyboardFocus += (_, _) => TextInputFocused?.Invoke(this, EventArgs.Empty);
-			_textBox.TextChanged += (_, _) => OnChanged();
 
 			foreach (ResizeHandleKind resizeHandleKind in Enum.GetValues<ResizeHandleKind>())
 			{
@@ -1793,8 +1677,6 @@ internal sealed class ImagePaintWindow : Window
 		}
 
 		public event EventHandler? TextInputFocused;
-
-		public event EventHandler? Changed;
 
 		public Rect TextRectangleBounds => _textRectangleBounds;
 
@@ -1820,7 +1702,6 @@ internal sealed class ImagePaintWindow : Window
 			}
 
 			UpdateArrow(_textRectangleBounds);
-			OnChanged();
 		}
 
 		private void SetTextRectangleBounds(Rect bounds)
@@ -1848,7 +1729,6 @@ internal sealed class ImagePaintWindow : Window
 		public void SetTextFontSize(double fontSize)
 		{
 			_textBox.FontSize = fontSize;
-			OnChanged();
 		}
 
 		public void SetStrokeThickness(double strokeThickness)
@@ -1868,8 +1748,6 @@ internal sealed class ImagePaintWindow : Window
 				SetTextRectangleBounds(_textRectangleBounds);
 				UpdateArrow(_textRectangleBounds);
 			}
-
-			OnChanged();
 		}
 
 		public void PrepareForRender()
@@ -1920,7 +1798,6 @@ internal sealed class ImagePaintWindow : Window
 			movedBounds.Offset(offset.X, offset.Y);
 			SetTextRectangleBounds(ClampRectangleToBounds(movedBounds));
 			UpdateArrow(_textRectangleBounds);
-			OnChanged();
 		}
 
 		private Rectangle CreateResizeHandle(ResizeHandleKind resizeHandleKind)
@@ -2044,7 +1921,6 @@ internal sealed class ImagePaintWindow : Window
 
 			SetTextRectangleBounds(new Rect(left, top, right - left, bottom - top));
 			UpdateArrow(_textRectangleBounds);
-			OnChanged();
 		}
 
 		private void ArrowHead_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -2108,12 +1984,6 @@ internal sealed class ImagePaintWindow : Window
 		{
 			_arrowTip = ClampToBounds(point);
 			UpdateArrow(_textRectangleBounds);
-			OnChanged();
-		}
-
-		private void OnChanged()
-		{
-			Changed?.Invoke(this, EventArgs.Empty);
 		}
 
 		private Point CalculateDefaultArrowTip(Rect rectangleBounds)
