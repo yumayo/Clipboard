@@ -920,7 +920,24 @@ internal sealed class ImagePaintWindow : Window
 			VerticalContentAlignment = VerticalAlignment.Center
 		};
 		AppTheme.ApplyTextBox(textBox);
+		textBox.PreviewTextInput += IntegerTextBox_PreviewTextInput;
+		DataObject.AddPastingHandler(textBox, IntegerTextBox_Pasting);
 		return textBox;
+	}
+
+	private static void IntegerTextBox_PreviewTextInput(object sender, TextCompositionEventArgs e)
+	{
+		e.Handled = !IsIntegerText(e.Text);
+	}
+
+	private static void IntegerTextBox_Pasting(object sender, DataObjectPastingEventArgs e)
+	{
+		if (!e.DataObject.GetDataPresent(DataFormats.UnicodeText) ||
+			e.DataObject.GetData(DataFormats.UnicodeText) is not string text ||
+			!IsIntegerText(text))
+		{
+			e.CancelCommand();
+		}
 	}
 
 	private void StrokeThicknessTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -1085,7 +1102,7 @@ internal sealed class ImagePaintWindow : Window
 
 	private static bool TryParseStrokeThickness(string text, out double strokeThickness)
 	{
-		if (!TryParseNonNegativeSizeValue(text, out strokeThickness))
+		if (!TryParseNonNegativeIntegerSizeValue(text, out strokeThickness))
 		{
 			return false;
 		}
@@ -1096,7 +1113,7 @@ internal sealed class ImagePaintWindow : Window
 
 	private static bool TryParseFontSize(string text, out double fontSize)
 	{
-		if (!TryParseNonNegativeSizeValue(text, out fontSize))
+		if (!TryParseNonNegativeIntegerSizeValue(text, out fontSize))
 		{
 			return false;
 		}
@@ -1105,29 +1122,45 @@ internal sealed class ImagePaintWindow : Window
 		return true;
 	}
 
-	private static bool TryParseNonNegativeSizeValue(string text, out double sizeValue)
+	private static bool TryParseNonNegativeIntegerSizeValue(string text, out double sizeValue)
 	{
 		string trimmedText = text.Trim();
-		if (!double.TryParse(
+		if (!IsIntegerText(trimmedText) ||
+			!long.TryParse(
 				trimmedText,
-				System.Globalization.NumberStyles.Float,
-				System.Globalization.CultureInfo.CurrentCulture,
-				out sizeValue) &&
-			!double.TryParse(
-				trimmedText,
-				System.Globalization.NumberStyles.Float,
+				System.Globalization.NumberStyles.None,
 				System.Globalization.CultureInfo.InvariantCulture,
-				out sizeValue))
+				out long integerValue))
+		{
+			sizeValue = 0;
+			return false;
+		}
+
+		sizeValue = integerValue;
+		return true;
+	}
+
+	private static bool IsIntegerText(string text)
+	{
+		if (text.Length == 0)
 		{
 			return false;
 		}
 
-		return double.IsFinite(sizeValue) && sizeValue >= 0;
+		foreach (char character in text)
+		{
+			if (character < '0' || character > '9')
+			{
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	private static string FormatSizeValue(double sizeValue)
 	{
-		return sizeValue.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+		return RoundSizeValue(sizeValue).ToString("0", System.Globalization.CultureInfo.InvariantCulture);
 	}
 
 	private static Ellipse CreateFillIcon()
@@ -1238,12 +1271,17 @@ internal sealed class ImagePaintWindow : Window
 
 	private static double CalculatePaintStrokeThickness(double canvasHeight)
 	{
-		return Math.Max(MinPaintStrokeThickness, canvasHeight * PaintStrokeThicknessHeightRatio);
+		return Math.Max(MinPaintStrokeThickness, RoundSizeValue(canvasHeight * PaintStrokeThicknessHeightRatio));
 	}
 
 	private static double CalculateDefaultArrowTextFontSize(double canvasHeight)
 	{
-		return Math.Max(MinArrowTextFontSize, canvasHeight * ArrowTextFontSizeHeightRatio);
+		return Math.Max(MinArrowTextFontSize, RoundSizeValue(canvasHeight * ArrowTextFontSizeHeightRatio));
+	}
+
+	private static double RoundSizeValue(double sizeValue)
+	{
+		return Math.Round(sizeValue, MidpointRounding.AwayFromZero);
 	}
 
 	private static SolidColorBrush CreateFrozenBrush(Color color)
