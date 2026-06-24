@@ -1,6 +1,9 @@
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Globalization;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -69,6 +72,7 @@ internal sealed class ImagePaintWindow : Window
 	private bool _showOutlineNumbers = true;
 	private bool _hasPaintChanges;
 	private bool _hasCopiedToClipboardBeforeClose;
+	private int _clipboardWriteVersion;
 	private PaintRectangle? _activePaintRectangle;
 	private ArrowTextRectangle? _activeArrowTextRectangle;
 	private PaintMode _paintMode = PaintMode.RedOutlineRectangle;
@@ -409,8 +413,9 @@ internal sealed class ImagePaintWindow : Window
 	{
 		try
 		{
-			CopyPaintedImageToClipboard(requireChanges: false);
-			_hasCopiedToClipboardBeforeClose = true;
+			_hasCopiedToClipboardBeforeClose = QueuePaintedImageClipboardWrite(
+				requireChanges: false,
+				errorMessage: "ImagePaintWindow: 編集画像をクリップボードにコピーできませんでした。");
 			Close();
 		}
 		catch (Exception ex)
@@ -420,7 +425,7 @@ internal sealed class ImagePaintWindow : Window
 		}
 	}
 
-	private bool CopyPaintedImageToClipboard(bool requireChanges)
+	private bool QueuePaintedImageClipboardWrite(bool requireChanges, string errorMessage)
 	{
 		_autoClipboardWriteTimer.Stop();
 		CompleteActiveDrag(focusTextInput: false);
@@ -430,8 +435,31 @@ internal sealed class ImagePaintWindow : Window
 			return false;
 		}
 
-		ClipboardManager.CopyImageToClipboard(RenderPaintedImage(), overwriteLatestHistory: _hasPaintChanges);
+		QueueClipboardWrite(CreateRenderSnapshot(prepareTextInputsForRender: true), _hasPaintChanges, errorMessage);
 		return true;
+	}
+
+	private void QueueClipboardWrite(PaintRenderSnapshot snapshot, bool overwriteLatestHistory, string errorMessage)
+	{
+		int writeVersion = Interlocked.Increment(ref _clipboardWriteVersion);
+		_ = ClipboardManager.CopyImageToClipboardAsync(
+				() => RenderPaintedImage(snapshot),
+				overwriteLatestHistory,
+				() => Volatile.Read(ref _clipboardWriteVersion) == writeVersion)
+			.ContinueWith(
+				task => Logger.Error(task.Exception!, errorMessage),
+				TaskContinuationOptions.OnlyOnFaulted);
+	}
+
+	private void QueueHistoryWrite(PaintRenderSnapshot snapshot, string errorMessage)
+	{
+		int writeVersion = Interlocked.Increment(ref _clipboardWriteVersion);
+		_ = ClipboardManager.UpsertLatestImageHistoryAsync(
+				() => RenderPaintedImage(snapshot),
+				() => Volatile.Read(ref _clipboardWriteVersion) == writeVersion)
+			.ContinueWith(
+				task => Logger.Error(task.Exception!, errorMessage),
+				TaskContinuationOptions.OnlyOnFaulted);
 	}
 
 	private void Undo()
@@ -586,20 +614,20 @@ internal sealed class ImagePaintWindow : Window
 	private void AutoClipboardWriteTimer_Tick(object? sender, EventArgs e)
 	{
 		_autoClipboardWriteTimer.Stop();
-		WritePaintedImageToClipboardAutomatically();
+		WritePaintedImageToHistoryAutomatically();
 	}
 
-	private void WritePaintedImageToClipboardAutomatically()
+	private void WritePaintedImageToHistoryAutomatically()
 	{
 		try
 		{
-			ClipboardManager.CopyImageToClipboard(
-				RenderPaintedImage(prepareTextInputsForRender: false),
-				overwriteLatestHistory: true);
+			QueueHistoryWrite(
+				CreateRenderSnapshot(prepareTextInputsForRender: false),
+				errorMessage: "ImagePaintWindow: 編集画像の自動履歴更新に失敗しました。");
 		}
 		catch (Exception ex)
 		{
-			Logger.Error(ex, "ImagePaintWindow: 編集画像の自動クリップボード書き込みに失敗しました。");
+			Logger.Error(ex, "ImagePaintWindow: 編集画像の自動履歴更新に失敗しました。");
 		}
 	}
 
@@ -850,26 +878,351 @@ internal sealed class ImagePaintWindow : Window
 		return new Rect(left, top, bounds.Width, bounds.Height);
 	}
 
-	private BitmapSource RenderPaintedImage(bool prepareTextInputsForRender = true)
+	private PaintRenderSnapshot CreateRenderSnapshot(bool prepareTextInputsForRender)
 	{
 		if (prepareTextInputsForRender)
 		{
 			PrepareTextInputsForRender();
 		}
 
-		_paintSurface.Measure(new Size(_sourceImage.PixelWidth, _sourceImage.PixelHeight));
-		_paintSurface.Arrange(new Rect(0, 0, _sourceImage.PixelWidth, _sourceImage.PixelHeight));
-		_paintSurface.UpdateLayout();
+		var elements = new List<PaintRenderElementSnapshot>();
+		foreach (UIElement element in _completedElements)
+		{
+			if (element is PaintRectangle paintRectangle && paintRectangle.IsDrawable)
+			{
+				elements.Add(new PaintRectangleSnapshot(
+					paintRectangle.Bounds,
+					paintRectangle.IsOutline,
+					paintRectangle.StrokeThickness));
+			}
+			else if (element is ArrowTextRectangle arrowTextRectangle && arrowTextRectangle.IsDrawable)
+			{
+				elements.Add(new ArrowTextRectangleSnapshot(
+					arrowTextRectangle.TextRectangleBounds,
+					arrowTextRectangle.ArrowTip,
+					arrowTextRectangle.Text,
+					arrowTextRectangle.TextFontSize,
+					arrowTextRectangle.StrokeThickness));
+			}
+		}
+
+		var labels = new List<PaintRenderLabelSnapshot>();
+		foreach (TextBlock label in _outlineNumberLabels.Values)
+		{
+			labels.Add(new PaintRenderLabelSnapshot(
+				label.Text,
+				new Point(GetCanvasCoordinate(label, Canvas.LeftProperty), GetCanvasCoordinate(label, Canvas.TopProperty)),
+				label.FontSize));
+		}
+
+		return new PaintRenderSnapshot(_sourceImage, _sourceImage.PixelWidth, _sourceImage.PixelHeight, elements, labels);
+	}
+
+	private static double GetCanvasCoordinate(UIElement element, DependencyProperty property)
+	{
+		double value = (double)element.GetValue(property);
+		return double.IsNaN(value) ? 0 : value;
+	}
+
+	private static BitmapSource RenderPaintedImage(PaintRenderSnapshot snapshot)
+	{
+		var visual = new DrawingVisual();
+		RenderOptions.SetBitmapScalingMode(visual, BitmapScalingMode.HighQuality);
+		using (DrawingContext drawingContext = visual.RenderOpen())
+		{
+			drawingContext.DrawImage(snapshot.SourceImage, new Rect(0, 0, snapshot.PixelWidth, snapshot.PixelHeight));
+			foreach (PaintRenderElementSnapshot element in snapshot.Elements)
+			{
+				DrawPaintElement(drawingContext, element, snapshot.PixelWidth, snapshot.PixelHeight);
+			}
+
+			foreach (PaintRenderLabelSnapshot label in snapshot.Labels)
+			{
+				DrawText(
+					drawingContext,
+					label.Text,
+					label.Origin,
+					label.FontSize,
+					Brushes.Red,
+					FontWeights.Bold,
+					maxWidth: double.PositiveInfinity,
+					maxHeight: double.PositiveInfinity);
+			}
+		}
 
 		var bitmap = new RenderTargetBitmap(
-			_sourceImage.PixelWidth,
-			_sourceImage.PixelHeight,
+			snapshot.PixelWidth,
+			snapshot.PixelHeight,
 			96,
 			96,
 			PixelFormats.Pbgra32);
-		bitmap.Render(_paintSurface);
+		bitmap.Render(visual);
 		bitmap.Freeze();
 		return bitmap;
+	}
+
+	private static void DrawPaintElement(
+		DrawingContext drawingContext,
+		PaintRenderElementSnapshot element,
+		double canvasWidth,
+		double canvasHeight)
+	{
+		switch (element)
+		{
+			case PaintRectangleSnapshot paintRectangle:
+				DrawPaintRectangle(drawingContext, paintRectangle);
+				break;
+			case ArrowTextRectangleSnapshot arrowTextRectangle:
+				DrawArrowTextRectangle(drawingContext, arrowTextRectangle, canvasWidth, canvasHeight);
+				break;
+		}
+	}
+
+	private static void DrawPaintRectangle(DrawingContext drawingContext, PaintRectangleSnapshot rectangle)
+	{
+		if (rectangle.IsOutline)
+		{
+			drawingContext.DrawRectangle(
+				null,
+				CreatePen(Brushes.Red, rectangle.StrokeThickness),
+				rectangle.Bounds);
+			return;
+		}
+
+		drawingContext.DrawRectangle(Brushes.Black, null, rectangle.Bounds);
+	}
+
+	private static void DrawArrowTextRectangle(
+		DrawingContext drawingContext,
+		ArrowTextRectangleSnapshot rectangle,
+		double canvasWidth,
+		double canvasHeight)
+	{
+		DrawArrow(drawingContext, rectangle.Bounds, rectangle.ArrowTip, canvasWidth, canvasHeight, rectangle.StrokeThickness);
+		drawingContext.DrawRectangle(
+			Brushes.White,
+			CreatePen(ArrowBrush, rectangle.StrokeThickness),
+			rectangle.Bounds);
+
+		double textInset = rectangle.StrokeThickness + ArrowTextPadding;
+		var textBounds = new Rect(
+			rectangle.Bounds.Left + textInset,
+			rectangle.Bounds.Top + textInset,
+			Math.Max(0, rectangle.Bounds.Width - textInset * 2),
+			Math.Max(0, rectangle.Bounds.Height - textInset * 2));
+		DrawText(
+			drawingContext,
+			rectangle.Text,
+			textBounds.TopLeft,
+			rectangle.FontSize,
+			Brushes.Black,
+			FontWeights.Normal,
+			textBounds.Width,
+			textBounds.Height);
+	}
+
+	private static void DrawArrow(
+		DrawingContext drawingContext,
+		Rect rectangleBounds,
+		Point requestedTipPoint,
+		double canvasWidth,
+		double canvasHeight,
+		double strokeThickness)
+	{
+		double arrowHeadLength = CalculateRenderArrowHeadLength(strokeThickness);
+		double arrowHeadWidth = CalculateRenderArrowHeadWidth(strokeThickness);
+		Point tipPoint = ClampToBounds(requestedTipPoint, canvasWidth, canvasHeight);
+		Vector arrowDirection = GetArrowDirection(rectangleBounds, tipPoint, out Point attachPoint, out Point bendPoint);
+		Point lineEndPoint = GetArrowLineEndPoint(tipPoint, bendPoint, attachPoint, arrowDirection, arrowHeadLength, strokeThickness);
+
+		var lineGeometry = new StreamGeometry();
+		using (StreamGeometryContext context = lineGeometry.Open())
+		{
+			context.BeginFigure(attachPoint, isFilled: false, isClosed: false);
+			context.LineTo(bendPoint, isStroked: true, isSmoothJoin: true);
+			context.LineTo(lineEndPoint, isStroked: true, isSmoothJoin: true);
+		}
+		lineGeometry.Freeze();
+		drawingContext.DrawGeometry(null, CreateArrowLinePen(strokeThickness), lineGeometry);
+
+		arrowDirection.Normalize();
+		Vector normal = new(-arrowDirection.Y, arrowDirection.X);
+		Point baseCenter = tipPoint - arrowDirection * arrowHeadLength;
+		var headGeometry = new StreamGeometry();
+		using (StreamGeometryContext context = headGeometry.Open())
+		{
+			context.BeginFigure(tipPoint, isFilled: true, isClosed: true);
+			context.LineTo(baseCenter + normal * (arrowHeadWidth / 2), isStroked: true, isSmoothJoin: true);
+			context.LineTo(baseCenter - normal * (arrowHeadWidth / 2), isStroked: true, isSmoothJoin: true);
+		}
+		headGeometry.Freeze();
+		drawingContext.DrawGeometry(ArrowBrush, null, headGeometry);
+	}
+
+	private static void DrawText(
+		DrawingContext drawingContext,
+		string text,
+		Point origin,
+		double fontSize,
+		Brush brush,
+		FontWeight fontWeight,
+		double maxWidth,
+		double maxHeight)
+	{
+		if (string.IsNullOrEmpty(text))
+		{
+			return;
+		}
+
+		var formattedText = new FormattedText(
+			text,
+			CultureInfo.CurrentCulture,
+			FlowDirection.LeftToRight,
+			new Typeface(new FontFamily(ArrowTextFontFamilyName), FontStyles.Normal, fontWeight, FontStretches.Normal),
+			fontSize,
+			brush,
+			1);
+		if (double.IsFinite(maxWidth))
+		{
+			formattedText.MaxTextWidth = Math.Max(0.1, maxWidth);
+		}
+		if (double.IsFinite(maxHeight))
+		{
+			formattedText.MaxTextHeight = Math.Max(0.1, maxHeight);
+			drawingContext.PushClip(new RectangleGeometry(new Rect(origin, new Size(Math.Max(0, maxWidth), Math.Max(0, maxHeight)))));
+			drawingContext.DrawText(formattedText, origin);
+			drawingContext.Pop();
+			return;
+		}
+
+		drawingContext.DrawText(formattedText, origin);
+	}
+
+	private static Pen CreatePen(Brush brush, double strokeThickness)
+	{
+		var pen = new Pen(brush, strokeThickness);
+		pen.Freeze();
+		return pen;
+	}
+
+	private static Pen CreateArrowLinePen(double strokeThickness)
+	{
+		var pen = new Pen(ArrowBrush, strokeThickness)
+		{
+			StartLineCap = PenLineCap.Round,
+			EndLineCap = PenLineCap.Flat,
+			LineJoin = PenLineJoin.Round
+		};
+		if (pen.CanFreeze)
+		{
+			pen.Freeze();
+		}
+
+		return pen;
+	}
+
+	private static double CalculateRenderArrowHeadLength(double strokeThickness)
+	{
+		return Math.Max(MinArrowHeadLength, strokeThickness * ArrowHeadLengthStrokeMultiplier);
+	}
+
+	private static double CalculateRenderArrowHeadWidth(double strokeThickness)
+	{
+		return Math.Max(MinArrowHeadWidth, strokeThickness * ArrowHeadWidthStrokeMultiplier);
+	}
+
+	private static Vector GetArrowDirection(Rect rectangleBounds, Point tipPoint, out Point attachPoint, out Point bendPoint)
+	{
+		attachPoint = GetArrowAttachPoint(rectangleBounds, tipPoint, out RenderArrowAttachSide attachSide);
+		bendPoint = attachSide is RenderArrowAttachSide.Left or RenderArrowAttachSide.Right
+			? new Point(attachPoint.X + (tipPoint.X - attachPoint.X) * ArrowBendDistanceRatio, attachPoint.Y)
+			: new Point(attachPoint.X, attachPoint.Y + (tipPoint.Y - attachPoint.Y) * ArrowBendDistanceRatio);
+		Vector arrowDirection = tipPoint - bendPoint;
+		if (arrowDirection.LengthSquared < 0.001)
+		{
+			arrowDirection = tipPoint - attachPoint;
+		}
+
+		if (arrowDirection.LengthSquared < 0.001)
+		{
+			arrowDirection = attachSide switch
+			{
+				RenderArrowAttachSide.Left => new Vector(-1, 0),
+				RenderArrowAttachSide.Right => new Vector(1, 0),
+				RenderArrowAttachSide.Top => new Vector(0, -1),
+				_ => new Vector(0, 1)
+			};
+		}
+
+		return arrowDirection;
+	}
+
+	private static Point GetArrowLineEndPoint(
+		Point tipPoint,
+		Point bendPoint,
+		Point attachPoint,
+		Vector arrowDirection,
+		double arrowHeadLength,
+		double strokeThickness)
+	{
+		double tipSegmentLength = (tipPoint - bendPoint).Length;
+		if (tipSegmentLength < 0.001)
+		{
+			tipSegmentLength = (tipPoint - attachPoint).Length;
+		}
+
+		double inset = Math.Min(arrowHeadLength * ArrowLineEndHeadInsetRatio, Math.Max(strokeThickness, tipSegmentLength * 0.8));
+		arrowDirection.Normalize();
+		return tipPoint - arrowDirection * inset;
+	}
+
+	private static Point GetArrowAttachPoint(Rect rectangleBounds, Point tipPoint, out RenderArrowAttachSide attachSide)
+	{
+		double leftOverflow = Math.Max(0, rectangleBounds.Left - tipPoint.X);
+		double rightOverflow = Math.Max(0, tipPoint.X - rectangleBounds.Right);
+		double topOverflow = Math.Max(0, rectangleBounds.Top - tipPoint.Y);
+		double bottomOverflow = Math.Max(0, tipPoint.Y - rectangleBounds.Bottom);
+		double horizontalOverflow = Math.Max(leftOverflow, rightOverflow);
+		double verticalOverflow = Math.Max(topOverflow, bottomOverflow);
+
+		if (horizontalOverflow >= verticalOverflow && horizontalOverflow > 0)
+		{
+			attachSide = leftOverflow >= rightOverflow ? RenderArrowAttachSide.Left : RenderArrowAttachSide.Right;
+		}
+		else if (verticalOverflow > 0)
+		{
+			attachSide = topOverflow >= bottomOverflow ? RenderArrowAttachSide.Top : RenderArrowAttachSide.Bottom;
+		}
+		else
+		{
+			double leftDistance = Math.Abs(tipPoint.X - rectangleBounds.Left);
+			double rightDistance = Math.Abs(rectangleBounds.Right - tipPoint.X);
+			double topDistance = Math.Abs(tipPoint.Y - rectangleBounds.Top);
+			double bottomDistance = Math.Abs(rectangleBounds.Bottom - tipPoint.Y);
+			double minDistance = Math.Min(Math.Min(leftDistance, rightDistance), Math.Min(topDistance, bottomDistance));
+			attachSide = minDistance == leftDistance
+				? RenderArrowAttachSide.Left
+				: minDistance == rightDistance
+					? RenderArrowAttachSide.Right
+					: minDistance == topDistance
+						? RenderArrowAttachSide.Top
+						: RenderArrowAttachSide.Bottom;
+		}
+
+		return attachSide switch
+		{
+			RenderArrowAttachSide.Left => new Point(rectangleBounds.Left, rectangleBounds.Top + rectangleBounds.Height / 2),
+			RenderArrowAttachSide.Right => new Point(rectangleBounds.Right, rectangleBounds.Top + rectangleBounds.Height / 2),
+			RenderArrowAttachSide.Top => new Point(rectangleBounds.Left + rectangleBounds.Width / 2, rectangleBounds.Top),
+			_ => new Point(rectangleBounds.Left + rectangleBounds.Width / 2, rectangleBounds.Bottom)
+		};
+	}
+
+	private static Point ClampToBounds(Point point, double width, double height)
+	{
+		return new Point(
+			Math.Max(0, Math.Min(point.X, width)),
+			Math.Max(0, Math.Min(point.Y, height)));
 	}
 
 	protected override void OnClosing(CancelEventArgs e)
@@ -878,7 +1231,9 @@ internal sealed class ImagePaintWindow : Window
 		{
 			try
 			{
-				_hasCopiedToClipboardBeforeClose = CopyPaintedImageToClipboard(requireChanges: true);
+				_hasCopiedToClipboardBeforeClose = QueuePaintedImageClipboardWrite(
+					requireChanges: true,
+					errorMessage: "ImagePaintWindow: ウィンドウを閉じる前に編集画像をクリップボードにコピーできませんでした。");
 			}
 			catch (Exception ex)
 			{
@@ -1413,6 +1768,40 @@ internal sealed class ImagePaintWindow : Window
 			Math.Max(0, Math.Min(point.Y, _overlayCanvas.Height)));
 	}
 
+	private sealed record PaintRenderSnapshot(
+		BitmapSource SourceImage,
+		int PixelWidth,
+		int PixelHeight,
+		IReadOnlyList<PaintRenderElementSnapshot> Elements,
+		IReadOnlyList<PaintRenderLabelSnapshot> Labels);
+
+	private abstract record PaintRenderElementSnapshot;
+
+	private sealed record PaintRectangleSnapshot(
+		Rect Bounds,
+		bool IsOutline,
+		double StrokeThickness) : PaintRenderElementSnapshot;
+
+	private sealed record ArrowTextRectangleSnapshot(
+		Rect Bounds,
+		Point ArrowTip,
+		string Text,
+		double FontSize,
+		double StrokeThickness) : PaintRenderElementSnapshot;
+
+	private sealed record PaintRenderLabelSnapshot(
+		string Text,
+		Point Origin,
+		double FontSize);
+
+	private enum RenderArrowAttachSide
+	{
+		Left,
+		Right,
+		Top,
+		Bottom
+	}
+
 	private sealed class PaintRectangle : Canvas
 	{
 		private readonly double _canvasWidth;
@@ -1797,6 +2186,10 @@ internal sealed class ImagePaintWindow : Window
 		public event EventHandler? Changed;
 
 		public Rect TextRectangleBounds => _textRectangleBounds;
+
+		public Point ArrowTip => _arrowTip;
+
+		public string Text => _textBox.Text;
 
 		public double TextFontSize => _textBox.FontSize;
 
