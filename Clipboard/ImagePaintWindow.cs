@@ -21,6 +21,7 @@ internal sealed class ImagePaintWindow : Window
 	private const double OutlineNumberGap = 4;
 	private const double OutlineNumberFontSize = 18;
 	private const double PaintStrokeThicknessHeightRatio = 1.0 / 256.0;
+	private const double MinPaintStrokeThickness = 1;
 	private const double ArrowTailLength = 36;
 	private const double ArrowHeadLengthStrokeMultiplier = 5.5;
 	private const double ArrowHeadWidthStrokeMultiplier = 4.65;
@@ -31,7 +32,7 @@ internal sealed class ImagePaintWindow : Window
 	private const double ArrowBendDistanceRatio = 0.55;
 	private const double ArrowTextPadding = 6;
 	private const double ArrowTextFontSizeHeightRatio = 1.0 / 64.0;
-	private const double MinArrowTextFontSize = 8;
+	private const double MinArrowTextFontSize = 24;
 	private const double MinArrowTextRectangleWidth = 36;
 	private const double MinArrowTextRectangleHeight = 24;
 	private const string ArrowTextFontFamilyName = "Meiryo UI";
@@ -49,12 +50,14 @@ internal sealed class ImagePaintWindow : Window
 	private readonly Button _blackFillButton;
 	private readonly Button _redOutlineButton;
 	private readonly Button _arrowTextButton;
+	private readonly TextBox _strokeThicknessTextBox;
 	private readonly TextBox _fontSizeTextBox;
 	private readonly List<UIElement> _completedElements = new();
 	private readonly List<UIElement> _redoElements = new();
 	private readonly Dictionary<Rectangle, TextBlock> _outlineNumberLabels = new();
-	private readonly double _paintStrokeThickness;
+	private double _paintStrokeThickness;
 	private double _currentArrowTextFontSize;
+	private bool _isUpdatingStrokeThicknessTextBox;
 	private bool _isUpdatingFontSizeTextBox;
 	private ArrowTextRectangle? _activeArrowTextRectangle;
 	private PaintMode _paintMode = PaintMode.RedOutlineRectangle;
@@ -81,7 +84,7 @@ internal sealed class ImagePaintWindow : Window
 		var root = new DockPanel();
 		root.SetResourceReference(Panel.BackgroundProperty, AppTheme.WindowBackgroundBrushKey);
 
-		var toolbar = new StackPanel
+		var toolbar = new WrapPanel
 		{
 			Orientation = Orientation.Horizontal,
 			HorizontalAlignment = HorizontalAlignment.Center,
@@ -104,8 +107,11 @@ internal sealed class ImagePaintWindow : Window
 		_arrowTextButton.Click += (_, _) => SetPaintMode(PaintMode.ArrowTextRectangle);
 		toolbar.Children.Add(_arrowTextButton);
 
+		_strokeThicknessTextBox = CreateStrokeThicknessTextBox(_paintStrokeThickness);
+		toolbar.Children.Add(CreateToolbarTextEditor("線幅", _strokeThicknessTextBox));
+
 		_fontSizeTextBox = CreateFontSizeTextBox(_currentArrowTextFontSize);
-		toolbar.Children.Add(CreateFontSizeEditor(_fontSizeTextBox));
+		toolbar.Children.Add(CreateToolbarTextEditor("文字サイズ", _fontSizeTextBox));
 
 		var image = new Image
 		{
@@ -818,11 +824,11 @@ internal sealed class ImagePaintWindow : Window
 		return button;
 	}
 
-	private StackPanel CreateFontSizeEditor(TextBox textBox)
+	private StackPanel CreateToolbarTextEditor(string labelText, TextBox textBox)
 	{
 		var label = new TextBlock
 		{
-			Text = "文字サイズ",
+			Text = labelText,
 			Margin = new Thickness(12, 0, 6, 0),
 			VerticalAlignment = VerticalAlignment.Center
 		};
@@ -838,20 +844,48 @@ internal sealed class ImagePaintWindow : Window
 		return editor;
 	}
 
+	private TextBox CreateStrokeThicknessTextBox(double strokeThickness)
+	{
+		var textBox = CreateToolbarTextBox(FormatSizeValue(strokeThickness));
+		textBox.TextChanged += (_, _) => TryApplyStrokeThicknessText(restoreInvalidValue: false);
+		textBox.LostKeyboardFocus += (_, _) => TryApplyStrokeThicknessText(restoreInvalidValue: true);
+		textBox.PreviewKeyDown += StrokeThicknessTextBox_PreviewKeyDown;
+		return textBox;
+	}
+
 	private TextBox CreateFontSizeTextBox(double fontSize)
+	{
+		var textBox = CreateToolbarTextBox(FormatSizeValue(fontSize));
+		textBox.TextChanged += (_, _) => TryApplyFontSizeText(restoreInvalidValue: false);
+		textBox.LostKeyboardFocus += (_, _) => TryApplyFontSizeText(restoreInvalidValue: true);
+		textBox.PreviewKeyDown += FontSizeTextBox_PreviewKeyDown;
+		return textBox;
+	}
+
+	private static TextBox CreateToolbarTextBox(string text)
 	{
 		var textBox = new TextBox
 		{
-			Text = FormatFontSize(fontSize),
+			Text = text,
 			Width = 64,
 			Height = 30,
 			VerticalContentAlignment = VerticalAlignment.Center
 		};
 		AppTheme.ApplyTextBox(textBox);
-		textBox.TextChanged += (_, _) => TryApplyFontSizeText(restoreInvalidValue: false);
-		textBox.LostKeyboardFocus += (_, _) => TryApplyFontSizeText(restoreInvalidValue: true);
-		textBox.PreviewKeyDown += FontSizeTextBox_PreviewKeyDown;
 		return textBox;
+	}
+
+	private void StrokeThicknessTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
+	{
+		if (e.Key != Key.Enter)
+		{
+			return;
+		}
+
+		TryApplyStrokeThicknessText(restoreInvalidValue: true);
+		_overlayCanvas.Focusable = true;
+		_overlayCanvas.Focus();
+		e.Handled = true;
 	}
 
 	private void FontSizeTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -865,6 +899,33 @@ internal sealed class ImagePaintWindow : Window
 		_overlayCanvas.Focusable = true;
 		_overlayCanvas.Focus();
 		e.Handled = true;
+	}
+
+	private bool TryApplyStrokeThicknessText(bool restoreInvalidValue)
+	{
+		if (_isUpdatingStrokeThicknessTextBox)
+		{
+			return true;
+		}
+
+		if (!TryParseStrokeThickness(_strokeThicknessTextBox.Text, out double strokeThickness))
+		{
+			if (restoreInvalidValue)
+			{
+				UpdateStrokeThicknessTextBox(_activeArrowTextRectangle?.StrokeThickness ?? _paintStrokeThickness);
+			}
+
+			return false;
+		}
+
+		_paintStrokeThickness = strokeThickness;
+		ApplyStrokeThicknessToActiveElement(strokeThickness);
+		if (restoreInvalidValue)
+		{
+			UpdateStrokeThicknessTextBox(strokeThickness);
+		}
+
+		return true;
 	}
 
 	private bool TryApplyFontSizeText(bool restoreInvalidValue)
@@ -886,7 +947,26 @@ internal sealed class ImagePaintWindow : Window
 
 		_currentArrowTextFontSize = fontSize;
 		_activeArrowTextRectangle?.SetTextFontSize(fontSize);
+		if (restoreInvalidValue)
+		{
+			UpdateFontSizeTextBox(fontSize);
+		}
+
 		return true;
+	}
+
+	private void ApplyStrokeThicknessToActiveElement(double strokeThickness)
+	{
+		if (_dragElement is Rectangle rectangle && IsOutlineRectangle(rectangle))
+		{
+			rectangle.StrokeThickness = strokeThickness;
+		}
+		else if (_dragElement is ArrowTextRectangle draggingArrowTextRectangle)
+		{
+			draggingArrowTextRectangle.SetStrokeThickness(strokeThickness);
+		}
+
+		_activeArrowTextRectangle?.SetStrokeThickness(strokeThickness);
 	}
 
 	private void SetActiveArrowTextRectangle(ArrowTextRectangle? arrowTextRectangle)
@@ -895,41 +975,72 @@ internal sealed class ImagePaintWindow : Window
 		if (arrowTextRectangle != null)
 		{
 			_currentArrowTextFontSize = arrowTextRectangle.TextFontSize;
+			_paintStrokeThickness = arrowTextRectangle.StrokeThickness;
 		}
 
+		UpdateStrokeThicknessTextBox(_paintStrokeThickness);
 		UpdateFontSizeTextBox(_currentArrowTextFontSize);
+	}
+
+	private void UpdateStrokeThicknessTextBox(double strokeThickness)
+	{
+		_isUpdatingStrokeThicknessTextBox = true;
+		_strokeThicknessTextBox.Text = FormatSizeValue(strokeThickness);
+		_isUpdatingStrokeThicknessTextBox = false;
 	}
 
 	private void UpdateFontSizeTextBox(double fontSize)
 	{
 		_isUpdatingFontSizeTextBox = true;
-		_fontSizeTextBox.Text = FormatFontSize(fontSize);
+		_fontSizeTextBox.Text = FormatSizeValue(fontSize);
 		_isUpdatingFontSizeTextBox = false;
 	}
 
+	private static bool TryParseStrokeThickness(string text, out double strokeThickness)
+	{
+		if (!TryParseNonNegativeSizeValue(text, out strokeThickness))
+		{
+			return false;
+		}
+
+		strokeThickness = Math.Max(MinPaintStrokeThickness, strokeThickness);
+		return true;
+	}
+
 	private static bool TryParseFontSize(string text, out double fontSize)
+	{
+		if (!TryParseNonNegativeSizeValue(text, out fontSize))
+		{
+			return false;
+		}
+
+		fontSize = Math.Max(MinArrowTextFontSize, fontSize);
+		return true;
+	}
+
+	private static bool TryParseNonNegativeSizeValue(string text, out double sizeValue)
 	{
 		string trimmedText = text.Trim();
 		if (!double.TryParse(
 				trimmedText,
 				System.Globalization.NumberStyles.Float,
 				System.Globalization.CultureInfo.CurrentCulture,
-				out fontSize) &&
+				out sizeValue) &&
 			!double.TryParse(
 				trimmedText,
 				System.Globalization.NumberStyles.Float,
 				System.Globalization.CultureInfo.InvariantCulture,
-				out fontSize))
+				out sizeValue))
 		{
 			return false;
 		}
 
-		return double.IsFinite(fontSize) && fontSize > 0;
+		return double.IsFinite(sizeValue) && sizeValue >= 0;
 	}
 
-	private static string FormatFontSize(double fontSize)
+	private static string FormatSizeValue(double sizeValue)
 	{
-		return fontSize.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+		return sizeValue.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
 	}
 
 	private static Ellipse CreateFillIcon()
@@ -1052,7 +1163,7 @@ internal sealed class ImagePaintWindow : Window
 
 	private static double CalculatePaintStrokeThickness(double canvasHeight)
 	{
-		return canvasHeight * PaintStrokeThicknessHeightRatio;
+		return Math.Max(MinPaintStrokeThickness, canvasHeight * PaintStrokeThicknessHeightRatio);
 	}
 
 	private static double CalculateDefaultArrowTextFontSize(double canvasHeight)
@@ -1078,14 +1189,14 @@ internal sealed class ImagePaintWindow : Window
 	{
 		private readonly double _canvasWidth;
 		private readonly double _canvasHeight;
-		private readonly double _strokeThickness;
-		private readonly double _arrowHeadLength;
-		private readonly double _arrowHeadWidth;
 		private readonly Rectangle _rectangle;
 		private readonly Polyline _arrowLine;
 		private readonly Polygon _arrowHead;
 		private readonly TextBox _textBox;
 		private readonly Dictionary<ResizeHandleKind, Rectangle> _resizeHandles = new();
+		private double _strokeThickness;
+		private double _arrowHeadLength;
+		private double _arrowHeadWidth;
 		private Rect _textRectangleBounds = Rect.Empty;
 		private Point _arrowTip;
 		private Point _arrowDragStartPoint;
@@ -1107,8 +1218,8 @@ internal sealed class ImagePaintWindow : Window
 			_canvasWidth = canvasWidth;
 			_canvasHeight = canvasHeight;
 			_strokeThickness = strokeThickness;
-			_arrowHeadLength = Math.Max(MinArrowHeadLength, strokeThickness * ArrowHeadLengthStrokeMultiplier);
-			_arrowHeadWidth = Math.Max(MinArrowHeadWidth, strokeThickness * ArrowHeadWidthStrokeMultiplier);
+			_arrowHeadLength = CalculateArrowHeadLength(strokeThickness);
+			_arrowHeadWidth = CalculateArrowHeadWidth(strokeThickness);
 			Width = canvasWidth;
 			Height = canvasHeight;
 			ClipToBounds = false;
@@ -1181,6 +1292,8 @@ internal sealed class ImagePaintWindow : Window
 
 		public double TextFontSize => _textBox.FontSize;
 
+		public double StrokeThickness => _strokeThickness;
+
 		public bool IsDrawable =>
 			_textRectangleBounds.Width >= MinArrowTextRectangleWidth &&
 			_textRectangleBounds.Height >= MinArrowTextRectangleHeight;
@@ -1226,6 +1339,25 @@ internal sealed class ImagePaintWindow : Window
 		public void SetTextFontSize(double fontSize)
 		{
 			_textBox.FontSize = fontSize;
+		}
+
+		public void SetStrokeThickness(double strokeThickness)
+		{
+			if (Math.Abs(_strokeThickness - strokeThickness) < 0.001)
+			{
+				return;
+			}
+
+			_strokeThickness = strokeThickness;
+			_arrowHeadLength = CalculateArrowHeadLength(strokeThickness);
+			_arrowHeadWidth = CalculateArrowHeadWidth(strokeThickness);
+			_arrowLine.StrokeThickness = strokeThickness;
+			_rectangle.StrokeThickness = strokeThickness;
+			if (!_textRectangleBounds.IsEmpty)
+			{
+				SetTextRectangleBounds(_textRectangleBounds);
+				UpdateArrow(_textRectangleBounds);
+			}
 		}
 
 		public void PrepareForRender()
@@ -1605,6 +1737,16 @@ internal sealed class ImagePaintWindow : Window
 		private static double Clamp(double value, double min, double max)
 		{
 			return Math.Max(min, Math.Min(value, max));
+		}
+
+		private static double CalculateArrowHeadLength(double strokeThickness)
+		{
+			return Math.Max(MinArrowHeadLength, strokeThickness * ArrowHeadLengthStrokeMultiplier);
+		}
+
+		private static double CalculateArrowHeadWidth(double strokeThickness)
+		{
+			return Math.Max(MinArrowHeadWidth, strokeThickness * ArrowHeadWidthStrokeMultiplier);
 		}
 
 		private void UpdateArrowHead(Point tipPoint, Vector direction)
