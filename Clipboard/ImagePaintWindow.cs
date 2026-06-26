@@ -84,9 +84,14 @@ internal sealed class ImagePaintWindow : Window
 	private bool _hasCopiedToClipboardBeforeClose;
 	private PaintRectangle? _activePaintRectangle;
 	private ArrowTextRectangle? _activeArrowTextRectangle;
+	private Cursor? _previousOverrideCursor;
 	private PaintMode _paintMode = PaintMode.RedOutlineRectangle;
 	private Point _dragStartPoint;
 	private UIElement? _dragElement;
+	private Point _middleButtonPanStartPoint;
+	private double _middleButtonPanStartHorizontalOffset;
+	private double _middleButtonPanStartVerticalOffset;
+	private bool _isMiddleButtonPanning;
 
 	public ImagePaintWindow(byte[] imageBytes)
 	{
@@ -245,6 +250,10 @@ internal sealed class ImagePaintWindow : Window
 			VerticalScrollBarVisibility = ScrollBarVisibility.Auto
 		};
 		_scrollViewer.PreviewMouseWheel += ScrollViewer_PreviewMouseWheel;
+		_scrollViewer.PreviewMouseDown += ScrollViewer_PreviewMouseDown;
+		_scrollViewer.PreviewMouseMove += ScrollViewer_PreviewMouseMove;
+		_scrollViewer.PreviewMouseUp += ScrollViewer_PreviewMouseUp;
+		_scrollViewer.LostMouseCapture += ScrollViewer_LostMouseCapture;
 		_scrollViewer.Loaded += (_, _) => ScrollToInitialWorkspacePosition();
 		_scrollViewer.SetResourceReference(Control.BackgroundProperty, AppTheme.ThumbnailBackgroundBrushKey);
 		root.Children.Add(_scrollViewer);
@@ -381,6 +390,89 @@ internal sealed class ImagePaintWindow : Window
 
 		ZoomFromWheel(e, scrollViewer);
 		e.Handled = true;
+	}
+
+	private void ScrollViewer_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+	{
+		if (e.ChangedButton != MouseButton.Middle)
+		{
+			return;
+		}
+
+		BeginMiddleButtonPan(e.GetPosition(_scrollViewer));
+		e.Handled = true;
+	}
+
+	private void ScrollViewer_PreviewMouseMove(object sender, MouseEventArgs e)
+	{
+		if (!_isMiddleButtonPanning)
+		{
+			return;
+		}
+
+		if (e.MiddleButton != MouseButtonState.Pressed)
+		{
+			EndMiddleButtonPan(releaseCapture: true);
+			e.Handled = true;
+			return;
+		}
+
+		UpdateMiddleButtonPan(e.GetPosition(_scrollViewer));
+		e.Handled = true;
+	}
+
+	private void ScrollViewer_PreviewMouseUp(object sender, MouseButtonEventArgs e)
+	{
+		if (!_isMiddleButtonPanning || e.ChangedButton != MouseButton.Middle)
+		{
+			return;
+		}
+
+		UpdateMiddleButtonPan(e.GetPosition(_scrollViewer));
+		EndMiddleButtonPan(releaseCapture: true);
+		e.Handled = true;
+	}
+
+	private void ScrollViewer_LostMouseCapture(object sender, MouseEventArgs e)
+	{
+		if (_isMiddleButtonPanning)
+		{
+			EndMiddleButtonPan(releaseCapture: false);
+		}
+	}
+
+	private void BeginMiddleButtonPan(Point point)
+	{
+		if (_isMiddleButtonPanning)
+		{
+			return;
+		}
+
+		_isMiddleButtonPanning = true;
+		_middleButtonPanStartPoint = point;
+		_middleButtonPanStartHorizontalOffset = _scrollViewer.HorizontalOffset;
+		_middleButtonPanStartVerticalOffset = _scrollViewer.VerticalOffset;
+		_previousOverrideCursor = Mouse.OverrideCursor;
+		Mouse.OverrideCursor = Cursors.SizeAll;
+		_scrollViewer.CaptureMouse();
+	}
+
+	private void UpdateMiddleButtonPan(Point point)
+	{
+		Vector offset = point - _middleButtonPanStartPoint;
+		_scrollViewer.ScrollToHorizontalOffset(_middleButtonPanStartHorizontalOffset - offset.X);
+		_scrollViewer.ScrollToVerticalOffset(_middleButtonPanStartVerticalOffset - offset.Y);
+	}
+
+	private void EndMiddleButtonPan(bool releaseCapture)
+	{
+		_isMiddleButtonPanning = false;
+		Mouse.OverrideCursor = _previousOverrideCursor;
+		_previousOverrideCursor = null;
+		if (releaseCapture && _scrollViewer.IsMouseCaptured)
+		{
+			_scrollViewer.ReleaseMouseCapture();
+		}
 	}
 
 	private void ZoomFromWheel(MouseWheelEventArgs e, ScrollViewer scrollViewer)
@@ -1277,6 +1369,11 @@ internal sealed class ImagePaintWindow : Window
 
 	protected override void OnClosing(CancelEventArgs e)
 	{
+		if (_isMiddleButtonPanning)
+		{
+			EndMiddleButtonPan(releaseCapture: true);
+		}
+
 		if (!_hasCopiedToClipboardBeforeClose)
 		{
 			try
