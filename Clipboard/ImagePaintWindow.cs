@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -38,6 +39,13 @@ internal sealed class ImagePaintWindow : Window
 	private const double MinArrowTextFontSize = 24;
 	private const double MinArrowTextRectangleWidth = 36;
 	private const double MinArrowTextRectangleHeight = 24;
+	private const double MultiImageGap = 24;
+	private const double MultiImageOuterMargin = 24;
+	private const double MultiImageMinPlacedSize = 16;
+	private const double PlacedImageResizeHandleSize = 18;
+	private const double WorkspaceInitialMargin = 1024;
+	private const double WorkspaceExpansionChunk = 1024;
+	private const double RenderBoundsPadding = 2;
 	private const string ArrowTextFontFamilyName = "Meiryo UI";
 	private static readonly SolidColorBrush ArrowBrush = CreateFrozenBrush(Color.FromRgb(226, 104, 0));
 	private static readonly string[] CircledNumberTexts =
@@ -47,15 +55,23 @@ internal sealed class ImagePaintWindow : Window
 	};
 	private readonly BitmapSource _sourceImage;
 	private readonly ScaleTransform _zoomTransform = new(1, 1);
-	private readonly Grid _zoomContainer;
-	private readonly Grid _paintSurface;
-	private readonly Canvas _overlayCanvas;
-	private readonly Button _blackFillButton;
-	private readonly Button _redOutlineButton;
-	private readonly Button _arrowTextButton;
-	private readonly TextBox _strokeThicknessTextBox;
-	private readonly TextBox _fontSizeTextBox;
-	private readonly CheckBox _outlineNumberCheckBox;
+	private double _canvasWidth;
+	private double _canvasHeight;
+	private Grid _zoomContainer = null!;
+	private Grid _paintSurface = null!;
+	private Canvas _baseImageCanvas = null!;
+	private Image _sourceImageControl = null!;
+	private Canvas _imageLayerCanvas = null!;
+	private Canvas _overlayCanvas = null!;
+	private ScrollViewer _scrollViewer = null!;
+	private Button? _moveImageButton;
+	private Button _blackFillButton = null!;
+	private Button _redOutlineButton = null!;
+	private Button _arrowTextButton = null!;
+	private bool _isMultiImageMode;
+	private TextBox _strokeThicknessTextBox = null!;
+	private TextBox _fontSizeTextBox = null!;
+	private CheckBox _outlineNumberCheckBox = null!;
 	private readonly List<UIElement> _completedElements = new();
 	private readonly List<UIElement> _redoElements = new();
 	private readonly Dictionary<PaintRectangle, TextBlock> _outlineNumberLabels = new();
@@ -75,10 +91,38 @@ internal sealed class ImagePaintWindow : Window
 	public ImagePaintWindow(byte[] imageBytes)
 	{
 		_sourceImage = LoadImage(imageBytes);
-		_paintStrokeThickness = CalculatePaintStrokeThickness(_sourceImage.PixelHeight);
-		_currentArrowTextFontSize = CalculateDefaultArrowTextFontSize(_sourceImage.PixelHeight);
-		double windowWidth = Math.Min(SystemParameters.WorkArea.Width - 80, Math.Max(520, _sourceImage.PixelWidth + 36));
-		double windowHeight = Math.Min(SystemParameters.WorkArea.Height - 80, Math.Max(420, _sourceImage.PixelHeight + ToolbarHeight + 36));
+		InitializeWindow(_sourceImage.PixelHeight, placedImages: null);
+	}
+
+	public ImagePaintWindow(IReadOnlyList<byte[]> imageBytesList)
+	{
+		if (imageBytesList.Count == 0)
+		{
+			throw new InvalidOperationException("画像データが空です。");
+		}
+
+		List<BitmapSource> images = imageBytesList.Select(LoadImage).ToList();
+		MultiImageLayout layout = CalculateMultiImageLayout(images);
+		_sourceImage = CreateWhiteCanvasImage(layout.CanvasWidth, layout.CanvasHeight);
+		InitializeWindow(layout.ReferenceHeight, layout.PlacedImages);
+	}
+
+	private void InitializeWindow(double referenceHeight, IReadOnlyList<PlacedImageLayout>? placedImages)
+	{
+		_isMultiImageMode = placedImages is { Count: > 0 };
+		if (_isMultiImageMode)
+		{
+			_paintMode = PaintMode.MoveImage;
+		}
+
+		_paintStrokeThickness = CalculatePaintStrokeThickness(referenceHeight);
+		_currentArrowTextFontSize = CalculateDefaultArrowTextFontSize(referenceHeight);
+		double initialContentWidth = _sourceImage.PixelWidth;
+		double initialContentHeight = _sourceImage.PixelHeight;
+		_canvasWidth = initialContentWidth + WorkspaceInitialMargin * 2;
+		_canvasHeight = initialContentHeight + WorkspaceInitialMargin * 2;
+		double windowWidth = Math.Min(SystemParameters.WorkArea.Width - 80, Math.Max(520, initialContentWidth + 36));
+		double windowHeight = Math.Min(SystemParameters.WorkArea.Height - 80, Math.Max(420, initialContentHeight + ToolbarHeight + 36));
 
 		Title = "ペイント";
 		WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -101,7 +145,15 @@ internal sealed class ImagePaintWindow : Window
 		DockPanel.SetDock(toolbar, Dock.Top);
 		root.Children.Add(toolbar);
 
+		if (_isMultiImageMode)
+		{
+			_moveImageButton = CreateModeButton("画像の移動", CreateMoveImageIcon());
+			_moveImageButton.Click += (_, _) => SetPaintMode(PaintMode.MoveImage);
+			toolbar.Children.Add(_moveImageButton);
+		}
+
 		_blackFillButton = CreateModeButton("塗りつぶし", CreateFillIcon());
+		_blackFillButton.Margin = _isMultiImageMode ? new Thickness(8, 0, 0, 0) : new Thickness(0);
 		_blackFillButton.Click += (_, _) => SetPaintMode(PaintMode.BlackFillRectangle);
 		toolbar.Children.Add(_blackFillButton);
 
@@ -124,20 +176,39 @@ internal sealed class ImagePaintWindow : Window
 		_outlineNumberCheckBox = CreateOutlineNumberCheckBox();
 		toolbar.Children.Add(_outlineNumberCheckBox);
 
-		var image = new Image
+		_sourceImageControl = new Image
 		{
 			Source = _sourceImage,
 			Stretch = Stretch.Fill,
-			Width = _sourceImage.PixelWidth,
-			Height = _sourceImage.PixelHeight,
-			SnapsToDevicePixels = true
+			Width = initialContentWidth,
+			Height = initialContentHeight,
+			SnapsToDevicePixels = true,
+			Visibility = _isMultiImageMode ? Visibility.Collapsed : Visibility.Visible
 		};
-		RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.HighQuality);
+		RenderOptions.SetBitmapScalingMode(_sourceImageControl, BitmapScalingMode.HighQuality);
+		Canvas.SetLeft(_sourceImageControl, 0);
+		Canvas.SetTop(_sourceImageControl, 0);
+		_baseImageCanvas = new Canvas
+		{
+			Width = _canvasWidth,
+			Height = _canvasHeight,
+			Background = Brushes.Transparent
+		};
+		_baseImageCanvas.Children.Add(_sourceImageControl);
+
+		_imageLayerCanvas = new Canvas
+		{
+			Width = _canvasWidth,
+			Height = _canvasHeight,
+			Background = Brushes.Transparent,
+			IsHitTestVisible = placedImages is { Count: > 0 }
+		};
+		AddPlacedImages(placedImages);
 
 		_overlayCanvas = new Canvas
 		{
-			Width = _sourceImage.PixelWidth,
-			Height = _sourceImage.PixelHeight,
+			Width = _canvasWidth,
+			Height = _canvasHeight,
 			Background = Brushes.Transparent,
 			Cursor = Cursors.Cross,
 			Focusable = true
@@ -148,35 +219,58 @@ internal sealed class ImagePaintWindow : Window
 
 		_paintSurface = new Grid
 		{
-			Width = _sourceImage.PixelWidth,
-			Height = _sourceImage.PixelHeight,
-			ClipToBounds = true
+			Width = _canvasWidth,
+			Height = _canvasHeight,
+			Background = Brushes.Transparent,
+			ClipToBounds = false
 		};
-		_paintSurface.Children.Add(image);
+		_paintSurface.Children.Add(_baseImageCanvas);
+		_paintSurface.Children.Add(_imageLayerCanvas);
 		_paintSurface.Children.Add(_overlayCanvas);
 
 		_zoomContainer = new Grid
 		{
-			Width = _sourceImage.PixelWidth,
-			Height = _sourceImage.PixelHeight,
+			Width = _canvasWidth,
+			Height = _canvasHeight,
 			LayoutTransform = _zoomTransform
 		};
 		_zoomContainer.Children.Add(_paintSurface);
+		ShiftCanvasContent(WorkspaceInitialMargin, WorkspaceInitialMargin);
 		SetZoom(CalculateInitialZoom(windowWidth, windowHeight));
 
-		var scrollViewer = new ScrollViewer
+		_scrollViewer = new ScrollViewer
 		{
 			Content = _zoomContainer,
 			HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
 			VerticalScrollBarVisibility = ScrollBarVisibility.Auto
 		};
-		scrollViewer.PreviewMouseWheel += ScrollViewer_PreviewMouseWheel;
-		scrollViewer.SetResourceReference(Control.BackgroundProperty, AppTheme.ThumbnailBackgroundBrushKey);
-		root.Children.Add(scrollViewer);
+		_scrollViewer.PreviewMouseWheel += ScrollViewer_PreviewMouseWheel;
+		_scrollViewer.Loaded += (_, _) => ScrollToInitialWorkspacePosition();
+		_scrollViewer.SetResourceReference(Control.BackgroundProperty, AppTheme.ThumbnailBackgroundBrushKey);
+		root.Children.Add(_scrollViewer);
 
 		Content = root;
 		AddHandler(Keyboard.PreviewKeyDownEvent, new KeyEventHandler(ImagePaintWindow_PreviewKeyDown), true);
 		SetPaintMode(_paintMode);
+	}
+
+	private void AddPlacedImages(IReadOnlyList<PlacedImageLayout>? placedImages)
+	{
+		if (placedImages == null)
+		{
+			return;
+		}
+
+		foreach (PlacedImageLayout placedImageLayout in placedImages)
+		{
+			var placedImage = new PlacedImage(
+				placedImageLayout.Image,
+				_canvasWidth,
+				_canvasHeight,
+				placedImageLayout.Bounds);
+			placedImage.Changed += PlacedImage_Changed;
+			_imageLayerCanvas.Children.Add(placedImage);
+		}
 	}
 
 	private void ImagePaintWindow_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -313,6 +407,12 @@ internal sealed class ImagePaintWindow : Window
 		_zoomTransform.ScaleY = zoom;
 	}
 
+	private void ScrollToInitialWorkspacePosition()
+	{
+		_scrollViewer.ScrollToHorizontalOffset(WorkspaceInitialMargin * _zoomTransform.ScaleX);
+		_scrollViewer.ScrollToVerticalOffset(WorkspaceInitialMargin * _zoomTransform.ScaleY);
+	}
+
 	private double CalculateInitialZoom(double windowWidth, double windowHeight)
 	{
 		double availableWidth = Math.Max(1, windowWidth - 48);
@@ -336,7 +436,7 @@ internal sealed class ImagePaintWindow : Window
 		CancelActiveDrag();
 		SetActivePaintRectangle(null);
 		SetActiveArrowTextRectangle(null);
-		_dragStartPoint = ClampToCanvas(e.GetPosition(_overlayCanvas));
+		_dragStartPoint = e.GetPosition(_overlayCanvas);
 		var element = CreatePaintElement(_paintMode);
 		_dragElement = element;
 		UpdateDragElement(_dragStartPoint);
@@ -359,7 +459,7 @@ internal sealed class ImagePaintWindow : Window
 			return;
 		}
 
-		UpdateDragElement(ClampToCanvas(e.GetPosition(_overlayCanvas)));
+		UpdateDragElement(e.GetPosition(_overlayCanvas));
 		e.Handled = true;
 	}
 
@@ -370,7 +470,7 @@ internal sealed class ImagePaintWindow : Window
 			return;
 		}
 
-		UpdateDragElement(ClampToCanvas(e.GetPosition(_overlayCanvas)));
+		UpdateDragElement(e.GetPosition(_overlayCanvas));
 		CompleteActiveDrag(focusTextInput: true);
 		e.Handled = true;
 	}
@@ -454,6 +554,7 @@ internal sealed class ImagePaintWindow : Window
 		UpdateOutlineNumberLabels();
 		MarkPaintChanged();
 		FocusCurrentEditableElement();
+		TrimWorkspaceToContent();
 	}
 
 	private void Redo()
@@ -473,6 +574,7 @@ internal sealed class ImagePaintWindow : Window
 		_redoElements.RemoveAt(_redoElements.Count - 1);
 		_overlayCanvas.Children.Add(element);
 		_completedElements.Add(element);
+		EnsureCanvasContainsElement(element);
 		UpdateOutlineNumberLabels();
 		if (element is PaintRectangle paintRectangle)
 		{
@@ -490,6 +592,7 @@ internal sealed class ImagePaintWindow : Window
 		}
 
 		MarkPaintChanged();
+		TrimWorkspaceToContent();
 	}
 
 	private void PaintRectangle_Focused(object? sender, EventArgs e)
@@ -502,11 +605,35 @@ internal sealed class ImagePaintWindow : Window
 
 	private void PaintRectangle_BoundsChanged(object? sender, EventArgs e)
 	{
-		if (sender is PaintRectangle paintRectangle && _completedElements.Contains(paintRectangle))
+		if (sender is not PaintRectangle paintRectangle)
+		{
+			return;
+		}
+
+		EnsureCanvasContains(paintRectangle.RenderBounds);
+		if (_completedElements.Contains(paintRectangle))
 		{
 			UpdateOutlineNumberLabels();
 			MarkPaintChanged();
 		}
+
+		TrimWorkspaceToContentIfIdle();
+	}
+
+	private void ArrowTextRectangle_Changed(object? sender, EventArgs e)
+	{
+		if (sender is not ArrowTextRectangle arrowTextRectangle)
+		{
+			return;
+		}
+
+		EnsureCanvasContains(arrowTextRectangle.RenderBounds);
+		if (_completedElements.Contains(arrowTextRectangle))
+		{
+			MarkPaintChanged();
+		}
+
+		TrimWorkspaceToContentIfIdle();
 	}
 
 	private void ArrowTextRectangle_TextInputFocused(object? sender, EventArgs e)
@@ -553,6 +680,196 @@ internal sealed class ImagePaintWindow : Window
 		_hasPaintChanges = true;
 	}
 
+	// 画像の移動やリサイズも編集とみなし、閉じる際にクリップボードへ保存されるようにする。
+	private void MarkImagePlacementChanged()
+	{
+		_hasPaintChanges = true;
+	}
+
+	private void PlacedImage_Changed(object? sender, EventArgs e)
+	{
+		if (sender is PlacedImage placedImage)
+		{
+			EnsureCanvasContains(placedImage.Bounds);
+		}
+
+		MarkImagePlacementChanged();
+		TrimWorkspaceToContentIfIdle();
+	}
+
+	private void EnsureCanvasContainsElement(UIElement element)
+	{
+		if (TryGetRenderableElementBounds(element, out Rect bounds))
+		{
+			EnsureCanvasContains(bounds);
+		}
+	}
+
+	private void EnsureCanvasContains(Rect bounds)
+	{
+		if (!IsUsableBounds(bounds))
+		{
+			return;
+		}
+
+		double expandRight = CalculateWorkspaceExpansion(Math.Max(0, bounds.Right - _canvasWidth));
+		double expandBottom = CalculateWorkspaceExpansion(Math.Max(0, bounds.Bottom - _canvasHeight));
+		if (expandRight <= 0 && expandBottom <= 0)
+		{
+			return;
+		}
+
+		SetCanvasSize(_canvasWidth + expandRight, _canvasHeight + expandBottom);
+	}
+
+	private static double CalculateWorkspaceExpansion(double overflow)
+	{
+		if (overflow <= 0)
+		{
+			return 0;
+		}
+
+		return Math.Ceiling(overflow / WorkspaceExpansionChunk) * WorkspaceExpansionChunk;
+	}
+
+	private static bool IsUsableBounds(Rect bounds)
+	{
+		return !bounds.IsEmpty &&
+			double.IsFinite(bounds.Left) &&
+			double.IsFinite(bounds.Top) &&
+			double.IsFinite(bounds.Right) &&
+			double.IsFinite(bounds.Bottom);
+	}
+
+	private void ShiftCanvasContent(double offsetX, double offsetY)
+	{
+		OffsetCanvasChild(_sourceImageControl, offsetX, offsetY);
+
+		foreach (PlacedImage placedImage in _imageLayerCanvas.Children.OfType<PlacedImage>())
+		{
+			placedImage.ShiftContent(offsetX, offsetY);
+		}
+
+		foreach (UIElement element in _completedElements)
+		{
+			ShiftPaintElementContent(element, offsetX, offsetY);
+		}
+
+		foreach (UIElement element in _redoElements)
+		{
+			ShiftPaintElementContent(element, offsetX, offsetY);
+		}
+
+		if (_dragElement != null)
+		{
+			ShiftPaintElementContent(_dragElement, offsetX, offsetY);
+			_dragStartPoint = new Point(_dragStartPoint.X + offsetX, _dragStartPoint.Y + offsetY);
+		}
+
+		foreach (TextBlock label in _outlineNumberLabels.Values)
+		{
+			OffsetCanvasChild(label, offsetX, offsetY);
+		}
+	}
+
+	private static void ShiftPaintElementContent(UIElement element, double offsetX, double offsetY)
+	{
+		switch (element)
+		{
+			case PaintRectangle paintRectangle:
+				paintRectangle.ShiftContent(offsetX, offsetY);
+				break;
+			case ArrowTextRectangle arrowTextRectangle:
+				arrowTextRectangle.ShiftContent(offsetX, offsetY);
+				break;
+		}
+	}
+
+	private static void OffsetCanvasChild(UIElement element, double offsetX, double offsetY)
+	{
+		double left = Canvas.GetLeft(element);
+		double top = Canvas.GetTop(element);
+		Canvas.SetLeft(element, (double.IsNaN(left) ? 0 : left) + offsetX);
+		Canvas.SetTop(element, (double.IsNaN(top) ? 0 : top) + offsetY);
+	}
+
+	private void TrimWorkspaceToContentIfIdle()
+	{
+		if (Mouse.LeftButton == MouseButtonState.Released)
+		{
+			TrimWorkspaceToContent();
+		}
+	}
+
+	private void TrimWorkspaceToContent()
+	{
+		Rect bounds = CalculateRenderBounds();
+		double minWidth = _sourceImage.PixelWidth + WorkspaceInitialMargin * 2;
+		double minHeight = _sourceImage.PixelHeight + WorkspaceInitialMargin * 2;
+		double targetWidth = Math.Max(minWidth, Math.Ceiling(bounds.Right + WorkspaceInitialMargin));
+		double targetHeight = Math.Max(minHeight, Math.Ceiling(bounds.Bottom + WorkspaceInitialMargin));
+		if (targetWidth < _canvasWidth || targetHeight < _canvasHeight)
+		{
+			SetCanvasSize(Math.Min(_canvasWidth, targetWidth), Math.Min(_canvasHeight, targetHeight));
+		}
+	}
+
+	private void SetCanvasSize(double width, double height)
+	{
+		double roundedWidth = Math.Max(1, Math.Ceiling(width));
+		double roundedHeight = Math.Max(1, Math.Ceiling(height));
+		if (Math.Abs(_canvasWidth - roundedWidth) < 0.001 && Math.Abs(_canvasHeight - roundedHeight) < 0.001)
+		{
+			return;
+		}
+
+		_canvasWidth = roundedWidth;
+		_canvasHeight = roundedHeight;
+		_paintSurface.Width = roundedWidth;
+		_paintSurface.Height = roundedHeight;
+		_zoomContainer.Width = roundedWidth;
+		_zoomContainer.Height = roundedHeight;
+		_baseImageCanvas.Width = roundedWidth;
+		_baseImageCanvas.Height = roundedHeight;
+		_imageLayerCanvas.Width = roundedWidth;
+		_imageLayerCanvas.Height = roundedHeight;
+		_overlayCanvas.Width = roundedWidth;
+		_overlayCanvas.Height = roundedHeight;
+
+		foreach (PlacedImage placedImage in _imageLayerCanvas.Children.OfType<PlacedImage>())
+		{
+			placedImage.SetCanvasSize(roundedWidth, roundedHeight);
+		}
+
+		foreach (UIElement element in _completedElements)
+		{
+			SetPaintElementCanvasSize(element, roundedWidth, roundedHeight);
+		}
+
+		foreach (UIElement element in _redoElements)
+		{
+			SetPaintElementCanvasSize(element, roundedWidth, roundedHeight);
+		}
+
+		if (_dragElement != null)
+		{
+			SetPaintElementCanvasSize(_dragElement, roundedWidth, roundedHeight);
+		}
+	}
+
+	private static void SetPaintElementCanvasSize(UIElement element, double width, double height)
+	{
+		switch (element)
+		{
+			case PaintRectangle paintRectangle:
+				paintRectangle.SetCanvasSize(width, height);
+				break;
+			case ArrowTextRectangle arrowTextRectangle:
+				arrowTextRectangle.SetCanvasSize(width, height);
+				break;
+		}
+	}
+
 	private void CompleteActiveDrag(bool focusTextInput)
 	{
 		if (_dragElement is not { } element)
@@ -584,6 +901,7 @@ internal sealed class ImagePaintWindow : Window
 		}
 
 		_dragElement = null;
+		TrimWorkspaceToContent();
 	}
 
 	private void CancelActiveDrag()
@@ -802,19 +1120,159 @@ internal sealed class ImagePaintWindow : Window
 	private BitmapSource RenderPaintedImage()
 	{
 		PrepareTextInputsForRender();
-		_paintSurface.Measure(new Size(_sourceImage.PixelWidth, _sourceImage.PixelHeight));
-		_paintSurface.Arrange(new Rect(0, 0, _sourceImage.PixelWidth, _sourceImage.PixelHeight));
-		_paintSurface.UpdateLayout();
+		Rect renderBounds = CalculateRenderBounds();
+		SetPlacedImagesEditingChromeVisible(false);
+		try
+		{
+			int renderWidth = Math.Max(1, (int)Math.Round(renderBounds.Width));
+			int renderHeight = Math.Max(1, (int)Math.Round(renderBounds.Height));
+			_paintSurface.Measure(new Size(_canvasWidth, _canvasHeight));
+			_paintSurface.Arrange(new Rect(0, 0, _canvasWidth, _canvasHeight));
+			_paintSurface.UpdateLayout();
 
-		var bitmap = new RenderTargetBitmap(
-			_sourceImage.PixelWidth,
-			_sourceImage.PixelHeight,
-			96,
-			96,
-			PixelFormats.Pbgra32);
-		bitmap.Render(_paintSurface);
-		bitmap.Freeze();
-		return bitmap;
+			var bitmap = new RenderTargetBitmap(
+				renderWidth,
+				renderHeight,
+				96,
+				96,
+				PixelFormats.Pbgra32);
+			RenderCroppedPaintSurface(bitmap, renderBounds, renderWidth, renderHeight);
+			bitmap.Freeze();
+			return bitmap;
+		}
+		finally
+		{
+			SetPlacedImagesEditingChromeVisible(true);
+		}
+	}
+
+	private Rect CalculateRenderBounds()
+	{
+		Rect bounds = Rect.Empty;
+		if (!_isMultiImageMode)
+		{
+			UnionBounds(ref bounds, GetSourceImageBounds());
+		}
+
+		foreach (PlacedImage placedImage in _imageLayerCanvas.Children.OfType<PlacedImage>())
+		{
+			UnionBounds(ref bounds, placedImage.Bounds);
+		}
+
+		foreach (UIElement element in _completedElements)
+		{
+			if (TryGetRenderableElementBounds(element, out Rect elementBounds))
+			{
+				UnionBounds(ref bounds, elementBounds);
+			}
+		}
+
+		foreach (TextBlock label in _outlineNumberLabels.Values)
+		{
+			UnionBounds(ref bounds, GetTextBlockBounds(label));
+		}
+
+		if (bounds.IsEmpty)
+		{
+			bounds = new Rect(0, 0, Math.Max(1, _sourceImage.PixelWidth), Math.Max(1, _sourceImage.PixelHeight));
+		}
+
+		return RoundRenderBounds(bounds);
+	}
+
+	private void RenderCroppedPaintSurface(RenderTargetBitmap bitmap, Rect renderBounds, int width, int height)
+	{
+		var paintSurfaceBrush = new VisualBrush(_paintSurface)
+		{
+			Viewbox = renderBounds,
+			ViewboxUnits = BrushMappingMode.Absolute,
+			Viewport = new Rect(0, 0, width, height),
+			ViewportUnits = BrushMappingMode.Absolute,
+			Stretch = Stretch.Fill,
+			TileMode = TileMode.None
+		};
+
+		var drawingVisual = new DrawingVisual();
+		using (DrawingContext drawingContext = drawingVisual.RenderOpen())
+		{
+			drawingContext.DrawRectangle(Brushes.White, null, new Rect(0, 0, width, height));
+			drawingContext.DrawRectangle(paintSurfaceBrush, null, new Rect(0, 0, width, height));
+		}
+
+		bitmap.Render(drawingVisual);
+	}
+
+	private Rect GetSourceImageBounds()
+	{
+		return GetCanvasChildBounds(_sourceImageControl, _sourceImageControl.Width, _sourceImageControl.Height);
+	}
+
+	private static bool TryGetRenderableElementBounds(UIElement element, out Rect bounds)
+	{
+		switch (element)
+		{
+			case PaintRectangle paintRectangle:
+				bounds = paintRectangle.RenderBounds;
+				return IsUsableBounds(bounds);
+			case ArrowTextRectangle arrowTextRectangle:
+				bounds = arrowTextRectangle.RenderBounds;
+				return IsUsableBounds(bounds);
+			default:
+				bounds = Rect.Empty;
+				return false;
+		}
+	}
+
+	private static Rect GetTextBlockBounds(TextBlock textBlock)
+	{
+		textBlock.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+		Size size = textBlock.DesiredSize;
+		return GetCanvasChildBounds(textBlock, size.Width, size.Height);
+	}
+
+	private static Rect GetCanvasChildBounds(UIElement element, double width, double height)
+	{
+		double left = Canvas.GetLeft(element);
+		double top = Canvas.GetTop(element);
+		return new Rect(
+			double.IsNaN(left) ? 0 : left,
+			double.IsNaN(top) ? 0 : top,
+			Math.Max(0, width),
+			Math.Max(0, height));
+	}
+
+	private static void UnionBounds(ref Rect bounds, Rect addition)
+	{
+		if (!IsUsableBounds(addition))
+		{
+			return;
+		}
+
+		if (bounds.IsEmpty)
+		{
+			bounds = addition;
+			return;
+		}
+
+		bounds.Union(addition);
+	}
+
+	private static Rect RoundRenderBounds(Rect bounds)
+	{
+		bounds.Inflate(RenderBoundsPadding, RenderBoundsPadding);
+		double left = Math.Floor(bounds.Left);
+		double top = Math.Floor(bounds.Top);
+		double right = Math.Ceiling(bounds.Right);
+		double bottom = Math.Ceiling(bounds.Bottom);
+		return new Rect(left, top, Math.Max(1, right - left), Math.Max(1, bottom - top));
+	}
+
+	private void SetPlacedImagesEditingChromeVisible(bool visible)
+	{
+		foreach (PlacedImage placedImage in _imageLayerCanvas.Children.OfType<PlacedImage>())
+		{
+			placedImage.SetEditingChromeVisible(visible);
+		}
 	}
 
 	protected override void OnClosing(CancelEventArgs e)
@@ -860,9 +1318,21 @@ internal sealed class ImagePaintWindow : Window
 	private void SetPaintMode(PaintMode mode)
 	{
 		_paintMode = mode;
+		if (_moveImageButton != null)
+		{
+			UpdateModeButton(_moveImageButton, mode == PaintMode.MoveImage);
+		}
+
 		UpdateModeButton(_blackFillButton, mode == PaintMode.BlackFillRectangle);
 		UpdateModeButton(_redOutlineButton, mode == PaintMode.RedOutlineRectangle);
 		UpdateModeButton(_arrowTextButton, mode == PaintMode.ArrowTextRectangle);
+
+		// 画像移動モードでは画像レイヤーを操作可能にし、描画用オーバーレイのヒットテストを止める。
+		// 描画モードではその逆にして、画像の上から矩形や矢印を描けるようにする。
+		bool isMoveImageMode = mode == PaintMode.MoveImage;
+		_imageLayerCanvas.IsHitTestVisible = isMoveImageMode;
+		_overlayCanvas.IsHitTestVisible = !isMoveImageMode;
+		_overlayCanvas.Cursor = isMoveImageMode ? Cursors.Arrow : Cursors.Cross;
 	}
 
 	private static Button CreateModeButton(string text, UIElement icon)
@@ -1241,6 +1711,33 @@ internal sealed class ImagePaintWindow : Window
 		};
 	}
 
+	private static Canvas CreateMoveImageIcon()
+	{
+		var icon = new Canvas
+		{
+			Width = 16,
+			Height = 16
+		};
+
+		var moveArrows = new Polyline
+		{
+			Stroke = ArrowBrush,
+			StrokeThickness = 1.4,
+			StrokeLineJoin = PenLineJoin.Round,
+			Fill = Brushes.Transparent,
+			Points = new PointCollection
+			{
+				new(8, 0), new(5.5, 2.5), new(10.5, 2.5), new(8, 0),
+				new(8, 16), new(5.5, 13.5), new(10.5, 13.5), new(8, 16),
+				new(8, 8),
+				new(0, 8), new(2.5, 5.5), new(2.5, 10.5), new(0, 8),
+				new(16, 8), new(13.5, 5.5), new(13.5, 10.5), new(16, 8)
+			}
+		};
+		icon.Children.Add(moveArrows);
+		return icon;
+	}
+
 	private static Canvas CreateArrowTextRectangleIcon()
 	{
 		var icon = new Canvas
@@ -1307,6 +1804,7 @@ internal sealed class ImagePaintWindow : Window
 				_paintStrokeThickness,
 				_currentArrowTextFontSize);
 			arrowTextRectangle.TextInputFocused += ArrowTextRectangle_TextInputFocused;
+			arrowTextRectangle.Changed += ArrowTextRectangle_Changed;
 			return arrowTextRectangle;
 		}
 
@@ -1343,17 +1841,8 @@ internal sealed class ImagePaintWindow : Window
 		return brush;
 	}
 
-	private Point ClampToCanvas(Point point)
-	{
-		return new Point(
-			Math.Max(0, Math.Min(point.X, _overlayCanvas.Width)),
-			Math.Max(0, Math.Min(point.Y, _overlayCanvas.Height)));
-	}
-
 	private sealed class PaintRectangle : Canvas
 	{
-		private readonly double _canvasWidth;
-		private readonly double _canvasHeight;
 		private readonly bool _isOutline;
 		private readonly Rectangle _rectangle;
 		private readonly Dictionary<ResizeHandleKind, Rectangle> _resizeHandles = new();
@@ -1368,8 +1857,6 @@ internal sealed class ImagePaintWindow : Window
 
 		public PaintRectangle(double canvasWidth, double canvasHeight, bool isOutline, double strokeThickness)
 		{
-			_canvasWidth = canvasWidth;
-			_canvasHeight = canvasHeight;
 			_isOutline = isOutline;
 			Width = canvasWidth;
 			Height = canvasHeight;
@@ -1405,6 +1892,25 @@ internal sealed class ImagePaintWindow : Window
 
 		public Rect Bounds => _bounds;
 
+		public Rect RenderBounds
+		{
+			get
+			{
+				if (_bounds.IsEmpty)
+				{
+					return Rect.Empty;
+				}
+
+				Rect bounds = _bounds;
+				if (_isOutline)
+				{
+					bounds.Inflate(_rectangle.StrokeThickness / 2, _rectangle.StrokeThickness / 2);
+				}
+
+				return bounds;
+			}
+		}
+
 		public bool IsOutline => _isOutline;
 
 		public double StrokeThickness => _rectangle.StrokeThickness;
@@ -1430,9 +1936,26 @@ internal sealed class ImagePaintWindow : Window
 			}
 
 			_rectangle.StrokeThickness = strokeThickness;
+			BoundsChanged?.Invoke(this, EventArgs.Empty);
 		}
 
-		private void SetBounds(Rect bounds)
+		public void SetCanvasSize(double canvasWidth, double canvasHeight)
+		{
+			Width = canvasWidth;
+			Height = canvasHeight;
+		}
+
+		public void ShiftContent(double offsetX, double offsetY)
+		{
+			var offset = new Vector(offsetX, offsetY);
+			SetBounds(ShiftRect(_bounds, offsetX, offsetY), notifyChanged: false);
+			_moveDragStartPoint += offset;
+			_moveDragStartBounds = ShiftRect(_moveDragStartBounds, offsetX, offsetY);
+			_resizeDragStartPoint += offset;
+			_resizeDragStartBounds = ShiftRect(_resizeDragStartBounds, offsetX, offsetY);
+		}
+
+		private void SetBounds(Rect bounds, bool notifyChanged = true)
 		{
 			_bounds = bounds;
 			Canvas.SetLeft(_rectangle, bounds.Left);
@@ -1440,7 +1963,10 @@ internal sealed class ImagePaintWindow : Window
 			_rectangle.Width = bounds.Width;
 			_rectangle.Height = bounds.Height;
 			PositionResizeHandles(bounds);
-			BoundsChanged?.Invoke(this, EventArgs.Empty);
+			if (notifyChanged)
+			{
+				BoundsChanged?.Invoke(this, EventArgs.Empty);
+			}
 		}
 
 		private void Rectangle_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -1481,7 +2007,7 @@ internal sealed class ImagePaintWindow : Window
 		{
 			Rect movedBounds = _moveDragStartBounds;
 			movedBounds.Offset(offset.X, offset.Y);
-			SetBounds(ClampRectangleToBounds(movedBounds));
+			SetBounds(movedBounds);
 		}
 
 		private Rectangle CreateResizeHandle(ResizeHandleKind resizeHandleKind)
@@ -1582,40 +2108,39 @@ internal sealed class ImagePaintWindow : Window
 			double top = _resizeDragStartBounds.Top;
 			double right = _resizeDragStartBounds.Right;
 			double bottom = _resizeDragStartBounds.Bottom;
-			double minWidth = Math.Min(MinPaintRectangleWidth, _canvasWidth);
-			double minHeight = Math.Min(MinPaintRectangleHeight, _canvasHeight);
+			double minWidth = MinPaintRectangleWidth;
+			double minHeight = MinPaintRectangleHeight;
 
 			if (_activeResizeHandle is ResizeHandleKind.TopLeft or ResizeHandleKind.BottomLeft)
 			{
-				left = Clamp(left + offset.X, 0, Math.Max(0, right - minWidth));
+				left = Math.Min(left + offset.X, right - minWidth);
 			}
 			else
 			{
-				right = Clamp(right + offset.X, Math.Min(_canvasWidth, left + minWidth), _canvasWidth);
+				right = Math.Max(right + offset.X, left + minWidth);
 			}
 
 			if (_activeResizeHandle is ResizeHandleKind.TopLeft or ResizeHandleKind.TopRight)
 			{
-				top = Clamp(top + offset.Y, 0, Math.Max(0, bottom - minHeight));
+				top = Math.Min(top + offset.Y, bottom - minHeight);
 			}
 			else
 			{
-				bottom = Clamp(bottom + offset.Y, Math.Min(_canvasHeight, top + minHeight), _canvasHeight);
+				bottom = Math.Max(bottom + offset.Y, top + minHeight);
 			}
 
 			SetBounds(new Rect(left, top, right - left, bottom - top));
 		}
 
-		private Rect ClampRectangleToBounds(Rect bounds)
+		private static Rect ShiftRect(Rect bounds, double offsetX, double offsetY)
 		{
-			double left = Clamp(bounds.Left, 0, Math.Max(0, _canvasWidth - bounds.Width));
-			double top = Clamp(bounds.Top, 0, Math.Max(0, _canvasHeight - bounds.Height));
-			return new Rect(left, top, bounds.Width, bounds.Height);
-		}
+			if (bounds.IsEmpty)
+			{
+				return bounds;
+			}
 
-		private static double Clamp(double value, double min, double max)
-		{
-			return Math.Max(min, Math.Min(value, max));
+			bounds.Offset(offsetX, offsetY);
+			return bounds;
 		}
 
 		private enum ResizeHandleKind
@@ -1629,8 +2154,8 @@ internal sealed class ImagePaintWindow : Window
 
 	private sealed class ArrowTextRectangle : Canvas
 	{
-		private readonly double _canvasWidth;
-		private readonly double _canvasHeight;
+		private double _canvasWidth;
+		private double _canvasHeight;
 		private readonly Rectangle _rectangle;
 		private readonly Polyline _arrowLine;
 		private readonly Polygon _arrowHead;
@@ -1730,7 +2255,26 @@ internal sealed class ImagePaintWindow : Window
 
 		public event EventHandler? TextInputFocused;
 
+		public event EventHandler? Changed;
+
 		public Rect TextRectangleBounds => _textRectangleBounds;
+
+		public Rect RenderBounds
+		{
+			get
+			{
+				if (_textRectangleBounds.IsEmpty)
+				{
+					return Rect.Empty;
+				}
+
+				Rect bounds = _textRectangleBounds;
+				bounds.Union(_arrowTip);
+				double arrowInset = Math.Max(_arrowHeadLength, _strokeThickness);
+				bounds.Inflate(arrowInset, arrowInset);
+				return bounds;
+			}
+		}
 
 		public double TextFontSize => _textBox.FontSize;
 
@@ -1746,7 +2290,7 @@ internal sealed class ImagePaintWindow : Window
 			double top = Math.Min(startPoint.Y, currentPoint.Y);
 			double width = Math.Abs(currentPoint.X - startPoint.X);
 			double height = Math.Abs(currentPoint.Y - startPoint.Y);
-			SetTextRectangleBounds(new Rect(left, top, width, height));
+			SetTextRectangleBounds(new Rect(left, top, width, height), notifyChanged: false);
 
 			if (!_isArrowTipCustomized)
 			{
@@ -1754,9 +2298,10 @@ internal sealed class ImagePaintWindow : Window
 			}
 
 			UpdateArrow(_textRectangleBounds);
+			Changed?.Invoke(this, EventArgs.Empty);
 		}
 
-		private void SetTextRectangleBounds(Rect bounds)
+		private void SetTextRectangleBounds(Rect bounds, bool notifyChanged = true)
 		{
 			_textRectangleBounds = bounds;
 			Canvas.SetLeft(_rectangle, bounds.Left);
@@ -1770,6 +2315,10 @@ internal sealed class ImagePaintWindow : Window
 			_textBox.Width = Math.Max(0, bounds.Width - textInset * 2);
 			_textBox.Height = Math.Max(0, bounds.Height - textInset * 2);
 			PositionResizeHandles(bounds);
+			if (notifyChanged)
+			{
+				Changed?.Invoke(this, EventArgs.Empty);
+			}
 		}
 
 		public void FocusTextInput()
@@ -1781,6 +2330,28 @@ internal sealed class ImagePaintWindow : Window
 		public void SetTextFontSize(double fontSize)
 		{
 			_textBox.FontSize = fontSize;
+		}
+
+		public void SetCanvasSize(double canvasWidth, double canvasHeight)
+		{
+			_canvasWidth = canvasWidth;
+			_canvasHeight = canvasHeight;
+			Width = canvasWidth;
+			Height = canvasHeight;
+		}
+
+		public void ShiftContent(double offsetX, double offsetY)
+		{
+			var offset = new Vector(offsetX, offsetY);
+			SetTextRectangleBounds(ShiftRect(_textRectangleBounds, offsetX, offsetY), notifyChanged: false);
+			_arrowDragStartPoint += offset;
+			_arrowTip += offset;
+			_arrowDragStartTip += offset;
+			_rectangleDragStartPoint += offset;
+			_rectangleDragStartBounds = ShiftRect(_rectangleDragStartBounds, offsetX, offsetY);
+			_resizeDragStartPoint += offset;
+			_resizeDragStartBounds = ShiftRect(_resizeDragStartBounds, offsetX, offsetY);
+			UpdateArrow(_textRectangleBounds);
 		}
 
 		public void SetStrokeThickness(double strokeThickness)
@@ -1797,8 +2368,9 @@ internal sealed class ImagePaintWindow : Window
 			_rectangle.StrokeThickness = strokeThickness;
 			if (!_textRectangleBounds.IsEmpty)
 			{
-				SetTextRectangleBounds(_textRectangleBounds);
+				SetTextRectangleBounds(_textRectangleBounds, notifyChanged: false);
 				UpdateArrow(_textRectangleBounds);
+				Changed?.Invoke(this, EventArgs.Empty);
 			}
 		}
 
@@ -1848,8 +2420,9 @@ internal sealed class ImagePaintWindow : Window
 		{
 			Rect movedBounds = _rectangleDragStartBounds;
 			movedBounds.Offset(offset.X, offset.Y);
-			SetTextRectangleBounds(ClampRectangleToBounds(movedBounds));
+			SetTextRectangleBounds(movedBounds, notifyChanged: false);
 			UpdateArrow(_textRectangleBounds);
+			Changed?.Invoke(this, EventArgs.Empty);
 		}
 
 		private Rectangle CreateResizeHandle(ResizeHandleKind resizeHandleKind)
@@ -1950,29 +2523,30 @@ internal sealed class ImagePaintWindow : Window
 			double top = _resizeDragStartBounds.Top;
 			double right = _resizeDragStartBounds.Right;
 			double bottom = _resizeDragStartBounds.Bottom;
-			double minWidth = Math.Min(MinArrowTextRectangleWidth, _canvasWidth);
-			double minHeight = Math.Min(MinArrowTextRectangleHeight, _canvasHeight);
+			double minWidth = MinArrowTextRectangleWidth;
+			double minHeight = MinArrowTextRectangleHeight;
 
 			if (_activeResizeHandle is ResizeHandleKind.TopLeft or ResizeHandleKind.BottomLeft)
 			{
-				left = Clamp(left + offset.X, 0, Math.Max(0, right - minWidth));
+				left = Math.Min(left + offset.X, right - minWidth);
 			}
 			else
 			{
-				right = Clamp(right + offset.X, Math.Min(_canvasWidth, left + minWidth), _canvasWidth);
+				right = Math.Max(right + offset.X, left + minWidth);
 			}
 
 			if (_activeResizeHandle is ResizeHandleKind.TopLeft or ResizeHandleKind.TopRight)
 			{
-				top = Clamp(top + offset.Y, 0, Math.Max(0, bottom - minHeight));
+				top = Math.Min(top + offset.Y, bottom - minHeight);
 			}
 			else
 			{
-				bottom = Clamp(bottom + offset.Y, Math.Min(_canvasHeight, top + minHeight), _canvasHeight);
+				bottom = Math.Max(bottom + offset.Y, top + minHeight);
 			}
 
-			SetTextRectangleBounds(new Rect(left, top, right - left, bottom - top));
+			SetTextRectangleBounds(new Rect(left, top, right - left, bottom - top), notifyChanged: false);
 			UpdateArrow(_textRectangleBounds);
+			Changed?.Invoke(this, EventArgs.Empty);
 		}
 
 		private void ArrowHead_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -2026,7 +2600,6 @@ internal sealed class ImagePaintWindow : Window
 				tipPoint = dragPoint -
 					arrowDirection * _arrowDragGrabAlongDirection -
 					arrowNormal * _arrowDragGrabAlongNormal;
-				tipPoint = ClampToBounds(tipPoint);
 			}
 
 			MoveArrowTip(tipPoint);
@@ -2034,8 +2607,9 @@ internal sealed class ImagePaintWindow : Window
 
 		private void MoveArrowTip(Point point)
 		{
-			_arrowTip = ClampToBounds(point);
+			_arrowTip = point;
 			UpdateArrow(_textRectangleBounds);
+			Changed?.Invoke(this, EventArgs.Empty);
 		}
 
 		private Point CalculateDefaultArrowTip(Rect rectangleBounds)
@@ -2061,7 +2635,7 @@ internal sealed class ImagePaintWindow : Window
 
 		private void UpdateArrow(Rect rectangleBounds)
 		{
-			Point tipPoint = ClampToBounds(_arrowTip);
+			Point tipPoint = _arrowTip;
 			_arrowTip = tipPoint;
 			Vector arrowDirection = GetArrowDirection(rectangleBounds, tipPoint, out Point attachPoint, out Point bendPoint);
 
@@ -2162,23 +2736,15 @@ internal sealed class ImagePaintWindow : Window
 			};
 		}
 
-		private Point ClampToBounds(Point point)
+		private static Rect ShiftRect(Rect bounds, double offsetX, double offsetY)
 		{
-			return new Point(
-				Clamp(point.X, 0, _canvasWidth),
-				Clamp(point.Y, 0, _canvasHeight));
-		}
+			if (bounds.IsEmpty)
+			{
+				return bounds;
+			}
 
-		private Rect ClampRectangleToBounds(Rect bounds)
-		{
-			double left = Clamp(bounds.Left, 0, Math.Max(0, _canvasWidth - bounds.Width));
-			double top = Clamp(bounds.Top, 0, Math.Max(0, _canvasHeight - bounds.Height));
-			return new Rect(left, top, bounds.Width, bounds.Height);
-		}
-
-		private static double Clamp(double value, double min, double max)
-		{
-			return Math.Max(min, Math.Min(value, max));
+			bounds.Offset(offsetX, offsetY);
+			return bounds;
 		}
 
 		private static double CalculateArrowHeadLength(double strokeThickness)
@@ -2221,6 +2787,336 @@ internal sealed class ImagePaintWindow : Window
 		}
 	}
 
+	private sealed class PlacedImage : Canvas
+	{
+		private readonly Image _image;
+		private readonly Border _selectionBorder;
+		private readonly Dictionary<ResizeHandleKind, Rectangle> _resizeHandles = new();
+		private Rect _bounds = Rect.Empty;
+		private Point _moveDragStartPoint;
+		private Rect _moveDragStartBounds = Rect.Empty;
+		private Point _resizeDragStartPoint;
+		private Rect _resizeDragStartBounds = Rect.Empty;
+		private ResizeHandleKind _activeResizeHandle;
+		private bool _isMoving;
+		private bool _isResizing;
+
+		public PlacedImage(BitmapSource source, double canvasWidth, double canvasHeight, Rect bounds)
+		{
+			Width = canvasWidth;
+			Height = canvasHeight;
+			ClipToBounds = false;
+
+			_image = new Image
+			{
+				Source = source,
+				Stretch = Stretch.Fill,
+				SnapsToDevicePixels = true,
+				Cursor = Cursors.SizeAll
+			};
+			RenderOptions.SetBitmapScalingMode(_image, BitmapScalingMode.HighQuality);
+			_image.MouseLeftButtonDown += Image_MouseLeftButtonDown;
+			_image.MouseMove += Image_MouseMove;
+			_image.MouseLeftButtonUp += Image_MouseLeftButtonUp;
+
+			_selectionBorder = new Border
+			{
+				BorderBrush = ArrowBrush,
+				BorderThickness = new Thickness(1),
+				Background = Brushes.Transparent,
+				IsHitTestVisible = false
+			};
+
+			Children.Add(_image);
+			Children.Add(_selectionBorder);
+			foreach (ResizeHandleKind resizeHandleKind in Enum.GetValues<ResizeHandleKind>())
+			{
+				Rectangle resizeHandle = CreateResizeHandle(resizeHandleKind);
+				_resizeHandles.Add(resizeHandleKind, resizeHandle);
+				Children.Add(resizeHandle);
+			}
+
+			SetBounds(bounds);
+		}
+
+		public event EventHandler? Changed;
+
+		public Rect Bounds => _bounds;
+
+		// レンダリング時に選択枠やリサイズハンドルを画像へ焼き込まないよう、編集用の装飾を一時的に隠す。
+		public void SetEditingChromeVisible(bool visible)
+		{
+			Visibility chromeVisibility = visible ? Visibility.Visible : Visibility.Collapsed;
+			_selectionBorder.Visibility = chromeVisibility;
+			foreach (Rectangle resizeHandle in _resizeHandles.Values)
+			{
+				resizeHandle.Visibility = chromeVisibility;
+			}
+		}
+
+		public void SetCanvasSize(double canvasWidth, double canvasHeight)
+		{
+			Width = canvasWidth;
+			Height = canvasHeight;
+		}
+
+		public void ShiftContent(double offsetX, double offsetY)
+		{
+			var offset = new Vector(offsetX, offsetY);
+			SetBounds(ShiftRect(_bounds, offsetX, offsetY), notifyChanged: false);
+			_moveDragStartPoint += offset;
+			_moveDragStartBounds = ShiftRect(_moveDragStartBounds, offsetX, offsetY);
+			_resizeDragStartPoint += offset;
+			_resizeDragStartBounds = ShiftRect(_resizeDragStartBounds, offsetX, offsetY);
+		}
+
+		private void SetBounds(Rect bounds, bool notifyChanged = true)
+		{
+			_bounds = bounds;
+			Canvas.SetLeft(_image, bounds.Left);
+			Canvas.SetTop(_image, bounds.Top);
+			_image.Width = bounds.Width;
+			_image.Height = bounds.Height;
+
+			Canvas.SetLeft(_selectionBorder, bounds.Left);
+			Canvas.SetTop(_selectionBorder, bounds.Top);
+			_selectionBorder.Width = bounds.Width;
+			_selectionBorder.Height = bounds.Height;
+
+			PositionResizeHandles(bounds);
+			if (notifyChanged)
+			{
+				Changed?.Invoke(this, EventArgs.Empty);
+			}
+		}
+
+		private void Image_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+		{
+			_isMoving = true;
+			_moveDragStartPoint = e.GetPosition(this);
+			_moveDragStartBounds = _bounds;
+			_image.CaptureMouse();
+			e.Handled = true;
+		}
+
+		private void Image_MouseMove(object sender, MouseEventArgs e)
+		{
+			if (!_isMoving)
+			{
+				return;
+			}
+
+			MoveImage(e.GetPosition(this) - _moveDragStartPoint);
+			e.Handled = true;
+		}
+
+		private void Image_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+		{
+			if (!_isMoving)
+			{
+				return;
+			}
+
+			MoveImage(e.GetPosition(this) - _moveDragStartPoint);
+			_isMoving = false;
+			_image.ReleaseMouseCapture();
+			e.Handled = true;
+		}
+
+		private void MoveImage(Vector offset)
+		{
+			Rect movedBounds = _moveDragStartBounds;
+			movedBounds.Offset(offset.X, offset.Y);
+			SetBounds(movedBounds);
+		}
+
+		private Rectangle CreateResizeHandle(ResizeHandleKind resizeHandleKind)
+		{
+			var resizeHandle = new Rectangle
+			{
+				Width = PlacedImageResizeHandleSize,
+				Height = PlacedImageResizeHandleSize,
+				Fill = Brushes.White,
+				Stroke = ArrowBrush,
+				StrokeThickness = 1.5,
+				Cursor = GetResizeHandleCursor(resizeHandleKind),
+				Tag = resizeHandleKind
+			};
+			resizeHandle.MouseLeftButtonDown += ResizeHandle_MouseLeftButtonDown;
+			resizeHandle.MouseMove += ResizeHandle_MouseMove;
+			resizeHandle.MouseLeftButtonUp += ResizeHandle_MouseLeftButtonUp;
+			return resizeHandle;
+		}
+
+		private static Cursor GetResizeHandleCursor(ResizeHandleKind resizeHandleKind)
+		{
+			return resizeHandleKind is ResizeHandleKind.TopLeft or ResizeHandleKind.BottomRight
+				? Cursors.SizeNWSE
+				: Cursors.SizeNESW;
+		}
+
+		private void PositionResizeHandles(Rect bounds)
+		{
+			PositionResizeHandle(ResizeHandleKind.TopLeft, bounds.Left, bounds.Top);
+			PositionResizeHandle(ResizeHandleKind.TopRight, bounds.Right, bounds.Top);
+			PositionResizeHandle(ResizeHandleKind.BottomLeft, bounds.Left, bounds.Bottom);
+			PositionResizeHandle(ResizeHandleKind.BottomRight, bounds.Right, bounds.Bottom);
+		}
+
+		private void PositionResizeHandle(ResizeHandleKind resizeHandleKind, double x, double y)
+		{
+			if (!_resizeHandles.TryGetValue(resizeHandleKind, out Rectangle? resizeHandle))
+			{
+				return;
+			}
+
+			Canvas.SetLeft(resizeHandle, x - PlacedImageResizeHandleSize / 2);
+			Canvas.SetTop(resizeHandle, y - PlacedImageResizeHandleSize / 2);
+		}
+
+		private void ResizeHandle_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+		{
+			if (sender is not Rectangle resizeHandle || resizeHandle.Tag is not ResizeHandleKind resizeHandleKind)
+			{
+				return;
+			}
+
+			_isResizing = true;
+			_activeResizeHandle = resizeHandleKind;
+			_resizeDragStartPoint = e.GetPosition(this);
+			_resizeDragStartBounds = _bounds;
+			resizeHandle.CaptureMouse();
+			e.Handled = true;
+		}
+
+		private void ResizeHandle_MouseMove(object sender, MouseEventArgs e)
+		{
+			if (!_isResizing)
+			{
+				return;
+			}
+
+			ResizeImage(e.GetPosition(this) - _resizeDragStartPoint);
+			e.Handled = true;
+		}
+
+		private void ResizeHandle_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+		{
+			if (!_isResizing)
+			{
+				return;
+			}
+
+			ResizeImage(e.GetPosition(this) - _resizeDragStartPoint);
+			_isResizing = false;
+			if (sender is Rectangle resizeHandle)
+			{
+				resizeHandle.ReleaseMouseCapture();
+			}
+
+			e.Handled = true;
+		}
+
+		private void ResizeImage(Vector offset)
+		{
+			if (_resizeDragStartBounds.IsEmpty)
+			{
+				return;
+			}
+
+			double left = _resizeDragStartBounds.Left;
+			double top = _resizeDragStartBounds.Top;
+			double right = _resizeDragStartBounds.Right;
+			double bottom = _resizeDragStartBounds.Bottom;
+			double minSize = MultiImageMinPlacedSize;
+
+			if (_activeResizeHandle is ResizeHandleKind.TopLeft or ResizeHandleKind.BottomLeft)
+			{
+				left = Math.Min(left + offset.X, right - minSize);
+			}
+			else
+			{
+				right = Math.Max(right + offset.X, left + minSize);
+			}
+
+			if (_activeResizeHandle is ResizeHandleKind.TopLeft or ResizeHandleKind.TopRight)
+			{
+				top = Math.Min(top + offset.Y, bottom - minSize);
+			}
+			else
+			{
+				bottom = Math.Max(bottom + offset.Y, top + minSize);
+			}
+
+			SetBounds(new Rect(left, top, right - left, bottom - top));
+		}
+
+		private static Rect ShiftRect(Rect bounds, double offsetX, double offsetY)
+		{
+			if (bounds.IsEmpty)
+			{
+				return bounds;
+			}
+
+			bounds.Offset(offsetX, offsetY);
+			return bounds;
+		}
+
+		private enum ResizeHandleKind
+		{
+			TopLeft,
+			TopRight,
+			BottomLeft,
+			BottomRight
+		}
+	}
+
+	private static MultiImageLayout CalculateMultiImageLayout(IReadOnlyList<BitmapSource> images)
+	{
+		// 作業領域に収まる幅へ全画像を合わせる。大きい画像は縮小、小さい画像も同じ幅へ拡大して縦並びを揃える。
+		double maxContentWidth = Math.Max(MultiImageMinPlacedSize, SystemParameters.WorkArea.Width - 160);
+		double maxSourceWidth = images.Max(image => (double)image.PixelWidth);
+		double contentWidth = Math.Min(maxContentWidth, maxSourceWidth);
+
+		var placedImages = new List<PlacedImageLayout>(images.Count);
+		double currentTop = MultiImageOuterMargin;
+		double referenceHeight = 0;
+		foreach (BitmapSource image in images)
+		{
+			double width = contentWidth;
+			double aspectRatio = image.PixelHeight / (double)image.PixelWidth;
+			double height = Math.Max(MultiImageMinPlacedSize, width * aspectRatio);
+			var bounds = new Rect(MultiImageOuterMargin, currentTop, width, height);
+			placedImages.Add(new PlacedImageLayout(image, bounds));
+			currentTop += height + MultiImageGap;
+			referenceHeight = Math.Max(referenceHeight, height);
+		}
+
+		double canvasWidth = contentWidth + MultiImageOuterMargin * 2;
+		double canvasHeight = currentTop - MultiImageGap + MultiImageOuterMargin;
+		return new MultiImageLayout(
+			Math.Max(1, Math.Round(canvasWidth)),
+			Math.Max(1, Math.Round(canvasHeight)),
+			referenceHeight,
+			placedImages);
+	}
+
+	private static BitmapSource CreateWhiteCanvasImage(double width, double height)
+	{
+		int pixelWidth = Math.Max(1, (int)Math.Round(width));
+		int pixelHeight = Math.Max(1, (int)Math.Round(height));
+		var drawingVisual = new DrawingVisual();
+		using (DrawingContext drawingContext = drawingVisual.RenderOpen())
+		{
+			drawingContext.DrawRectangle(Brushes.White, null, new Rect(0, 0, pixelWidth, pixelHeight));
+		}
+
+		var bitmap = new RenderTargetBitmap(pixelWidth, pixelHeight, 96, 96, PixelFormats.Pbgra32);
+		bitmap.Render(drawingVisual);
+		bitmap.Freeze();
+		return bitmap;
+	}
+
 	private static BitmapSource LoadImage(byte[] imageBytes)
 	{
 		if (imageBytes.Length == 0)
@@ -2251,8 +3147,17 @@ internal sealed class ImagePaintWindow : Window
 
 	private enum PaintMode
 	{
+		MoveImage,
 		BlackFillRectangle,
 		RedOutlineRectangle,
 		ArrowTextRectangle
 	}
+
+	private sealed record MultiImageLayout(
+		double CanvasWidth,
+		double CanvasHeight,
+		double ReferenceHeight,
+		IReadOnlyList<PlacedImageLayout> PlacedImages);
+
+	private sealed record PlacedImageLayout(BitmapSource Image, Rect Bounds);
 }

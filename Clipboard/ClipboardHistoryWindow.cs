@@ -43,6 +43,7 @@ internal sealed class ClipboardHistoryWindow : Window
 	private readonly StackPanel _listPanel;
 	private readonly Border _selectionFooter;
 	private readonly TextBlock _selectionCountLabel;
+	private readonly Button _paintSelectedButton;
 	private readonly List<ClipboardHistoryEntry> _historyEntries = new();
 	private readonly NativeMethods.LowLevelMouseProc _outsideClickProc;
 	private CancellationTokenSource? _loadHistoryCancellation;
@@ -130,7 +131,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		DockPanel.SetDock(searchPanel, Dock.Top);
 		rootPanel.Children.Add(searchPanel);
 
-		_selectionFooter = CreateSelectionFooter(out _selectionCountLabel);
+		_selectionFooter = CreateSelectionFooter(out _selectionCountLabel, out _paintSelectedButton);
 		DockPanel.SetDock(_selectionFooter, Dock.Bottom);
 		rootPanel.Children.Add(_selectionFooter);
 
@@ -307,7 +308,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		base.OnClosing(e);
 	}
 
-	private Border CreateSelectionFooter(out TextBlock countLabel)
+	private Border CreateSelectionFooter(out TextBlock countLabel, out Button paintButton)
 	{
 		var grid = new Grid();
 		grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -322,6 +323,28 @@ internal sealed class ClipboardHistoryWindow : Window
 		Grid.SetColumn(countLabel, 0);
 		grid.Children.Add(countLabel);
 
+		var buttonPanel = new StackPanel
+		{
+			Orientation = Orientation.Horizontal,
+			VerticalAlignment = VerticalAlignment.Center
+		};
+		Grid.SetColumn(buttonPanel, 1);
+		grid.Children.Add(buttonPanel);
+
+		paintButton = new Button
+		{
+			Content = "ペイント",
+			MinHeight = 32,
+			Padding = new Thickness(12, 5, 12, 5),
+			Margin = new Thickness(0, 0, 8, 0),
+			Focusable = false,
+			Cursor = Cursors.Hand,
+			ToolTip = "選択した画像を1つのキャンバスに並べてペイントを開きます"
+		};
+		AppTheme.ApplyButton(paintButton);
+		paintButton.Click += (_, _) => OpenMultiImagePaintWindow();
+		buttonPanel.Children.Add(paintButton);
+
 		var deleteButton = new Button
 		{
 			Content = "選択したものを削除",
@@ -332,8 +355,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		};
 		AppTheme.ApplyButton(deleteButton);
 		deleteButton.Click += (_, _) => DeleteCheckedHistoryItems();
-		Grid.SetColumn(deleteButton, 1);
-		grid.Children.Add(deleteButton);
+		buttonPanel.Children.Add(deleteButton);
 
 		var footer = new Border
 		{
@@ -349,14 +371,16 @@ internal sealed class ClipboardHistoryWindow : Window
 
 	private void UpdateSelectionFooter()
 	{
-		int checkedCount = GetHistoryItems().Count(item => item.IsChecked);
-		if (checkedCount == 0)
+		var checkedItems = GetHistoryItems().Where(item => item.IsChecked).ToList();
+		if (checkedItems.Count == 0)
 		{
 			_selectionFooter.Visibility = Visibility.Collapsed;
 			return;
 		}
 
-		_selectionCountLabel.Text = $"{checkedCount}件を選択中";
+		int checkedImageCount = checkedItems.Count(item => item.Kind == ClipboardHistoryKind.Image);
+		_selectionCountLabel.Text = $"{checkedItems.Count}件を選択中";
+		_paintSelectedButton.Visibility = checkedImageCount > 0 ? Visibility.Visible : Visibility.Collapsed;
 		_selectionFooter.Visibility = Visibility.Visible;
 	}
 
@@ -1053,6 +1077,54 @@ internal sealed class ClipboardHistoryWindow : Window
 			Logger.Error(ex, $"ClipboardHistoryWindow: ペイント画面を開けませんでした。Id={entry.Id}");
 			MessageBox.Show(this, "ペイント画面を開けませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
 		}
+	}
+
+	private async void OpenMultiImagePaintWindow()
+	{
+		var imageIds = GetHistoryItems()
+			.Where(item => item.IsChecked && item.Kind == ClipboardHistoryKind.Image)
+			.Select(item => item.EntryId)
+			.ToList();
+		if (imageIds.Count == 0)
+		{
+			MessageBox.Show(this, "ペイントを開くには画像を選択してください。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Information);
+			return;
+		}
+
+		try
+		{
+			List<byte[]> imageBytesList = await Task.Run(() => LoadImageContents(imageIds));
+			if (imageBytesList.Count == 0)
+			{
+				throw new InvalidOperationException("画像履歴を読み込めませんでした。");
+			}
+
+			CloseOpenPreviews();
+			Hide();
+			var paintWindow = new ImagePaintWindow(imageBytesList);
+			paintWindow.Show();
+			paintWindow.Activate();
+		}
+		catch (Exception ex)
+		{
+			Logger.Error(ex, "ClipboardHistoryWindow: 複数画像のペイント画面を開けませんでした。");
+			MessageBox.Show(this, "ペイント画面を開けませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
+		}
+	}
+
+	private static List<byte[]> LoadImageContents(IReadOnlyList<long> imageIds)
+	{
+		var imageBytesList = new List<byte[]>(imageIds.Count);
+		foreach (long imageId in imageIds)
+		{
+			ClipboardStoredContent? content = ClipboardDatabase.LoadContent(imageId);
+			if (content != null && content.Kind == ClipboardHistoryKind.Image && content.Bytes.Length > 0)
+			{
+				imageBytesList.Add(content.Bytes);
+			}
+		}
+
+		return imageBytesList;
 	}
 
 	private void AddMessage(string text)
@@ -2035,6 +2107,8 @@ internal sealed class ClipboardHistoryWindow : Window
 		public event EventHandler? CheckedChanged;
 
 		public long EntryId => _entry.Id;
+
+		public ClipboardHistoryKind Kind => _entry.Kind;
 
 		public DateTime CreatedDate => _entry.CreatedAt.Date;
 
