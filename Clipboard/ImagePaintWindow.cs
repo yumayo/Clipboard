@@ -246,8 +246,8 @@ internal sealed class ImagePaintWindow : Window
 		_scrollViewer = new ScrollViewer
 		{
 			Content = _zoomContainer,
-			HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-			VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+			HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden,
+			VerticalScrollBarVisibility = ScrollBarVisibility.Hidden
 		};
 		_scrollViewer.PreviewMouseWheel += ScrollViewer_PreviewMouseWheel;
 		_scrollViewer.PreviewMouseDown += ScrollViewer_PreviewMouseDown;
@@ -460,8 +460,72 @@ internal sealed class ImagePaintWindow : Window
 	private void UpdateMiddleButtonPan(Point point)
 	{
 		Vector offset = point - _middleButtonPanStartPoint;
-		_scrollViewer.ScrollToHorizontalOffset(_middleButtonPanStartHorizontalOffset - offset.X);
-		_scrollViewer.ScrollToVerticalOffset(_middleButtonPanStartVerticalOffset - offset.Y);
+		double horizontalOffset = _middleButtonPanStartHorizontalOffset - offset.X;
+		double verticalOffset = _middleButtonPanStartVerticalOffset - offset.Y;
+		EnsureWorkspaceForMiddleButtonPan(ref horizontalOffset, ref verticalOffset);
+		_scrollViewer.ScrollToHorizontalOffset(horizontalOffset);
+		_scrollViewer.ScrollToVerticalOffset(verticalOffset);
+	}
+
+	private void EnsureWorkspaceForMiddleButtonPan(ref double horizontalOffset, ref double verticalOffset)
+	{
+		double zoom = _zoomTransform.ScaleX;
+		if (!double.IsFinite(zoom) || zoom <= 0)
+		{
+			return;
+		}
+
+		bool resized = false;
+		double expandLeft = CalculateWorkspaceExpansion(Math.Max(0, -horizontalOffset) / zoom);
+		double expandTop = CalculateWorkspaceExpansion(Math.Max(0, -verticalOffset) / zoom);
+		if (expandLeft > 0 || expandTop > 0)
+		{
+			SetCanvasSize(_canvasWidth + expandLeft, _canvasHeight + expandTop);
+			ShiftCanvasContent(expandLeft, expandTop);
+
+			double horizontalShift = expandLeft * zoom;
+			double verticalShift = expandTop * zoom;
+			_middleButtonPanStartHorizontalOffset += horizontalShift;
+			_middleButtonPanStartVerticalOffset += verticalShift;
+			horizontalOffset += horizontalShift;
+			verticalOffset += verticalShift;
+			resized = true;
+		}
+
+		double viewportWidth = GetScrollViewerViewportWidth();
+		double viewportHeight = GetScrollViewerViewportHeight();
+		double expandRight = CalculateWorkspaceExpansion(Math.Max(0, horizontalOffset + viewportWidth - _canvasWidth * zoom) / zoom);
+		double expandBottom = CalculateWorkspaceExpansion(Math.Max(0, verticalOffset + viewportHeight - _canvasHeight * zoom) / zoom);
+		if (expandRight > 0 || expandBottom > 0)
+		{
+			SetCanvasSize(_canvasWidth + expandRight, _canvasHeight + expandBottom);
+			resized = true;
+		}
+
+		if (resized)
+		{
+			_scrollViewer.UpdateLayout();
+		}
+	}
+
+	private double GetScrollViewerViewportWidth()
+	{
+		return GetPositiveFiniteValue(_scrollViewer.ViewportWidth, _scrollViewer.ActualWidth);
+	}
+
+	private double GetScrollViewerViewportHeight()
+	{
+		return GetPositiveFiniteValue(_scrollViewer.ViewportHeight, _scrollViewer.ActualHeight);
+	}
+
+	private static double GetPositiveFiniteValue(double primary, double fallback)
+	{
+		if (double.IsFinite(primary) && primary > 0)
+		{
+			return primary;
+		}
+
+		return double.IsFinite(fallback) && fallback > 0 ? fallback : 0;
 	}
 
 	private void EndMiddleButtonPan(bool releaseCapture)
