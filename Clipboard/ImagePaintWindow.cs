@@ -227,7 +227,10 @@ internal sealed class ImagePaintWindow : Window
 			Width = _canvasWidth,
 			Height = _canvasHeight,
 			Background = Brushes.Transparent,
-			ClipToBounds = false
+			ClipToBounds = false,
+			// 作業領域拡張時にズーム済みコンテンツが中央寄せで再配置されないよう左上に固定する。
+			HorizontalAlignment = HorizontalAlignment.Left,
+			VerticalAlignment = VerticalAlignment.Top
 		};
 		_paintSurface.Children.Add(_baseImageCanvas);
 		_paintSurface.Children.Add(_imageLayerCanvas);
@@ -237,7 +240,9 @@ internal sealed class ImagePaintWindow : Window
 		{
 			Width = _canvasWidth,
 			Height = _canvasHeight,
-			LayoutTransform = _zoomTransform
+			LayoutTransform = _zoomTransform,
+			HorizontalAlignment = HorizontalAlignment.Left,
+			VerticalAlignment = VerticalAlignment.Top
 		};
 		_zoomContainer.Children.Add(_paintSurface);
 		ShiftCanvasContent(WorkspaceInitialMargin, WorkspaceInitialMargin);
@@ -247,7 +252,9 @@ internal sealed class ImagePaintWindow : Window
 		{
 			Content = _zoomContainer,
 			HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden,
-			VerticalScrollBarVisibility = ScrollBarVisibility.Hidden
+			VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
+			HorizontalContentAlignment = HorizontalAlignment.Left,
+			VerticalContentAlignment = VerticalAlignment.Top
 		};
 		_scrollViewer.PreviewMouseWheel += ScrollViewer_PreviewMouseWheel;
 		_scrollViewer.PreviewMouseDown += ScrollViewer_PreviewMouseDown;
@@ -565,8 +572,23 @@ internal sealed class ImagePaintWindow : Window
 
 	private void ScrollToInitialWorkspacePosition()
 	{
-		_scrollViewer.ScrollToHorizontalOffset(WorkspaceInitialMargin * _zoomTransform.ScaleX);
-		_scrollViewer.ScrollToVerticalOffset(WorkspaceInitialMargin * _zoomTransform.ScaleY);
+		_scrollViewer.UpdateLayout();
+		// 横方向がまだスクロール不能な場合、非ゼロの希望位置をWPFに覚えさせない。
+		_scrollViewer.ScrollToHorizontalOffset(
+			ClampScrollOffset(WorkspaceInitialMargin * _zoomTransform.ScaleX, _scrollViewer.ScrollableWidth));
+		_scrollViewer.ScrollToVerticalOffset(
+			ClampScrollOffset(WorkspaceInitialMargin * _zoomTransform.ScaleY, _scrollViewer.ScrollableHeight));
+	}
+
+	private static double ClampScrollOffset(double offset, double scrollableLength)
+	{
+		if (!double.IsFinite(offset) || offset <= 0 ||
+			!double.IsFinite(scrollableLength) || scrollableLength <= 0)
+		{
+			return 0;
+		}
+
+		return Math.Min(offset, scrollableLength);
 	}
 
 	private double CalculateInitialZoom(double windowWidth, double windowHeight)
