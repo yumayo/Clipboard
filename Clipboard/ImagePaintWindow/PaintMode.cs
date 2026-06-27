@@ -1,12 +1,9 @@
 namespace Clipboard;
 
-internal sealed partial class ImagePaintWindow
+internal enum PaintMode
 {
-	private enum PaintMode
-	{
-		MoveImage,
-		BlackFillRectangle,
-		RedOutlineRectangle,
-		ArrowTextRectangle
-	}
+	MoveImage,
+	BlackFillRectangle,
+	RedOutlineRectangle,
+	ArrowTextRectangle
 }
