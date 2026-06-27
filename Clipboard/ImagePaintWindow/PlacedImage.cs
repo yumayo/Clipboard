@@ -249,31 +249,68 @@ internal sealed class PlacedImage : Canvas
 			return;
 		}
 
-		double left = _resizeDragStartBounds.Left;
-		double top = _resizeDragStartBounds.Top;
-		double right = _resizeDragStartBounds.Right;
-		double bottom = _resizeDragStartBounds.Bottom;
-		double minSize = MultiImageMinPlacedSize;
+		SetBounds(CalculateAspectPreservingResizeBounds(_resizeDragStartBounds, _activeResizeHandle, offset));
+	}
 
-		if (_activeResizeHandle is ResizeHandleKind.TopLeft or ResizeHandleKind.BottomLeft)
+	private static Rect CalculateAspectPreservingResizeBounds(Rect startBounds, ResizeHandleKind resizeHandleKind, Vector offset)
+	{
+		double startWidth = startBounds.Width;
+		double startHeight = startBounds.Height;
+		if (startWidth <= 0 || startHeight <= 0)
 		{
-			left = Math.Min(left + offset.X, right - minSize);
-		}
-		else
-		{
-			right = Math.Max(right + offset.X, left + minSize);
+			return startBounds;
 		}
 
-		if (_activeResizeHandle is ResizeHandleKind.TopLeft or ResizeHandleKind.TopRight)
+		Point anchorPoint = GetResizeAnchorPoint(startBounds, resizeHandleKind);
+		Point startMovingPoint = GetResizeMovingPoint(startBounds, resizeHandleKind);
+		Vector startVector = startMovingPoint - anchorPoint;
+		Point desiredMovingPoint = startMovingPoint + offset;
+		Vector desiredVector = desiredMovingPoint - anchorPoint;
+		double startVectorLengthSquared = startVector.X * startVector.X + startVector.Y * startVector.Y;
+		if (startVectorLengthSquared <= 0)
 		{
-			top = Math.Min(top + offset.Y, bottom - minSize);
-		}
-		else
-		{
-			bottom = Math.Max(bottom + offset.Y, top + minSize);
+			return startBounds;
 		}
 
-		SetBounds(new Rect(left, top, right - left, bottom - top));
+		double scale = ((desiredVector.X * startVector.X) + (desiredVector.Y * startVector.Y)) / startVectorLengthSquared;
+		double minScale = Math.Max(MultiImageMinPlacedSize / startWidth, MultiImageMinPlacedSize / startHeight);
+		if (!double.IsFinite(scale))
+		{
+			scale = minScale;
+		}
+
+		scale = Math.Max(scale, minScale);
+		var scaledVector = new Vector(startVector.X * scale, startVector.Y * scale);
+		Point movingPoint = anchorPoint + scaledVector;
+		double left = Math.Min(anchorPoint.X, movingPoint.X);
+		double top = Math.Min(anchorPoint.Y, movingPoint.Y);
+		double width = Math.Abs(movingPoint.X - anchorPoint.X);
+		double height = Math.Abs(movingPoint.Y - anchorPoint.Y);
+		return new Rect(left, top, width, height);
+	}
+
+	private static Point GetResizeAnchorPoint(Rect bounds, ResizeHandleKind resizeHandleKind)
+	{
+		return resizeHandleKind switch
+		{
+			ResizeHandleKind.TopLeft => new Point(bounds.Right, bounds.Bottom),
+			ResizeHandleKind.TopRight => new Point(bounds.Left, bounds.Bottom),
+			ResizeHandleKind.BottomLeft => new Point(bounds.Right, bounds.Top),
+			ResizeHandleKind.BottomRight => new Point(bounds.Left, bounds.Top),
+			_ => new Point(bounds.Left, bounds.Top)
+		};
+	}
+
+	private static Point GetResizeMovingPoint(Rect bounds, ResizeHandleKind resizeHandleKind)
+	{
+		return resizeHandleKind switch
+		{
+			ResizeHandleKind.TopLeft => new Point(bounds.Left, bounds.Top),
+			ResizeHandleKind.TopRight => new Point(bounds.Right, bounds.Top),
+			ResizeHandleKind.BottomLeft => new Point(bounds.Left, bounds.Bottom),
+			ResizeHandleKind.BottomRight => new Point(bounds.Right, bounds.Bottom),
+			_ => new Point(bounds.Right, bounds.Bottom)
+		};
 	}
 
 	private static Rect ShiftRect(Rect bounds, double offsetX, double offsetY)
