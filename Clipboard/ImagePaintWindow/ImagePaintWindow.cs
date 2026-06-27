@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using Rectangle = System.Windows.Shapes.Rectangle;
 using static Clipboard.ImagePaintBounds;
 using static Clipboard.ImagePaintImageFactory;
 using static Clipboard.ImagePaintMetrics;
@@ -21,6 +22,7 @@ internal sealed class ImagePaintWindow : Window
 	private readonly ImagePaintEditorState _state = new();
 	private readonly ScaleTransform _zoomTransform = new(1, 1);
 	private Grid _zoomContainer = null!;
+	private Rectangle _workspaceGridBackground = null!;
 	private Grid _paintSurface = null!;
 	private Canvas _baseImageCanvas = null!;
 	private Image _sourceImageControl = null!;
@@ -217,6 +219,17 @@ internal sealed class ImagePaintWindow : Window
 			HorizontalAlignment = HorizontalAlignment.Left,
 			VerticalAlignment = VerticalAlignment.Top
 		};
+		_workspaceGridBackground = new Rectangle
+		{
+			Width = CanvasWidth,
+			Height = CanvasHeight,
+			Fill = CreateWorkspaceGridBrush(),
+			IsHitTestVisible = false,
+			SnapsToDevicePixels = true,
+			HorizontalAlignment = HorizontalAlignment.Left,
+			VerticalAlignment = VerticalAlignment.Top
+		};
+		_zoomContainer.Children.Add(_workspaceGridBackground);
 		_zoomContainer.Children.Add(_paintSurface);
 		ShiftCanvasContent(WorkspaceInitialMargin, WorkspaceInitialMargin);
 		SetZoom(CalculateInitialZoom(windowWidth, windowHeight));
@@ -239,8 +252,20 @@ internal sealed class ImagePaintWindow : Window
 		root.Children.Add(_scrollViewer);
 
 		Content = root;
+		AppTheme.ThemeChanged += AppTheme_ThemeChanged;
+		Closed += ImagePaintWindow_Closed;
 		AddHandler(Keyboard.PreviewKeyDownEvent, new KeyEventHandler(ImagePaintWindow_PreviewKeyDown), true);
 		SetPaintMode(_state.Tools.PaintMode);
+	}
+
+	private void AppTheme_ThemeChanged(object? sender, EventArgs e)
+	{
+		_workspaceGridBackground.Fill = CreateWorkspaceGridBrush();
+	}
+
+	private void ImagePaintWindow_Closed(object? sender, EventArgs e)
+	{
+		AppTheme.ThemeChanged -= AppTheme_ThemeChanged;
 	}
 
 	private void AddPlacedImages(IReadOnlyList<PlacedImageLayout>? placedImages)
@@ -1066,6 +1091,8 @@ internal sealed class ImagePaintWindow : Window
 		_paintSurface.Height = roundedHeight;
 		_zoomContainer.Width = roundedWidth;
 		_zoomContainer.Height = roundedHeight;
+		_workspaceGridBackground.Width = roundedWidth;
+		_workspaceGridBackground.Height = roundedHeight;
 		_baseImageCanvas.Width = roundedWidth;
 		_baseImageCanvas.Height = roundedHeight;
 		_imageLayerCanvas.Width = roundedWidth;
@@ -1420,4 +1447,45 @@ internal sealed class ImagePaintWindow : Window
 		return new PaintRectangle(canvasWidth, canvasHeight, mode == PaintMode.RedOutlineRectangle, strokeThickness);
 	}
 
+	private static DrawingBrush CreateWorkspaceGridBrush()
+	{
+		const double cellSize = 64;
+		Color backgroundColor = AppTheme.IsDark
+			? Color.FromRgb(37, 39, 43)
+			: Colors.White;
+		Color lineColor = AppTheme.IsDark
+			? Color.FromRgb(67, 72, 80)
+			: Color.FromRgb(222, 226, 232);
+
+		var backgroundBrush = new SolidColorBrush(backgroundColor);
+		backgroundBrush.Freeze();
+		var lineBrush = new SolidColorBrush(lineColor);
+		lineBrush.Freeze();
+		var linePen = new Pen(lineBrush, 1);
+		linePen.Freeze();
+
+		var lineGeometry = new GeometryGroup();
+		lineGeometry.Children.Add(new LineGeometry(new Point(0.5, 0), new Point(0.5, cellSize)));
+		lineGeometry.Children.Add(new LineGeometry(new Point(0, 0.5), new Point(cellSize, 0.5)));
+
+		var tile = new DrawingGroup();
+		tile.Children.Add(new GeometryDrawing(
+			backgroundBrush,
+			null,
+			new RectangleGeometry(new Rect(0, 0, cellSize, cellSize))));
+		tile.Children.Add(new GeometryDrawing(null, linePen, lineGeometry));
+		tile.Freeze();
+
+		var brush = new DrawingBrush(tile)
+		{
+			TileMode = TileMode.Tile,
+			Viewport = new Rect(0, 0, cellSize, cellSize),
+			ViewportUnits = BrushMappingMode.Absolute,
+			Viewbox = new Rect(0, 0, cellSize, cellSize),
+			ViewboxUnits = BrushMappingMode.Absolute,
+			Stretch = Stretch.None
+		};
+		brush.Freeze();
+		return brush;
+	}
 }
