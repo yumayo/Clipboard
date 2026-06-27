@@ -20,7 +20,7 @@ internal sealed class ClipboardStoredContent
 
 internal static class ClipboardDatabase
 {
-	private const int SchemaVersion = 1;
+	private const int SchemaVersion = 2;
 	private const string ConcatenationSeparatorKey = "ConcatenationSeparator";
 	private static readonly object Sync = new();
 	private static bool _initialized;
@@ -35,6 +35,7 @@ internal static class ClipboardDatabase
 			}
 
 			Directory.CreateDirectory(ClipboardSettings.ApplicationDirectoryPath);
+			Directory.CreateDirectory(ClipboardSettings.ImageObjectDirectoryPath);
 
 			using var connection = OpenConnection();
 			using var transaction = connection.BeginTransaction();
@@ -74,6 +75,17 @@ internal static class ClipboardDatabase
 					source_last_write_time_utc_ticks INTEGER NULL
 				);
 				""");
+			ExecuteNonQuery(
+				connection,
+				transaction,
+				"""
+				CREATE TABLE IF NOT EXISTS clipboard_image_objects (
+					oid TEXT PRIMARY KEY,
+					byte_length INTEGER NOT NULL,
+					relative_path TEXT NOT NULL,
+					created_at_utc_ticks INTEGER NOT NULL
+				);
+				""");
 			ExecuteNonQuery(connection, transaction, "DROP INDEX IF EXISTS ix_clipboard_history_created_at;");
 			ExecuteNonQuery(connection, transaction, "CREATE INDEX IF NOT EXISTS ix_clipboard_history_kind ON clipboard_history (kind);");
 			ExecuteNonQuery(connection, transaction, "CREATE INDEX IF NOT EXISTS ix_clipboard_history_content_hash ON clipboard_history (content_hash);");
@@ -81,6 +93,12 @@ internal static class ClipboardDatabase
 				connection,
 				transaction,
 				"CREATE UNIQUE INDEX IF NOT EXISTS ux_clipboard_history_source_file_path ON clipboard_history (source_file_path) WHERE source_file_path IS NOT NULL;");
+
+			int currentSchemaVersion = GetSchemaVersion(connection, transaction);
+			if (currentSchemaVersion < 2)
+			{
+				MigrateImageHistoryToFilePointers(connection, transaction);
+			}
 
 			SetStateValue(connection, transaction, "schema_version", SchemaVersion.ToString());
 			transaction.Commit();
@@ -276,6 +294,7 @@ internal static class ClipboardDatabase
 		{
 			using var connection = OpenConnection();
 			using var transaction = connection.BeginTransaction();
+			HashSet<string> imageOids = LoadImageOidsForHistoryIds(connection, transaction, ids);
 			using var command = connection.CreateCommand();
 			command.Transaction = transaction;
 			var parameterNames = new List<string>(ids.Count);
@@ -290,7 +309,13 @@ internal static class ClipboardDatabase
 
 			command.CommandText = $"DELETE FROM clipboard_history WHERE id IN ({string.Join(", ", parameterNames)});";
 			command.ExecuteNonQuery();
+			List<string> unreferencedImageOids = DeleteUnreferencedImageObjects(connection, transaction, imageOids);
 			transaction.Commit();
+
+			foreach (string oid in unreferencedImageOids)
+			{
+				ClipboardImageStore.DeleteObjectFile(oid);
+			}
 		}
 	}
 
@@ -309,10 +334,24 @@ internal static class ClipboardDatabase
 				return null;
 			}
 
+			var kind = (ClipboardHistoryKind)reader.GetInt32(0);
+			byte[] content = (byte[])reader.GetValue(1);
+			byte[] resolvedContent = content;
+			if (kind == ClipboardHistoryKind.Image &&
+				!ClipboardImageStore.TryResolveImageBytes(content, out resolvedContent, out _, out string? errorMessage))
+			{
+				Logger.Warning($"ClipboardDatabase: {errorMessage} HistoryId={id}");
+				return null;
+			}
+			if (kind == ClipboardHistoryKind.Image)
+			{
+				content = resolvedContent;
+			}
+
 			return new ClipboardStoredContent
 			{
-				Kind = (ClipboardHistoryKind)reader.GetInt32(0),
-				Bytes = (byte[])reader.GetValue(1)
+				Kind = kind,
+				Bytes = content
 			};
 		}
 	}
@@ -332,6 +371,229 @@ internal static class ClipboardDatabase
 	{
 		SetStateValue(connection, transaction, key, "1");
 		SetStateValue(connection, transaction, $"{key}_completed_at_utc", DateTime.UtcNow.ToString("O"));
+	}
+
+	private static int GetSchemaVersion(SqliteConnection connection, SqliteTransaction transaction)
+	{
+		using var command = connection.CreateCommand();
+		command.Transaction = transaction;
+		command.CommandText = "SELECT value FROM migration_state WHERE key = 'schema_version';";
+		return int.TryParse(command.ExecuteScalar() as string, out int version) ? version : 0;
+	}
+
+	private static void MigrateImageHistoryToFilePointers(SqliteConnection connection, SqliteTransaction transaction)
+	{
+		var updates = new List<(long Id, ClipboardImagePointer Pointer, byte[] PointerBytes)>();
+		var imageObjects = new Dictionary<string, ClipboardImagePointer>(StringComparer.Ordinal);
+		using (var command = connection.CreateCommand())
+		{
+			command.Transaction = transaction;
+			command.CommandText =
+				"""
+				SELECT id, content_hash, content
+				FROM clipboard_history
+				WHERE kind = $kind
+				ORDER BY id;
+				""";
+			AddParameter(command, "$kind", (int)ClipboardHistoryKind.Image);
+
+			using var reader = command.ExecuteReader();
+			while (reader.Read())
+			{
+				long id = reader.GetInt64(0);
+				string contentHash = reader.GetString(1);
+				byte[] content = (byte[])reader.GetValue(2);
+
+				if (ClipboardImagePointer.TryParse(content, out ClipboardImagePointer? existingPointer) &&
+					existingPointer != null)
+				{
+					imageObjects[existingPointer.Oid] = existingPointer;
+					if (!string.Equals(contentHash, existingPointer.Oid, StringComparison.Ordinal))
+					{
+						updates.Add((id, existingPointer, existingPointer.ToBytes()));
+					}
+					continue;
+				}
+
+				ClipboardImagePointer pointer = ClipboardImageStore.StoreImage(content);
+				imageObjects[pointer.Oid] = pointer;
+				updates.Add((id, pointer, pointer.ToBytes()));
+			}
+		}
+
+		foreach (ClipboardImagePointer pointer in imageObjects.Values)
+		{
+			UpsertImageObject(connection, transaction, pointer);
+		}
+
+		foreach ((long id, ClipboardImagePointer pointer, byte[] pointerBytes) in updates)
+		{
+			UpdateHistoryImagePointer(connection, transaction, id, pointer, pointerBytes);
+		}
+
+		if (updates.Count > 0)
+		{
+			Logger.Info($"ClipboardDatabase: 画像履歴をファイルポインタへ移行しました。Count={updates.Count}");
+		}
+	}
+
+	private static void UpdateHistoryImagePointer(
+		SqliteConnection connection,
+		SqliteTransaction transaction,
+		long id,
+		ClipboardImagePointer pointer,
+		byte[] pointerBytes)
+	{
+		using var command = connection.CreateCommand();
+		command.Transaction = transaction;
+		command.CommandText =
+			"""
+			UPDATE clipboard_history
+			SET content_hash = $content_hash,
+				content = $content
+			WHERE id = $id;
+			""";
+		AddParameter(command, "$content_hash", pointer.Oid);
+		AddParameter(command, "$content", pointerBytes);
+		AddParameter(command, "$id", id);
+		command.ExecuteNonQuery();
+	}
+
+	private static void UpsertImageObject(
+		SqliteConnection connection,
+		SqliteTransaction transaction,
+		ClipboardImagePointer pointer)
+	{
+		using var command = connection.CreateCommand();
+		command.Transaction = transaction;
+		command.CommandText =
+			"""
+			INSERT INTO clipboard_image_objects (
+				oid,
+				byte_length,
+				relative_path,
+				created_at_utc_ticks
+			)
+			VALUES (
+				$oid,
+				$byte_length,
+				$relative_path,
+				$created_at_utc_ticks
+			)
+			ON CONFLICT(oid) DO UPDATE SET
+				byte_length = excluded.byte_length,
+				relative_path = excluded.relative_path;
+			""";
+		AddParameter(command, "$oid", pointer.Oid);
+		AddParameter(command, "$byte_length", pointer.Size);
+		AddParameter(command, "$relative_path", ClipboardImageStore.GetObjectRelativePath(pointer.Oid));
+		AddParameter(command, "$created_at_utc_ticks", DateTime.UtcNow.Ticks);
+		command.ExecuteNonQuery();
+	}
+
+	private static HashSet<string> LoadImageOidsForHistoryIds(
+		SqliteConnection connection,
+		SqliteTransaction transaction,
+		IReadOnlyCollection<long> ids)
+	{
+		var oids = new HashSet<string>(StringComparer.Ordinal);
+		if (ids.Count == 0)
+		{
+			return oids;
+		}
+
+		using var command = connection.CreateCommand();
+		command.Transaction = transaction;
+		var parameterNames = new List<string>(ids.Count);
+		int index = 0;
+		foreach (long id in ids)
+		{
+			string parameterName = $"$id{index}";
+			parameterNames.Add(parameterName);
+			AddParameter(command, parameterName, id);
+			index++;
+		}
+
+		command.CommandText =
+			$"""
+			SELECT content_hash, content
+			FROM clipboard_history
+			WHERE kind = $kind AND id IN ({string.Join(", ", parameterNames)});
+			""";
+		AddParameter(command, "$kind", (int)ClipboardHistoryKind.Image);
+
+		using var reader = command.ExecuteReader();
+		while (reader.Read())
+		{
+			string contentHash = reader.GetString(0);
+			byte[] content = (byte[])reader.GetValue(1);
+			if (ClipboardImagePointer.TryParse(content, out ClipboardImagePointer? pointer) &&
+				pointer != null)
+			{
+				oids.Add(pointer.Oid);
+			}
+			else if (ClipboardContentHash.TryNormalizeSha256(contentHash, out string oid))
+			{
+				oids.Add(oid);
+			}
+			else
+			{
+				oids.Add(ClipboardContentHash.CalculateSha256(content));
+			}
+		}
+
+		return oids;
+	}
+
+	private static List<string> DeleteUnreferencedImageObjects(
+		SqliteConnection connection,
+		SqliteTransaction transaction,
+		HashSet<string> imageOids)
+	{
+		var unreferencedImageOids = new List<string>();
+		foreach (string oid in imageOids)
+		{
+			if (ImageObjectHasReference(connection, transaction, oid))
+			{
+				continue;
+			}
+
+			DeleteImageObjectMetadata(connection, transaction, oid);
+			unreferencedImageOids.Add(oid);
+		}
+
+		return unreferencedImageOids;
+	}
+
+	private static bool ImageObjectHasReference(
+		SqliteConnection connection,
+		SqliteTransaction transaction,
+		string oid)
+	{
+		using var command = connection.CreateCommand();
+		command.Transaction = transaction;
+		command.CommandText =
+			"""
+			SELECT 1
+			FROM clipboard_history
+			WHERE kind = $kind AND content_hash = $oid
+			LIMIT 1;
+			""";
+		AddParameter(command, "$kind", (int)ClipboardHistoryKind.Image);
+		AddParameter(command, "$oid", oid);
+		return command.ExecuteScalar() != null;
+	}
+
+	private static void DeleteImageObjectMetadata(
+		SqliteConnection connection,
+		SqliteTransaction transaction,
+		string oid)
+	{
+		using var command = connection.CreateCommand();
+		command.Transaction = transaction;
+		command.CommandText = "DELETE FROM clipboard_image_objects WHERE oid = $oid;";
+		AddParameter(command, "$oid", oid);
+		command.ExecuteNonQuery();
 	}
 
 	private static SqliteConnection OpenConnection()
@@ -363,6 +625,16 @@ internal static class ClipboardDatabase
 		long? sourceLastWriteTimeUtcTicks = sourceLastWriteTime.HasValue
 			? sourceLastWriteTime.Value.ToUniversalTime().Ticks
 			: null;
+		byte[] storedContent = content;
+		string storedContentHash = contentHash;
+		if (kind == ClipboardHistoryKind.Image)
+		{
+			ClipboardImagePointer pointer = ClipboardImageStore.StoreImage(content);
+			UpsertImageObject(connection, transaction, pointer);
+			storedContent = pointer.ToBytes();
+			storedContentHash = pointer.Oid;
+		}
+
 		command.CommandText =
 			"""
 			INSERT OR IGNORE INTO clipboard_history (
@@ -393,8 +665,8 @@ internal static class ClipboardDatabase
 		AddParameter(command, "$kind", (int)kind);
 		AddParameter(command, "$extension", ClipboardHistoryMetadata.GetExtension(kind));
 		AddParameter(command, "$created_at_utc_ticks", createdAt.ToUniversalTime().Ticks);
-		AddParameter(command, "$content_hash", contentHash);
-		AddParameter(command, "$content", content);
+		AddParameter(command, "$content_hash", storedContentHash);
+		AddParameter(command, "$content", storedContent);
 		AddParameter(command, "$preview_text", metadata.PreviewText);
 		AddParameter(command, "$search_text", metadata.SearchText);
 		AddParameter(command, "$thumbnail", metadata.ThumbnailBytes);

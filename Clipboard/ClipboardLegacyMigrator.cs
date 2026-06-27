@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.IO;
-using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
@@ -212,7 +211,7 @@ internal static class ClipboardLegacyMigrator
 		}
 
 		byte[] content = ReadAllBytesShared(file.FullName);
-		string contentHash = CalculateHash(content);
+		string contentHash = ClipboardContentHash.CalculateSha256(content);
 		ClipboardDatabase.InsertLegacyHistoryIfMissing(
 			connection,
 			transaction,
@@ -231,12 +230,5 @@ internal static class ClipboardLegacyMigrator
 		using var memoryStream = new MemoryStream();
 		stream.CopyTo(memoryStream);
 		return memoryStream.ToArray();
-	}
-
-	private static string CalculateHash(byte[] bytes)
-	{
-		using var sha256 = SHA256.Create();
-		byte[] hash = sha256.ComputeHash(bytes);
-		return BitConverter.ToString(hash);
 	}
 }

@@ -35,6 +35,8 @@ public static class ClipboardSettings
 
 	public static string DatabaseFilePath => Path.Combine(ApplicationDirectoryPath, "clipboard.db");
 
+	public static string ImageObjectDirectoryPath => Path.Combine(ApplicationDirectoryPath, "image-objects");
+
 	public static string ConcatenationSeparator
 	{
 		get

@@ -381,7 +381,7 @@ public static class ClipboardManager
 			}
 
 			var (bytes, kind) = GetClipboardContentAsBytes();
-			string currentContent = CalculateHash(bytes);
+			string currentContent = ClipboardContentHash.CalculateSha256(bytes);
 			if (currentContent == _lastSavedContent)
 			{
 				Logger.Debug("ClipboardManager: 前回保存した内容と同じのため、保存をスキップします。");
@@ -399,13 +399,6 @@ public static class ClipboardManager
 		{
 			Logger.Error(ex, "ClipboardManager: クリップボードの保存中にエラーが発生しました。");
 		}
-	}
-
-	private static string CalculateHash(byte[] bytes)
-	{
-		using var sha256 = System.Security.Cryptography.SHA256.Create();
-		byte[] hash = sha256.ComputeHash(bytes);
-		return BitConverter.ToString(hash);
 	}
 
 	private static ClipboardDataType GetClipboardDataType()
