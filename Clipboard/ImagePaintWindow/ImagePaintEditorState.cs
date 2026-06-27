@@ -22,8 +22,6 @@ internal sealed class ImagePaintEditorState
 	internal bool IsMultiImageMode { get; set; }
 
 	internal bool HasPaintChanges { get; set; }
-
-	internal bool HasCopiedToClipboardBeforeClose { get; set; }
 }
 
 internal sealed class ImagePaintWorkspaceState

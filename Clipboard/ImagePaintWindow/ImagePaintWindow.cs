@@ -747,7 +747,6 @@ internal sealed class ImagePaintWindow : Window
 		try
 		{
 			CopyPaintedImageToClipboard(requireChanges: false);
-			_state.HasCopiedToClipboardBeforeClose = true;
 			Close();
 		}
 		catch (Exception ex)
@@ -925,7 +924,7 @@ internal sealed class ImagePaintWindow : Window
 		_state.HasPaintChanges = true;
 	}
 
-	// 画像の移動やリサイズも編集とみなし、閉じる際にクリップボードへ保存されるようにする。
+	// 画像の移動やリサイズも編集状態として扱う。
 	private void MarkImagePlacementChanged()
 	{
 		_state.HasPaintChanges = true;
@@ -1190,21 +1189,6 @@ internal sealed class ImagePaintWindow : Window
 		if (_state.MiddleButtonPan.IsPanning)
 		{
 			EndMiddleButtonPan(releaseCapture: true);
-		}
-
-		if (!_state.HasCopiedToClipboardBeforeClose)
-		{
-			try
-			{
-				_state.HasCopiedToClipboardBeforeClose = CopyPaintedImageToClipboard(requireChanges: true);
-			}
-			catch (Exception ex)
-			{
-				Logger.Error(ex, "ImagePaintWindow: ウィンドウを閉じる前に編集画像をクリップボードにコピーできませんでした。");
-				MessageBox.Show(this, "編集画像をクリップボードにコピーできませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
-				e.Cancel = true;
-				return;
-			}
 		}
 
 		base.OnClosing(e);
