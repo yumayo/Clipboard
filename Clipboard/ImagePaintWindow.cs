@@ -515,6 +515,59 @@ internal sealed class ImagePaintWindow : Window
 		}
 	}
 
+	private void EnsureWorkspaceForZoom(
+		ref double horizontalOffset,
+		ref double verticalOffset,
+		double zoom,
+		double viewportWidth,
+		double viewportHeight)
+	{
+		if (!double.IsFinite(zoom) || zoom <= 0 ||
+			!double.IsFinite(horizontalOffset) ||
+			!double.IsFinite(verticalOffset) ||
+			viewportWidth <= 0 ||
+			viewportHeight <= 0)
+		{
+			return;
+		}
+
+		double expandLeft = CalculateWorkspaceExpansion(Math.Max(0, -horizontalOffset) / zoom);
+		double expandTop = CalculateWorkspaceExpansion(Math.Max(0, -verticalOffset) / zoom);
+		if (expandLeft > 0 || expandTop > 0)
+		{
+			SetCanvasSize(_canvasWidth + expandLeft, _canvasHeight + expandTop);
+			ShiftCanvasContent(expandLeft, expandTop);
+			horizontalOffset += expandLeft * zoom;
+			verticalOffset += expandTop * zoom;
+		}
+
+		EnsureWorkspaceAllowsScrollOffset(horizontalOffset, verticalOffset, zoom, viewportWidth, viewportHeight);
+	}
+
+	private void EnsureWorkspaceAllowsScrollOffset(
+		double horizontalOffset,
+		double verticalOffset,
+		double zoom,
+		double viewportWidth,
+		double viewportHeight)
+	{
+		if (!double.IsFinite(zoom) || zoom <= 0 ||
+			!double.IsFinite(horizontalOffset) ||
+			!double.IsFinite(verticalOffset) ||
+			viewportWidth <= 0 ||
+			viewportHeight <= 0)
+		{
+			return;
+		}
+
+		double expandRight = CalculateWorkspaceExpansion(Math.Max(0, horizontalOffset + viewportWidth - _canvasWidth * zoom) / zoom);
+		double expandBottom = CalculateWorkspaceExpansion(Math.Max(0, verticalOffset + viewportHeight - _canvasHeight * zoom) / zoom);
+		if (expandRight > 0 || expandBottom > 0)
+		{
+			SetCanvasSize(_canvasWidth + expandRight, _canvasHeight + expandBottom);
+		}
+	}
+
 	private double GetScrollViewerViewportWidth()
 	{
 		return GetPositiveFiniteValue(_scrollViewer.ViewportWidth, _scrollViewer.ActualWidth);
@@ -557,11 +610,19 @@ internal sealed class ImagePaintWindow : Window
 
 		Point imagePoint = e.GetPosition(_paintSurface);
 		Point viewerPoint = e.GetPosition(scrollViewer);
+		double horizontalOffset = imagePoint.X * nextZoom - viewerPoint.X;
+		double verticalOffset = imagePoint.Y * nextZoom - viewerPoint.Y;
+		EnsureWorkspaceForZoom(
+			ref horizontalOffset,
+			ref verticalOffset,
+			nextZoom,
+			GetScrollViewerViewportWidth(),
+			GetScrollViewerViewportHeight());
 		SetZoom(nextZoom);
 		scrollViewer.UpdateLayout();
 
-		scrollViewer.ScrollToHorizontalOffset(Math.Max(0, imagePoint.X * nextZoom - viewerPoint.X));
-		scrollViewer.ScrollToVerticalOffset(Math.Max(0, imagePoint.Y * nextZoom - viewerPoint.Y));
+		scrollViewer.ScrollToHorizontalOffset(ClampScrollOffset(horizontalOffset, scrollViewer.ScrollableWidth));
+		scrollViewer.ScrollToVerticalOffset(ClampScrollOffset(verticalOffset, scrollViewer.ScrollableHeight));
 	}
 
 	private void SetZoom(double zoom)
@@ -573,11 +634,19 @@ internal sealed class ImagePaintWindow : Window
 	private void ScrollToInitialWorkspacePosition()
 	{
 		_scrollViewer.UpdateLayout();
-		// 横方向がまだスクロール不能な場合、非ゼロの希望位置をWPFに覚えさせない。
-		_scrollViewer.ScrollToHorizontalOffset(
-			ClampScrollOffset(WorkspaceInitialMargin * _zoomTransform.ScaleX, _scrollViewer.ScrollableWidth));
-		_scrollViewer.ScrollToVerticalOffset(
-			ClampScrollOffset(WorkspaceInitialMargin * _zoomTransform.ScaleY, _scrollViewer.ScrollableHeight));
+		double zoom = _zoomTransform.ScaleX;
+		double horizontalOffset = WorkspaceInitialMargin * zoom;
+		double verticalOffset = WorkspaceInitialMargin * zoom;
+		EnsureWorkspaceAllowsScrollOffset(
+			horizontalOffset,
+			verticalOffset,
+			zoom,
+			GetScrollViewerViewportWidth(),
+			GetScrollViewerViewportHeight());
+		_scrollViewer.UpdateLayout();
+
+		_scrollViewer.ScrollToHorizontalOffset(ClampScrollOffset(horizontalOffset, _scrollViewer.ScrollableWidth));
+		_scrollViewer.ScrollToVerticalOffset(ClampScrollOffset(verticalOffset, _scrollViewer.ScrollableHeight));
 	}
 
 	private static double ClampScrollOffset(double offset, double scrollableLength)
@@ -868,11 +937,14 @@ internal sealed class ImagePaintWindow : Window
 	{
 		if (sender is PlacedImage placedImage)
 		{
-			EnsureCanvasContains(placedImage.Bounds);
+			PreserveScrollOffsetIfChanged(() => EnsureCanvasContains(placedImage.Bounds));
 		}
 
 		MarkImagePlacementChanged();
-		TrimWorkspaceToContentIfIdle();
+		if (sender is not PlacedImage { IsEditing: true })
+		{
+			PreserveScrollOffset(TrimWorkspaceToContentIfIdle);
+		}
 	}
 
 	private void EnsureCanvasContainsElement(UIElement element)
@@ -883,21 +955,22 @@ internal sealed class ImagePaintWindow : Window
 		}
 	}
 
-	private void EnsureCanvasContains(Rect bounds)
+	private bool EnsureCanvasContains(Rect bounds)
 	{
 		if (!IsUsableBounds(bounds))
 		{
-			return;
+			return false;
 		}
 
 		double expandRight = CalculateWorkspaceExpansion(Math.Max(0, bounds.Right - _canvasWidth));
 		double expandBottom = CalculateWorkspaceExpansion(Math.Max(0, bounds.Bottom - _canvasHeight));
 		if (expandRight <= 0 && expandBottom <= 0)
 		{
-			return;
+			return false;
 		}
 
 		SetCanvasSize(_canvasWidth + expandRight, _canvasHeight + expandBottom);
+		return true;
 	}
 
 	private static double CalculateWorkspaceExpansion(double overflow)
@@ -917,6 +990,31 @@ internal sealed class ImagePaintWindow : Window
 			double.IsFinite(bounds.Top) &&
 			double.IsFinite(bounds.Right) &&
 			double.IsFinite(bounds.Bottom);
+	}
+
+	private void PreserveScrollOffset(Action action)
+	{
+		double horizontalOffset = _scrollViewer.HorizontalOffset;
+		double verticalOffset = _scrollViewer.VerticalOffset;
+		action();
+		_scrollViewer.UpdateLayout();
+		_scrollViewer.ScrollToHorizontalOffset(ClampScrollOffset(horizontalOffset, _scrollViewer.ScrollableWidth));
+		_scrollViewer.ScrollToVerticalOffset(ClampScrollOffset(verticalOffset, _scrollViewer.ScrollableHeight));
+	}
+
+	private bool PreserveScrollOffsetIfChanged(Func<bool> action)
+	{
+		double horizontalOffset = _scrollViewer.HorizontalOffset;
+		double verticalOffset = _scrollViewer.VerticalOffset;
+		bool changedLayout = action();
+		if (changedLayout)
+		{
+			_scrollViewer.UpdateLayout();
+			_scrollViewer.ScrollToHorizontalOffset(ClampScrollOffset(horizontalOffset, _scrollViewer.ScrollableWidth));
+			_scrollViewer.ScrollToVerticalOffset(ClampScrollOffset(verticalOffset, _scrollViewer.ScrollableHeight));
+		}
+
+		return changedLayout;
 	}
 
 	private void ShiftCanvasContent(double offsetX, double offsetY)
@@ -3025,6 +3123,8 @@ internal sealed class ImagePaintWindow : Window
 		public event EventHandler? Changed;
 
 		public Rect Bounds => _bounds;
+
+		public bool IsEditing => _isMoving || _isResizing;
 
 		// レンダリング時に選択枠やリサイズハンドルを画像へ焼き込まないよう、編集用の装飾を一時的に隠す。
 		public void SetEditingChromeVisible(bool visible)
