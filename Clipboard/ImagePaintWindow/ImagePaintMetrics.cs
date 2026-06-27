@@ -31,6 +31,7 @@ internal static class ImagePaintMetrics
 	internal const double MultiImageOuterMargin = 24;
 	internal const double MultiImageMinPlacedSize = 16;
 	internal const double PlacedImageResizeHandleSize = 18;
+	internal const double WorkspaceGridCellSize = 64;
 	internal const double WorkspaceInitialMargin = 1024;
 	internal const double WorkspaceExpansionChunk = 1024;
 	internal const double RenderBoundsPadding = 2;

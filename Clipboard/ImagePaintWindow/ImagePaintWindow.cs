@@ -1409,7 +1409,6 @@ internal sealed class ImagePaintWindow : Window
 
 	private static DrawingBrush CreateWorkspaceGridBrush()
 	{
-		const double cellSize = 64;
 		Color backgroundColor = AppTheme.IsDark
 			? Color.FromRgb(37, 39, 43)
 			: Colors.White;
@@ -1425,23 +1424,23 @@ internal sealed class ImagePaintWindow : Window
 		linePen.Freeze();
 
 		var lineGeometry = new GeometryGroup();
-		lineGeometry.Children.Add(new LineGeometry(new Point(0.5, 0), new Point(0.5, cellSize)));
-		lineGeometry.Children.Add(new LineGeometry(new Point(0, 0.5), new Point(cellSize, 0.5)));
+		lineGeometry.Children.Add(new LineGeometry(new Point(0.5, 0), new Point(0.5, WorkspaceGridCellSize)));
+		lineGeometry.Children.Add(new LineGeometry(new Point(0, 0.5), new Point(WorkspaceGridCellSize, 0.5)));
 
 		var tile = new DrawingGroup();
 		tile.Children.Add(new GeometryDrawing(
 			backgroundBrush,
 			null,
-			new RectangleGeometry(new Rect(0, 0, cellSize, cellSize))));
+			new RectangleGeometry(new Rect(0, 0, WorkspaceGridCellSize, WorkspaceGridCellSize))));
 		tile.Children.Add(new GeometryDrawing(null, linePen, lineGeometry));
 		tile.Freeze();
 
 		var brush = new DrawingBrush(tile)
 		{
 			TileMode = TileMode.Tile,
-			Viewport = new Rect(0, 0, cellSize, cellSize),
+			Viewport = new Rect(0, 0, WorkspaceGridCellSize, WorkspaceGridCellSize),
 			ViewportUnits = BrushMappingMode.Absolute,
-			Viewbox = new Rect(0, 0, cellSize, cellSize),
+			Viewbox = new Rect(0, 0, WorkspaceGridCellSize, WorkspaceGridCellSize),
 			ViewboxUnits = BrushMappingMode.Absolute,
 			Stretch = Stretch.None
 		};

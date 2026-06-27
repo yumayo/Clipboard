@@ -150,6 +150,25 @@ internal sealed class PlacedImage : Canvas
 
 	private void MoveImage(Vector offset)
 	{
+		if (_moveDragStartBounds.IsEmpty)
+		{
+			return;
+		}
+
+		if (IsNearZero(offset))
+		{
+			SetBounds(_moveDragStartBounds);
+			return;
+		}
+
+		if (IsWorkspaceGridSnapEnabled())
+		{
+			double left = SnapToWorkspaceGrid(_moveDragStartBounds.Left + offset.X);
+			double top = SnapToWorkspaceGrid(_moveDragStartBounds.Top + offset.Y);
+			SetBounds(new Rect(left, top, _moveDragStartBounds.Width, _moveDragStartBounds.Height));
+			return;
+		}
+
 		Rect movedBounds = _moveDragStartBounds;
 		movedBounds.Offset(offset.X, offset.Y);
 		SetBounds(movedBounds);
@@ -251,10 +270,24 @@ internal sealed class PlacedImage : Canvas
 			return;
 		}
 
-		SetBounds(CalculateAspectPreservingResizeBounds(_resizeDragStartBounds, _activeResizeHandle, offset));
+		if (IsNearZero(offset))
+		{
+			SetBounds(_resizeDragStartBounds);
+			return;
+		}
+
+		SetBounds(CalculateAspectPreservingResizeBounds(
+			_resizeDragStartBounds,
+			_activeResizeHandle,
+			offset,
+			IsWorkspaceGridSnapEnabled()));
 	}
 
-	private static Rect CalculateAspectPreservingResizeBounds(Rect startBounds, ResizeHandleKind resizeHandleKind, Vector offset)
+	private static Rect CalculateAspectPreservingResizeBounds(
+		Rect startBounds,
+		ResizeHandleKind resizeHandleKind,
+		Vector offset,
+		bool snapToWorkspaceGrid)
 	{
 		double startWidth = startBounds.Width;
 		double startHeight = startBounds.Height;
@@ -282,6 +315,11 @@ internal sealed class PlacedImage : Canvas
 		}
 
 		scale = Math.Max(scale, minScale);
+		if (snapToWorkspaceGrid)
+		{
+			scale = SnapResizeScaleToWorkspaceGrid(anchorPoint, startVector, scale, minScale);
+		}
+
 		var scaledVector = new Vector(startVector.X * scale, startVector.Y * scale);
 		Point movingPoint = anchorPoint + scaledVector;
 		double left = Math.Min(anchorPoint.X, movingPoint.X);
@@ -289,6 +327,67 @@ internal sealed class PlacedImage : Canvas
 		double width = Math.Abs(movingPoint.X - anchorPoint.X);
 		double height = Math.Abs(movingPoint.Y - anchorPoint.Y);
 		return new Rect(left, top, width, height);
+	}
+
+	private static double SnapResizeScaleToWorkspaceGrid(
+		Point anchorPoint,
+		Vector startVector,
+		double scale,
+		double minScale)
+	{
+		Point targetMovingPoint = anchorPoint + startVector * scale;
+		double bestScale = scale;
+		double bestDistanceSquared = double.PositiveInfinity;
+
+		UseSnappedScaleCandidate(anchorPoint.X, startVector.X);
+		UseSnappedScaleCandidate(anchorPoint.Y, startVector.Y);
+		return bestScale;
+
+		void UseSnappedScaleCandidate(double anchorCoordinate, double vectorCoordinate)
+		{
+			if (Math.Abs(vectorCoordinate) < 0.001)
+			{
+				return;
+			}
+
+			double targetCoordinate = anchorCoordinate + vectorCoordinate * scale;
+			double snappedCoordinate = SnapToWorkspaceGrid(targetCoordinate);
+			double candidateScale = (snappedCoordinate - anchorCoordinate) / vectorCoordinate;
+			if (!double.IsFinite(candidateScale))
+			{
+				return;
+			}
+
+			candidateScale = Math.Max(candidateScale, minScale);
+			Point candidateMovingPoint = anchorPoint + startVector * candidateScale;
+			Vector distance = candidateMovingPoint - targetMovingPoint;
+			double distanceSquared = distance.X * distance.X + distance.Y * distance.Y;
+			if (distanceSquared < bestDistanceSquared)
+			{
+				bestDistanceSquared = distanceSquared;
+				bestScale = candidateScale;
+			}
+		}
+	}
+
+	private static double SnapToWorkspaceGrid(double value)
+	{
+		if (!double.IsFinite(value))
+		{
+			return value;
+		}
+
+		return Math.Round(value / WorkspaceGridCellSize, MidpointRounding.AwayFromZero) * WorkspaceGridCellSize;
+	}
+
+	private static bool IsNearZero(Vector vector)
+	{
+		return Math.Abs(vector.X) < 0.001 && Math.Abs(vector.Y) < 0.001;
+	}
+
+	private static bool IsWorkspaceGridSnapEnabled()
+	{
+		return (Keyboard.Modifiers & ModifierKeys.Alt) == ModifierKeys.Alt;
 	}
 
 	private static Point GetResizeAnchorPoint(Rect bounds, ResizeHandleKind resizeHandleKind)
