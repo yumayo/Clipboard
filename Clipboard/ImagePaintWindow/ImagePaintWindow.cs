@@ -633,18 +633,41 @@ internal sealed class ImagePaintWindow : Window
 	{
 		_scrollViewer.UpdateLayout();
 		double zoom = _zoomTransform.ScaleX;
-		double horizontalOffset = WorkspaceInitialMargin * zoom;
-		double verticalOffset = WorkspaceInitialMargin * zoom;
-		EnsureWorkspaceAllowsScrollOffset(
-			horizontalOffset,
-			verticalOffset,
+		double viewportWidth = GetScrollViewerViewportWidth();
+		double viewportHeight = GetScrollViewerViewportHeight();
+		Rect contentBounds = _renderer.CalculateRenderBounds();
+		double horizontalOffset = CalculateCenteredScrollOffset(contentBounds.Left, contentBounds.Width, zoom, viewportWidth);
+		double verticalOffset = CalculateCenteredScrollOffset(contentBounds.Top, contentBounds.Height, zoom, viewportHeight);
+		EnsureWorkspaceForZoom(
+			ref horizontalOffset,
+			ref verticalOffset,
 			zoom,
-			GetScrollViewerViewportWidth(),
-			GetScrollViewerViewportHeight());
+			viewportWidth,
+			viewportHeight);
 		_scrollViewer.UpdateLayout();
 
 		_scrollViewer.ScrollToHorizontalOffset(ClampScrollOffset(horizontalOffset, _scrollViewer.ScrollableWidth));
 		_scrollViewer.ScrollToVerticalOffset(ClampScrollOffset(verticalOffset, _scrollViewer.ScrollableHeight));
+	}
+
+	private static double CalculateCenteredScrollOffset(
+		double contentStart,
+		double contentLength,
+		double zoom,
+		double viewportLength)
+	{
+		if (!double.IsFinite(contentStart) ||
+			!double.IsFinite(contentLength) ||
+			!double.IsFinite(zoom) ||
+			!double.IsFinite(viewportLength) ||
+			contentLength <= 0 ||
+			zoom <= 0 ||
+			viewportLength <= 0)
+		{
+			return 0;
+		}
+
+		return (contentStart + contentLength / 2) * zoom - viewportLength / 2;
 	}
 
 	private static double ClampScrollOffset(double offset, double scrollableLength)
