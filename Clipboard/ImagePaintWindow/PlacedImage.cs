@@ -13,7 +13,7 @@ namespace Clipboard;
 internal sealed class PlacedImage : Canvas
 {
 	private readonly Image _image;
-	private readonly Border _selectionBorder;
+	private readonly Border _outlineBorder;
 	private readonly Dictionary<ResizeHandleKind, Rectangle> _resizeHandles = new();
 	private Rect _bounds = Rect.Empty;
 	private Point _moveDragStartPoint;
@@ -42,16 +42,16 @@ internal sealed class PlacedImage : Canvas
 		_image.MouseMove += Image_MouseMove;
 		_image.MouseLeftButtonUp += Image_MouseLeftButtonUp;
 
-		_selectionBorder = new Border
+		_outlineBorder = new Border
 		{
-			BorderBrush = ArrowBrush,
+			BorderBrush = Brushes.Gray,
 			BorderThickness = new Thickness(1),
 			Background = Brushes.Transparent,
 			IsHitTestVisible = false
 		};
 
 		Children.Add(_image);
-		Children.Add(_selectionBorder);
+		Children.Add(_outlineBorder);
 		foreach (ResizeHandleKind resizeHandleKind in Enum.GetValues<ResizeHandleKind>())
 		{
 			Rectangle resizeHandle = CreateResizeHandle(resizeHandleKind);
@@ -68,11 +68,11 @@ internal sealed class PlacedImage : Canvas
 
 	public bool IsEditing => _isMoving || _isResizing;
 
-	// レンダリング時に選択枠やリサイズハンドルを画像へ焼き込まないよう、編集用の装飾を一時的に隠す。
+	// レンダリング時に輪郭やリサイズ用ヒット領域を画像へ焼き込まないよう、一時的に隠す。
 	public void SetEditingChromeVisible(bool visible)
 	{
 		Visibility chromeVisibility = visible ? Visibility.Visible : Visibility.Collapsed;
-		_selectionBorder.Visibility = chromeVisibility;
+		_outlineBorder.Visibility = chromeVisibility;
 		foreach (Rectangle resizeHandle in _resizeHandles.Values)
 		{
 			resizeHandle.Visibility = chromeVisibility;
@@ -103,10 +103,10 @@ internal sealed class PlacedImage : Canvas
 		_image.Width = bounds.Width;
 		_image.Height = bounds.Height;
 
-		Canvas.SetLeft(_selectionBorder, bounds.Left);
-		Canvas.SetTop(_selectionBorder, bounds.Top);
-		_selectionBorder.Width = bounds.Width;
-		_selectionBorder.Height = bounds.Height;
+		Canvas.SetLeft(_outlineBorder, bounds.Left);
+		Canvas.SetTop(_outlineBorder, bounds.Top);
+		_outlineBorder.Width = bounds.Width;
+		_outlineBorder.Height = bounds.Height;
 
 		PositionResizeHandles(bounds);
 		if (notifyChanged)
@@ -161,8 +161,10 @@ internal sealed class PlacedImage : Canvas
 		{
 			Width = PlacedImageResizeHandleSize,
 			Height = PlacedImageResizeHandleSize,
+			RadiusX = PlacedImageResizeHandleSize / 2,
+			RadiusY = PlacedImageResizeHandleSize / 2,
 			Fill = Brushes.White,
-			Stroke = ArrowBrush,
+			Stroke = Brushes.Gray,
 			StrokeThickness = 1.5,
 			Cursor = GetResizeHandleCursor(resizeHandleKind),
 			Tag = resizeHandleKind
