@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -24,7 +25,7 @@ internal sealed class ClipboardImagePointer
 		return $"{VersionLine}\n{OidLinePrefix}{Oid}\n{SizeLinePrefix}{Size}\n";
 	}
 
-	public static bool TryParse(byte[] bytes, out ClipboardImagePointer? pointer)
+	public static bool TryParse(byte[] bytes, [NotNullWhen(true)] out ClipboardImagePointer? pointer)
 	{
 		pointer = null;
 		if (bytes.Length == 0 || bytes.Length > MaxPointerByteLength)
