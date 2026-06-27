@@ -13,7 +13,6 @@ internal sealed class ImagePaintRenderer
 {
 	private readonly BitmapSource _sourceImage;
 	private readonly Grid _paintSurface;
-	private readonly Image _sourceImageControl;
 	private readonly Canvas _imageLayerCanvas;
 	private readonly Canvas _overlayCanvas;
 	private readonly ImagePaintEditorState _state;
@@ -24,7 +23,6 @@ internal sealed class ImagePaintRenderer
 	internal ImagePaintRenderer(
 		BitmapSource sourceImage,
 		Grid paintSurface,
-		Image sourceImageControl,
 		Canvas imageLayerCanvas,
 		Canvas overlayCanvas,
 		ImagePaintEditorState state,
@@ -34,7 +32,6 @@ internal sealed class ImagePaintRenderer
 	{
 		_sourceImage = sourceImage;
 		_paintSurface = paintSurface;
-		_sourceImageControl = sourceImageControl;
 		_imageLayerCanvas = imageLayerCanvas;
 		_overlayCanvas = overlayCanvas;
 		_state = state;
@@ -77,11 +74,6 @@ internal sealed class ImagePaintRenderer
 	internal Rect CalculateRenderBounds()
 	{
 		Rect bounds = Rect.Empty;
-		if (!_state.IsMultiImageMode)
-		{
-			UnionBounds(ref bounds, GetSourceImageBounds());
-		}
-
 		foreach (PlacedImage placedImage in _imageLayerCanvas.Children.OfType<PlacedImage>())
 		{
 			UnionBounds(ref bounds, placedImage.Bounds);
@@ -128,11 +120,6 @@ internal sealed class ImagePaintRenderer
 		}
 
 		bitmap.Render(drawingVisual);
-	}
-
-	private Rect GetSourceImageBounds()
-	{
-		return GetCanvasChildBounds(_sourceImageControl, _sourceImageControl.Width, _sourceImageControl.Height);
 	}
 
 	private void SetPlacedImagesEditingChromeVisible(bool visible)

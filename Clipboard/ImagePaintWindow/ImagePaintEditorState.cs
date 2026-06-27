@@ -19,8 +19,6 @@ internal sealed class ImagePaintEditorState
 
 	internal Dictionary<PaintRectangle, TextBlock> OutlineNumberLabels { get; } = new();
 
-	internal bool IsMultiImageMode { get; set; }
-
 	internal bool HasPaintChanges { get; set; }
 }
 

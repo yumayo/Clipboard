@@ -24,14 +24,12 @@ internal sealed class ImagePaintWindow : Window
 	private Grid _zoomContainer = null!;
 	private Rectangle _workspaceGridBackground = null!;
 	private Grid _paintSurface = null!;
-	private Canvas _baseImageCanvas = null!;
-	private Image _sourceImageControl = null!;
 	private Canvas _imageLayerCanvas = null!;
 	private Canvas _overlayCanvas = null!;
 	private ImagePaintOutlineNumberLabelManager _outlineNumberLabelManager = null!;
 	private ImagePaintRenderer _renderer = null!;
 	private ScrollViewer _scrollViewer = null!;
-	private Button? _moveImageButton;
+	private Button _moveImageButton = null!;
 	private Button _blackFillButton = null!;
 	private Button _redOutlineButton = null!;
 	private Button _arrowTextButton = null!;
@@ -54,7 +52,10 @@ internal sealed class ImagePaintWindow : Window
 	public ImagePaintWindow(byte[] imageBytes)
 	{
 		_sourceImage = LoadImage(imageBytes);
-		InitializeWindow(_sourceImage.PixelHeight, placedImages: null);
+		var placedImage = new PlacedImageLayout(
+			_sourceImage,
+			new Rect(0, 0, _sourceImage.PixelWidth, _sourceImage.PixelHeight));
+		InitializeWindow(_sourceImage.PixelHeight, new[] { placedImage }, PaintMode.RedOutlineRectangle);
 	}
 
 	public ImagePaintWindow(IReadOnlyList<byte[]> imageBytesList)
@@ -67,17 +68,15 @@ internal sealed class ImagePaintWindow : Window
 		List<BitmapSource> images = imageBytesList.Select(LoadImage).ToList();
 		MultiImageLayout layout = CalculateMultiImageLayout(images);
 		_sourceImage = CreateWhiteCanvasImage(layout.CanvasWidth, layout.CanvasHeight);
-		InitializeWindow(layout.ReferenceHeight, layout.PlacedImages);
+		InitializeWindow(layout.ReferenceHeight, layout.PlacedImages, PaintMode.MoveImage);
 	}
 
-	private void InitializeWindow(double referenceHeight, IReadOnlyList<PlacedImageLayout>? placedImages)
+	private void InitializeWindow(
+		double referenceHeight,
+		IReadOnlyList<PlacedImageLayout> placedImages,
+		PaintMode initialPaintMode)
 	{
-		_state.IsMultiImageMode = placedImages is { Count: > 0 };
-		if (_state.IsMultiImageMode)
-		{
-			_state.Tools.PaintMode = PaintMode.MoveImage;
-		}
-
+		_state.Tools.PaintMode = initialPaintMode;
 		_state.Tools.PaintStrokeThickness = CalculatePaintStrokeThickness(referenceHeight);
 		_state.Tools.CurrentArrowTextFontSize = CalculateDefaultArrowTextFontSize(referenceHeight);
 		double initialContentWidth = _sourceImage.PixelWidth;
@@ -108,15 +107,12 @@ internal sealed class ImagePaintWindow : Window
 		DockPanel.SetDock(toolbar, Dock.Top);
 		root.Children.Add(toolbar);
 
-		if (_state.IsMultiImageMode)
-		{
-			_moveImageButton = CreateModeButton("画像の移動", CreateMoveImageIcon());
-			_moveImageButton.Click += (_, _) => SetPaintMode(PaintMode.MoveImage);
-			toolbar.Children.Add(_moveImageButton);
-		}
+		_moveImageButton = CreateModeButton("画像の移動", CreateMoveImageIcon());
+		_moveImageButton.Click += (_, _) => SetPaintMode(PaintMode.MoveImage);
+		toolbar.Children.Add(_moveImageButton);
 
 		_blackFillButton = CreateModeButton("塗りつぶし", CreateFillIcon());
-		_blackFillButton.Margin = _state.IsMultiImageMode ? new Thickness(8, 0, 0, 0) : new Thickness(0);
+		_blackFillButton.Margin = new Thickness(8, 0, 0, 0);
 		_blackFillButton.Click += (_, _) => SetPaintMode(PaintMode.BlackFillRectangle);
 		toolbar.Children.Add(_blackFillButton);
 
@@ -141,32 +137,12 @@ internal sealed class ImagePaintWindow : Window
 			() => SetShowOutlineNumbers(false));
 		toolbar.Children.Add(_outlineNumberCheckBox);
 
-		_sourceImageControl = new Image
-		{
-			Source = _sourceImage,
-			Stretch = Stretch.Fill,
-			Width = initialContentWidth,
-			Height = initialContentHeight,
-			SnapsToDevicePixels = true,
-			Visibility = _state.IsMultiImageMode ? Visibility.Collapsed : Visibility.Visible
-		};
-		RenderOptions.SetBitmapScalingMode(_sourceImageControl, BitmapScalingMode.HighQuality);
-		Canvas.SetLeft(_sourceImageControl, 0);
-		Canvas.SetTop(_sourceImageControl, 0);
-		_baseImageCanvas = new Canvas
-		{
-			Width = CanvasWidth,
-			Height = CanvasHeight,
-			Background = Brushes.Transparent
-		};
-		_baseImageCanvas.Children.Add(_sourceImageControl);
-
 		_imageLayerCanvas = new Canvas
 		{
 			Width = CanvasWidth,
 			Height = CanvasHeight,
 			Background = Brushes.Transparent,
-			IsHitTestVisible = placedImages is { Count: > 0 }
+			IsHitTestVisible = false
 		};
 		AddPlacedImages(placedImages);
 
@@ -197,13 +173,11 @@ internal sealed class ImagePaintWindow : Window
 			HorizontalAlignment = HorizontalAlignment.Left,
 			VerticalAlignment = VerticalAlignment.Top
 		};
-		_paintSurface.Children.Add(_baseImageCanvas);
 		_paintSurface.Children.Add(_imageLayerCanvas);
 		_paintSurface.Children.Add(_overlayCanvas);
 		_renderer = new ImagePaintRenderer(
 			_sourceImage,
 			_paintSurface,
-			_sourceImageControl,
 			_imageLayerCanvas,
 			_overlayCanvas,
 			_state,
@@ -268,13 +242,8 @@ internal sealed class ImagePaintWindow : Window
 		AppTheme.ThemeChanged -= AppTheme_ThemeChanged;
 	}
 
-	private void AddPlacedImages(IReadOnlyList<PlacedImageLayout>? placedImages)
+	private void AddPlacedImages(IReadOnlyList<PlacedImageLayout> placedImages)
 	{
-		if (placedImages == null)
-		{
-			return;
-		}
-
 		foreach (PlacedImageLayout placedImageLayout in placedImages)
 		{
 			var placedImage = new PlacedImage(
@@ -1030,8 +999,6 @@ internal sealed class ImagePaintWindow : Window
 
 	private void ShiftCanvasContent(double offsetX, double offsetY)
 	{
-		OffsetCanvasChild(_sourceImageControl, offsetX, offsetY);
-
 		foreach (PlacedImage placedImage in _imageLayerCanvas.Children.OfType<PlacedImage>())
 		{
 			placedImage.ShiftContent(offsetX, offsetY);
@@ -1067,14 +1034,6 @@ internal sealed class ImagePaintWindow : Window
 				arrowTextRectangle.ShiftContent(offsetX, offsetY);
 				break;
 		}
-	}
-
-	private static void OffsetCanvasChild(UIElement element, double offsetX, double offsetY)
-	{
-		double left = Canvas.GetLeft(element);
-		double top = Canvas.GetTop(element);
-		Canvas.SetLeft(element, (double.IsNaN(left) ? 0 : left) + offsetX);
-		Canvas.SetTop(element, (double.IsNaN(top) ? 0 : top) + offsetY);
 	}
 
 	private void TrimWorkspaceToContentIfIdle()
@@ -1115,8 +1074,6 @@ internal sealed class ImagePaintWindow : Window
 		_zoomContainer.Height = roundedHeight;
 		_workspaceGridBackground.Width = roundedWidth;
 		_workspaceGridBackground.Height = roundedHeight;
-		_baseImageCanvas.Width = roundedWidth;
-		_baseImageCanvas.Height = roundedHeight;
 		_imageLayerCanvas.Width = roundedWidth;
 		_imageLayerCanvas.Height = roundedHeight;
 		_overlayCanvas.Width = roundedWidth;
@@ -1220,11 +1177,7 @@ internal sealed class ImagePaintWindow : Window
 	private void SetPaintMode(PaintMode mode)
 	{
 		_state.Tools.PaintMode = mode;
-		if (_moveImageButton != null)
-		{
-			UpdateModeButton(_moveImageButton, mode == PaintMode.MoveImage);
-		}
-
+		UpdateModeButton(_moveImageButton, mode == PaintMode.MoveImage);
 		UpdateModeButton(_blackFillButton, mode == PaintMode.BlackFillRectangle);
 		UpdateModeButton(_redOutlineButton, mode == PaintMode.RedOutlineRectangle);
 		UpdateModeButton(_arrowTextButton, mode == PaintMode.ArrowTextRectangle);
