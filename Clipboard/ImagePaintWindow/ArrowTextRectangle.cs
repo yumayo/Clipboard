@@ -20,6 +20,7 @@ internal sealed class ArrowTextRectangle : Canvas
 	private readonly Polygon _arrowHead;
 	private readonly TextBox _textBox;
 	private readonly Dictionary<ResizeHandleKind, Rectangle> _resizeHandles = new();
+	private readonly Stack<string> _redoTextSnapshots = new();
 	private double _strokeThickness;
 	private double _arrowHeadLength;
 	private double _arrowHeadWidth;
@@ -38,6 +39,7 @@ internal sealed class ArrowTextRectangle : Canvas
 	private bool _isDraggingArrowTip;
 	private bool _isDraggingRectangle;
 	private bool _isResizingRectangle;
+	private bool _isApplyingTextHistory;
 
 	public ArrowTextRectangle(double canvasWidth, double canvasHeight, double strokeThickness, double textFontSize)
 	{
@@ -96,6 +98,7 @@ internal sealed class ArrowTextRectangle : Canvas
 			VerticalScrollBarVisibility = ScrollBarVisibility.Disabled
 		};
 		_textBox.GotKeyboardFocus += (_, _) => TextInputFocused?.Invoke(this, EventArgs.Empty);
+		_textBox.TextChanged += TextBox_TextChanged;
 
 		foreach (ResizeHandleKind resizeHandleKind in Enum.GetValues<ResizeHandleKind>())
 		{
@@ -140,6 +143,10 @@ internal sealed class ArrowTextRectangle : Canvas
 	public double StrokeThickness => _strokeThickness;
 
 	public bool IsTextInputEmpty => _textBox.Text.Length == 0;
+
+	public bool CanUndoTextInput => _textBox.CanUndo || _textBox.Text.Length > 0;
+
+	public bool CanRedoTextInput => _textBox.CanRedo || _redoTextSnapshots.Count > 0;
 
 	public bool IsDrawable =>
 		_textRectangleBounds.Width >= MinArrowTextRectangleWidth &&
@@ -186,6 +193,80 @@ internal sealed class ArrowTextRectangle : Canvas
 	{
 		_textBox.Focus();
 		_textBox.CaretIndex = _textBox.Text.Length;
+	}
+
+	public void UndoTextInput()
+	{
+		if (!CanUndoTextInput)
+		{
+			return;
+		}
+
+		string previousText = _textBox.Text;
+		ApplyTextHistoryChange(() =>
+		{
+			if (_textBox.CanUndo)
+			{
+				_textBox.Undo();
+				return;
+			}
+
+			_textBox.Text = string.Empty;
+		});
+		if (_textBox.Text != previousText)
+		{
+			_redoTextSnapshots.Push(previousText);
+		}
+
+		_textBox.CaretIndex = _textBox.Text.Length;
+	}
+
+	public void RedoTextInput()
+	{
+		if (!CanRedoTextInput)
+		{
+			return;
+		}
+
+		ApplyTextHistoryChange(() =>
+		{
+			if (_textBox.CanRedo)
+			{
+				_textBox.Redo();
+				if (_redoTextSnapshots.Count > 0)
+				{
+					_redoTextSnapshots.Pop();
+				}
+
+				return;
+			}
+
+			_textBox.Text = _redoTextSnapshots.Pop();
+		});
+		_textBox.CaretIndex = _textBox.Text.Length;
+	}
+
+	private void TextBox_TextChanged(object sender, TextChangedEventArgs e)
+	{
+		if (!_isApplyingTextHistory)
+		{
+			_redoTextSnapshots.Clear();
+		}
+
+		Changed?.Invoke(this, EventArgs.Empty);
+	}
+
+	private void ApplyTextHistoryChange(Action action)
+	{
+		_isApplyingTextHistory = true;
+		try
+		{
+			action();
+		}
+		finally
+		{
+			_isApplyingTextHistory = false;
+		}
 	}
 
 	public void SetTextFontSize(double fontSize)

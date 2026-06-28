@@ -283,10 +283,9 @@ internal sealed class ImagePaintWindow : Window
 
 		if (isTextInputSource && isControlPressed && IsUndoRedoKey(key))
 		{
-			if (arrowTextInputSource != null &&
-				ShouldUsePaintHistoryForTextInputUndoRedo(arrowTextInputSource, key, isShiftPressed))
+			if (arrowTextInputSource != null)
 			{
-				HandlePaintHistoryShortcut(key, isShiftPressed);
+				HandleUndoRedoShortcut(arrowTextInputSource, key, isShiftPressed);
 				e.Handled = true;
 			}
 
@@ -295,21 +294,14 @@ internal sealed class ImagePaintWindow : Window
 
 		if (isControlPressed && key == Key.Z)
 		{
-			if (isShiftPressed)
-			{
-				Redo();
-				e.Handled = true;
-				return;
-			}
-
-			Undo();
+			HandleUndoRedoShortcut(_state.Tools.ActiveArrowTextRectangle, key, isShiftPressed);
 			e.Handled = true;
 			return;
 		}
 
 		if (isControlPressed && key == Key.Y)
 		{
-			Redo();
+			HandleUndoRedoShortcut(_state.Tools.ActiveArrowTextRectangle, key, isShiftPressed);
 			e.Handled = true;
 			return;
 		}
@@ -342,34 +334,72 @@ internal sealed class ImagePaintWindow : Window
 		return textBox is { IsKeyboardFocusWithin: true } ? textBox : null;
 	}
 
-	private bool ShouldUsePaintHistoryForTextInputUndoRedo(
-		ArrowTextRectangle arrowTextRectangle,
+	private void HandleUndoRedoShortcut(
+		ArrowTextRectangle? arrowTextRectangle,
 		Key key,
 		bool isShiftPressed)
 	{
 		if (IsRedoShortcut(key, isShiftPressed))
 		{
-			return _state.History.RedoElements.Count > 0;
+			if (!TryRedoArrowTextInput(arrowTextRectangle))
+			{
+				Redo();
+			}
+
+			return;
 		}
 
-		// 空文字の矢印矩形だけ親の履歴へ逃がす。Backspace/Delete はここに入れない。
-		return arrowTextRectangle.IsTextInputEmpty;
+		if (!TryUndoArrowTextInput(arrowTextRectangle))
+		{
+			Undo();
+		}
+	}
+
+	private bool TryUndoArrowTextInput(ArrowTextRectangle? arrowTextRectangle)
+	{
+		if (!IsCompletedArrowTextRectangle(arrowTextRectangle))
+		{
+			return false;
+		}
+
+		if (arrowTextRectangle.IsTextInputEmpty)
+		{
+			return false;
+		}
+
+		SetActiveArrowTextRectangle(arrowTextRectangle);
+		arrowTextRectangle.FocusTextInput();
+		if (arrowTextRectangle.CanUndoTextInput)
+		{
+			arrowTextRectangle.UndoTextInput();
+		}
+
+		return true;
+	}
+
+	private bool TryRedoArrowTextInput(ArrowTextRectangle? arrowTextRectangle)
+	{
+		if (!IsCompletedArrowTextRectangle(arrowTextRectangle) ||
+			!arrowTextRectangle.CanRedoTextInput)
+		{
+			return false;
+		}
+
+		SetActiveArrowTextRectangle(arrowTextRectangle);
+		arrowTextRectangle.FocusTextInput();
+		arrowTextRectangle.RedoTextInput();
+		return true;
+	}
+
+	private bool IsCompletedArrowTextRectangle(ArrowTextRectangle? arrowTextRectangle)
+	{
+		return arrowTextRectangle != null &&
+			_state.History.CompletedElements.Contains(arrowTextRectangle);
 	}
 
 	private static bool IsRedoShortcut(Key key, bool isShiftPressed)
 	{
 		return key == Key.Y || (key == Key.Z && isShiftPressed);
-	}
-
-	private void HandlePaintHistoryShortcut(Key key, bool isShiftPressed)
-	{
-		if (IsRedoShortcut(key, isShiftPressed))
-		{
-			Redo();
-			return;
-		}
-
-		Undo();
 	}
 
 	private void ExitTextInputMode()
@@ -868,6 +898,10 @@ internal sealed class ImagePaintWindow : Window
 		{
 			SetActiveArrowTextRectangle(arrowTextRectangle);
 			arrowTextRectangle.FocusTextInput();
+			if (arrowTextRectangle.CanRedoTextInput)
+			{
+				arrowTextRectangle.RedoTextInput();
+			}
 		}
 		else
 		{
