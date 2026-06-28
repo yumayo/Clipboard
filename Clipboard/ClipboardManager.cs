@@ -134,13 +134,19 @@ public static class ClipboardManager
 		try
 		{
 			SetClipboardWithRetry(() => System.Windows.Clipboard.SetImage(image), "Image", suppressNextClipboardSave: false);
-			ClipboardDatabase.InsertHistory(
-				ClipboardHistoryKind.Image,
+			bool inserted = ClipboardDatabase.InsertPaintImageHistoryUnlessLatestMatches(
 				bytes,
 				contentHash,
 				DateTime.Now,
-				paintStateJson: paintStateJson);
-			Logger.Info($"ClipboardManager: ペイント画像をDBに保存しました。Size={bytes.Length}");
+				paintStateJson);
+			if (inserted)
+			{
+				Logger.Info($"ClipboardManager: ペイント画像をDBに保存しました。Size={bytes.Length}");
+			}
+			else
+			{
+				Logger.Info($"ClipboardManager: 最新履歴と同じペイント画像のため、ペイント状態のみ更新しました。Size={bytes.Length}");
+			}
 		}
 		catch
 		{
