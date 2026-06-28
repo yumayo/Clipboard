@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using Rectangle = System.Windows.Shapes.Rectangle;
 using static Clipboard.ImagePaintBounds;
 using static Clipboard.ImagePaintImageFactory;
@@ -36,6 +37,11 @@ internal sealed class ImagePaintWindow : Window
 	private TextBox _strokeThicknessTextBox = null!;
 	private TextBox _fontSizeTextBox = null!;
 	private CheckBox _outlineNumberCheckBox = null!;
+	private bool _isPaintViewportLocked;
+	private bool _isRestoringScrollOffset;
+	private double _paintViewportLockHorizontalOffset;
+	private double _paintViewportLockVerticalOffset;
+	private int _paintViewportLockVersion;
 
 	private double CanvasWidth
 	{
@@ -157,6 +163,18 @@ internal sealed class ImagePaintWindow : Window
 		_overlayCanvas.MouseLeftButtonDown += OverlayCanvas_MouseLeftButtonDown;
 		_overlayCanvas.MouseMove += OverlayCanvas_MouseMove;
 		_overlayCanvas.MouseLeftButtonUp += OverlayCanvas_MouseLeftButtonUp;
+		_overlayCanvas.AddHandler(
+			UIElement.PreviewMouseLeftButtonDownEvent,
+			new MouseButtonEventHandler(PaintSurface_PreviewMouseLeftButtonDown),
+			true);
+		_overlayCanvas.AddHandler(
+			UIElement.MouseMoveEvent,
+			new MouseEventHandler(PaintSurface_MouseMove),
+			true);
+		_overlayCanvas.AddHandler(
+			UIElement.MouseLeftButtonUpEvent,
+			new MouseButtonEventHandler(PaintSurface_MouseLeftButtonUp),
+			true);
 		_outlineNumberLabelManager = new ImagePaintOutlineNumberLabelManager(
 			_overlayCanvas,
 			_state.History,
@@ -221,7 +239,12 @@ internal sealed class ImagePaintWindow : Window
 		_scrollViewer.PreviewMouseMove += ScrollViewer_PreviewMouseMove;
 		_scrollViewer.PreviewMouseUp += ScrollViewer_PreviewMouseUp;
 		_scrollViewer.LostMouseCapture += ScrollViewer_LostMouseCapture;
+		_scrollViewer.ScrollChanged += ScrollViewer_ScrollChanged;
 		_scrollViewer.Loaded += (_, _) => ScrollToInitialWorkspacePosition();
+		_scrollViewer.AddHandler(
+			FrameworkElement.RequestBringIntoViewEvent,
+			new RequestBringIntoViewEventHandler(ScrollViewer_RequestBringIntoView),
+			true);
 		_scrollViewer.SetResourceReference(Control.BackgroundProperty, AppTheme.ThumbnailBackgroundBrushKey);
 		root.Children.Add(_scrollViewer);
 
@@ -368,7 +391,7 @@ internal sealed class ImagePaintWindow : Window
 		}
 
 		SetActiveArrowTextRectangle(arrowTextRectangle);
-		arrowTextRectangle.FocusTextInput();
+		FocusArrowTextInput(arrowTextRectangle);
 		if (arrowTextRectangle.CanUndoTextInput)
 		{
 			arrowTextRectangle.UndoTextInput();
@@ -386,7 +409,7 @@ internal sealed class ImagePaintWindow : Window
 		}
 
 		SetActiveArrowTextRectangle(arrowTextRectangle);
-		arrowTextRectangle.FocusTextInput();
+		FocusArrowTextInput(arrowTextRectangle);
 		arrowTextRectangle.RedoTextInput();
 		return true;
 	}
@@ -489,6 +512,22 @@ internal sealed class ImagePaintWindow : Window
 		if (_state.MiddleButtonPan.IsPanning)
 		{
 			EndMiddleButtonPan(releaseCapture: false);
+		}
+	}
+
+	private void ScrollViewer_RequestBringIntoView(object sender, RequestBringIntoViewEventArgs e)
+	{
+		if (IsDescendantOf(e.TargetObject, _paintSurface))
+		{
+			e.Handled = true;
+		}
+	}
+
+	private void ScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
+	{
+		if (_isPaintViewportLocked && !_isRestoringScrollOffset)
+		{
+			RestorePaintViewportLock();
 		}
 	}
 
@@ -748,6 +787,7 @@ internal sealed class ImagePaintWindow : Window
 		}
 
 		CancelActiveDrag();
+		BeginPaintViewportLock();
 		SetActivePaintRectangle(null);
 		SetActiveArrowTextRectangle(null);
 		_state.Drag.StartPoint = e.GetPosition(_overlayCanvas);
@@ -775,6 +815,27 @@ internal sealed class ImagePaintWindow : Window
 
 		UpdateDragElement(e.GetPosition(_overlayCanvas));
 		e.Handled = true;
+	}
+
+	private void PaintSurface_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+	{
+		if (e.ChangedButton == MouseButton.Left && _overlayCanvas.IsHitTestVisible && _state.Drag.Element == null)
+		{
+			BeginPaintViewportLock();
+		}
+	}
+
+	private void PaintSurface_MouseMove(object sender, MouseEventArgs e)
+	{
+		RestorePaintViewportLock();
+	}
+
+	private void PaintSurface_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+	{
+		if (e.ChangedButton == MouseButton.Left)
+		{
+			EndPaintViewportLock();
+		}
 	}
 
 	private void OverlayCanvas_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
@@ -867,7 +928,7 @@ internal sealed class ImagePaintWindow : Window
 		UpdateOutlineNumberLabels();
 		MarkPaintChanged();
 		FocusCurrentEditableElement();
-		TrimWorkspaceToContent();
+		PreserveScrollOffset(TrimWorkspaceToContent);
 	}
 
 	private void Redo()
@@ -887,7 +948,7 @@ internal sealed class ImagePaintWindow : Window
 		_state.History.RedoElements.RemoveAt(_state.History.RedoElements.Count - 1);
 		_overlayCanvas.Children.Add(element);
 		_state.History.CompletedElements.Add(element);
-		EnsureCanvasContainsElement(element);
+		PreserveScrollOffsetIfChanged(() => EnsureCanvasContainsElement(element));
 		UpdateOutlineNumberLabels();
 		if (element is PaintRectangle paintRectangle)
 		{
@@ -897,7 +958,7 @@ internal sealed class ImagePaintWindow : Window
 		else if (element is ArrowTextRectangle arrowTextRectangle)
 		{
 			SetActiveArrowTextRectangle(arrowTextRectangle);
-			arrowTextRectangle.FocusTextInput();
+			FocusArrowTextInput(arrowTextRectangle);
 			if (arrowTextRectangle.CanRedoTextInput)
 			{
 				arrowTextRectangle.RedoTextInput();
@@ -909,7 +970,7 @@ internal sealed class ImagePaintWindow : Window
 		}
 
 		MarkPaintChanged();
-		TrimWorkspaceToContent();
+		PreserveScrollOffset(TrimWorkspaceToContent);
 	}
 
 	private void PaintRectangle_Focused(object? sender, EventArgs e)
@@ -927,7 +988,7 @@ internal sealed class ImagePaintWindow : Window
 			return;
 		}
 
-		EnsureCanvasContains(paintRectangle.RenderBounds);
+		PreserveScrollOffsetIfChanged(() => EnsureCanvasContains(paintRectangle.RenderBounds));
 		if (_state.History.CompletedElements.Contains(paintRectangle))
 		{
 			UpdateOutlineNumberLabels();
@@ -944,7 +1005,7 @@ internal sealed class ImagePaintWindow : Window
 			return;
 		}
 
-		EnsureCanvasContains(arrowTextRectangle.RenderBounds);
+		PreserveScrollOffsetIfChanged(() => EnsureCanvasContains(arrowTextRectangle.RenderBounds));
 		if (_state.History.CompletedElements.Contains(arrowTextRectangle))
 		{
 			MarkPaintChanged();
@@ -973,7 +1034,7 @@ internal sealed class ImagePaintWindow : Window
 		if (_state.History.CompletedElements.Count > 0 && _state.History.CompletedElements[^1] is ArrowTextRectangle arrowTextRectangle)
 		{
 			SetActiveArrowTextRectangle(arrowTextRectangle);
-			arrowTextRectangle.FocusTextInput();
+			FocusArrowTextInput(arrowTextRectangle);
 			return;
 		}
 
@@ -984,7 +1045,12 @@ internal sealed class ImagePaintWindow : Window
 
 	private void FocusPaintSurface()
 	{
-		_overlayCanvas.Focus();
+		PreserveScrollOffset(() => _overlayCanvas.Focus());
+	}
+
+	private void FocusArrowTextInput(ArrowTextRectangle arrowTextRectangle)
+	{
+		PreserveScrollOffset(arrowTextRectangle.FocusTextInput);
 	}
 
 	private void MarkPaintChanged()
@@ -1017,12 +1083,14 @@ internal sealed class ImagePaintWindow : Window
 		}
 	}
 
-	private void EnsureCanvasContainsElement(UIElement element)
+	private bool EnsureCanvasContainsElement(UIElement element)
 	{
 		if (TryGetRenderableElementBounds(element, out Rect bounds))
 		{
-			EnsureCanvasContains(bounds);
+			return EnsureCanvasContains(bounds);
 		}
+
+		return false;
 	}
 
 	private bool EnsureCanvasContains(Rect bounds)
@@ -1055,27 +1123,100 @@ internal sealed class ImagePaintWindow : Window
 
 	private void PreserveScrollOffset(Action action)
 	{
-		double horizontalOffset = _scrollViewer.HorizontalOffset;
-		double verticalOffset = _scrollViewer.VerticalOffset;
+		double horizontalOffset = GetViewportLockAwareHorizontalOffset();
+		double verticalOffset = GetViewportLockAwareVerticalOffset();
 		action();
 		_scrollViewer.UpdateLayout();
-		_scrollViewer.ScrollToHorizontalOffset(ClampScrollOffset(horizontalOffset, _scrollViewer.ScrollableWidth));
-		_scrollViewer.ScrollToVerticalOffset(ClampScrollOffset(verticalOffset, _scrollViewer.ScrollableHeight));
+		RestoreScrollOffset(horizontalOffset, verticalOffset);
 	}
 
 	private bool PreserveScrollOffsetIfChanged(Func<bool> action)
 	{
-		double horizontalOffset = _scrollViewer.HorizontalOffset;
-		double verticalOffset = _scrollViewer.VerticalOffset;
+		double horizontalOffset = GetViewportLockAwareHorizontalOffset();
+		double verticalOffset = GetViewportLockAwareVerticalOffset();
 		bool changedLayout = action();
 		if (changedLayout)
 		{
 			_scrollViewer.UpdateLayout();
-			_scrollViewer.ScrollToHorizontalOffset(ClampScrollOffset(horizontalOffset, _scrollViewer.ScrollableWidth));
-			_scrollViewer.ScrollToVerticalOffset(ClampScrollOffset(verticalOffset, _scrollViewer.ScrollableHeight));
+			RestoreScrollOffset(horizontalOffset, verticalOffset);
 		}
 
 		return changedLayout;
+	}
+
+	private void BeginPaintViewportLock()
+	{
+		if (_isPaintViewportLocked)
+		{
+			return;
+		}
+
+		_isPaintViewportLocked = true;
+		_paintViewportLockHorizontalOffset = _scrollViewer.HorizontalOffset;
+		_paintViewportLockVerticalOffset = _scrollViewer.VerticalOffset;
+		_paintViewportLockVersion++;
+	}
+
+	private void RestorePaintViewportLock()
+	{
+		if (!_isPaintViewportLocked)
+		{
+			return;
+		}
+
+		RestoreScrollOffset(_paintViewportLockHorizontalOffset, _paintViewportLockVerticalOffset);
+	}
+
+	private void EndPaintViewportLock()
+	{
+		if (!_isPaintViewportLocked)
+		{
+			return;
+		}
+
+		double horizontalOffset = _paintViewportLockHorizontalOffset;
+		double verticalOffset = _paintViewportLockVerticalOffset;
+		int lockVersion = _paintViewportLockVersion;
+		_isPaintViewportLocked = false;
+		RestoreScrollOffset(horizontalOffset, verticalOffset);
+		ScheduleScrollOffsetRestore(lockVersion, horizontalOffset, verticalOffset, DispatcherPriority.Loaded);
+		ScheduleScrollOffsetRestore(lockVersion, horizontalOffset, verticalOffset, DispatcherPriority.ContextIdle);
+	}
+
+	private void ScheduleScrollOffsetRestore(
+		int lockVersion,
+		double horizontalOffset,
+		double verticalOffset,
+		DispatcherPriority dispatcherPriority)
+	{
+		Dispatcher.BeginInvoke(
+			new Action(() =>
+			{
+				if (!_isPaintViewportLocked && _paintViewportLockVersion == lockVersion)
+				{
+					RestoreScrollOffset(horizontalOffset, verticalOffset);
+				}
+			}),
+			dispatcherPriority);
+	}
+
+	private void RestoreScrollOffset(double horizontalOffset, double verticalOffset)
+	{
+		if (_isRestoringScrollOffset)
+		{
+			return;
+		}
+
+		_isRestoringScrollOffset = true;
+		try
+		{
+			_scrollViewer.ScrollToHorizontalOffset(ClampScrollOffset(horizontalOffset, _scrollViewer.ScrollableWidth));
+			_scrollViewer.ScrollToVerticalOffset(ClampScrollOffset(verticalOffset, _scrollViewer.ScrollableHeight));
+		}
+		finally
+		{
+			_isRestoringScrollOffset = false;
+		}
 	}
 
 	private void ShiftCanvasContent(double offsetX, double offsetY)
@@ -1121,7 +1262,7 @@ internal sealed class ImagePaintWindow : Window
 	{
 		if (Mouse.LeftButton == MouseButtonState.Released)
 		{
-			TrimWorkspaceToContent();
+			PreserveScrollOffset(TrimWorkspaceToContent);
 		}
 	}
 
@@ -1130,12 +1271,46 @@ internal sealed class ImagePaintWindow : Window
 		Rect bounds = _renderer.CalculateRenderBounds();
 		double minWidth = _sourceImage.PixelWidth + WorkspaceInitialMargin * 2;
 		double minHeight = _sourceImage.PixelHeight + WorkspaceInitialMargin * 2;
-		double targetWidth = Math.Max(minWidth, Math.Ceiling(bounds.Right + WorkspaceInitialMargin));
-		double targetHeight = Math.Max(minHeight, Math.Ceiling(bounds.Bottom + WorkspaceInitialMargin));
+		double minVisibleWidth = CalculateCurrentViewportCanvasEnd(
+			GetViewportLockAwareHorizontalOffset(),
+			GetScrollViewerViewportWidth());
+		double minVisibleHeight = CalculateCurrentViewportCanvasEnd(
+			GetViewportLockAwareVerticalOffset(),
+			GetScrollViewerViewportHeight());
+		double targetWidth = Math.Max(
+			Math.Max(minWidth, minVisibleWidth),
+			Math.Ceiling(bounds.Right + WorkspaceInitialMargin));
+		double targetHeight = Math.Max(
+			Math.Max(minHeight, minVisibleHeight),
+			Math.Ceiling(bounds.Bottom + WorkspaceInitialMargin));
 		if (targetWidth < CanvasWidth || targetHeight < CanvasHeight)
 		{
 			SetCanvasSize(Math.Min(CanvasWidth, targetWidth), Math.Min(CanvasHeight, targetHeight));
 		}
+	}
+
+	private double CalculateCurrentViewportCanvasEnd(double scrollOffset, double viewportLength)
+	{
+		double zoom = _zoomTransform.ScaleX;
+		if (!double.IsFinite(zoom) || zoom <= 0 ||
+			!double.IsFinite(scrollOffset) ||
+			!double.IsFinite(viewportLength) ||
+			viewportLength <= 0)
+		{
+			return 1;
+		}
+
+		return Math.Ceiling((scrollOffset + viewportLength) / zoom) + 1;
+	}
+
+	private double GetViewportLockAwareHorizontalOffset()
+	{
+		return _isPaintViewportLocked ? _paintViewportLockHorizontalOffset : _scrollViewer.HorizontalOffset;
+	}
+
+	private double GetViewportLockAwareVerticalOffset()
+	{
+		return _isPaintViewportLocked ? _paintViewportLockVerticalOffset : _scrollViewer.VerticalOffset;
 	}
 
 	private void SetCanvasSize(double width, double height)
@@ -1216,7 +1391,7 @@ internal sealed class ImagePaintWindow : Window
 			else if (focusTextInput && element is ArrowTextRectangle arrowTextRectangle)
 			{
 				SetActiveArrowTextRectangle(arrowTextRectangle);
-				arrowTextRectangle.FocusTextInput();
+				FocusArrowTextInput(arrowTextRectangle);
 			}
 		}
 		else
@@ -1225,7 +1400,46 @@ internal sealed class ImagePaintWindow : Window
 		}
 
 		_state.Drag.Element = null;
-		TrimWorkspaceToContent();
+		PreserveScrollOffset(TrimWorkspaceToContent);
+		EndPaintViewportLock();
+	}
+
+	private static bool IsDescendantOf(DependencyObject? dependencyObject, DependencyObject ancestor)
+	{
+		DependencyObject? current = dependencyObject;
+		while (current != null)
+		{
+			if (ReferenceEquals(current, ancestor))
+			{
+				return true;
+			}
+
+			current = GetDependencyObjectParent(current);
+		}
+
+		return false;
+	}
+
+	private static DependencyObject? GetDependencyObjectParent(DependencyObject dependencyObject)
+	{
+		try
+		{
+			DependencyObject? parent = VisualTreeHelper.GetParent(dependencyObject);
+			if (parent != null)
+			{
+				return parent;
+			}
+		}
+		catch (InvalidOperationException)
+		{
+		}
+
+		return dependencyObject switch
+		{
+			FrameworkElement frameworkElement => frameworkElement.Parent,
+			FrameworkContentElement frameworkContentElement => frameworkContentElement.Parent,
+			_ => null
+		};
 	}
 
 	private void CancelActiveDrag()
@@ -1238,6 +1452,7 @@ internal sealed class ImagePaintWindow : Window
 		_overlayCanvas.ReleaseMouseCapture();
 		_overlayCanvas.Children.Remove(element);
 		_state.Drag.Element = null;
+		EndPaintViewportLock();
 	}
 
 	private void UpdateOutlineNumberLabels()
@@ -1309,8 +1524,7 @@ internal sealed class ImagePaintWindow : Window
 		}
 
 		TryApplyStrokeThicknessText(restoreInvalidValue: true);
-		_overlayCanvas.Focusable = true;
-		_overlayCanvas.Focus();
+		FocusPaintSurface();
 		e.Handled = true;
 	}
 
@@ -1322,8 +1536,7 @@ internal sealed class ImagePaintWindow : Window
 		}
 
 		TryApplyFontSizeText(restoreInvalidValue: true);
-		_overlayCanvas.Focusable = true;
-		_overlayCanvas.Focus();
+		FocusPaintSurface();
 		e.Handled = true;
 	}
 
