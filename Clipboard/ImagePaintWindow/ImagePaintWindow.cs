@@ -342,20 +342,18 @@ internal sealed class ImagePaintWindow : Window
 		return textBox is { IsKeyboardFocusWithin: true } ? textBox : null;
 	}
 
-	private static bool ShouldUsePaintHistoryForTextInputUndoRedo(
+	private bool ShouldUsePaintHistoryForTextInputUndoRedo(
 		ArrowTextRectangle arrowTextRectangle,
 		Key key,
 		bool isShiftPressed)
 	{
-		if (!arrowTextRectangle.IsTextInputEmpty)
+		if (IsRedoShortcut(key, isShiftPressed))
 		{
-			return false;
+			return _state.History.RedoElements.Count > 0;
 		}
 
 		// 空文字の矢印矩形だけ親の履歴へ逃がす。Backspace/Delete はここに入れない。
-		return IsRedoShortcut(key, isShiftPressed)
-			? !arrowTextRectangle.CanRedoTextInput
-			: !arrowTextRectangle.CanUndoTextInput;
+		return arrowTextRectangle.IsTextInputEmpty;
 	}
 
 	private static bool IsRedoShortcut(Key key, bool isShiftPressed)
