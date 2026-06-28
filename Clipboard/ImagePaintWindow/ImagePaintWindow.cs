@@ -259,8 +259,13 @@ internal sealed class ImagePaintWindow : Window
 	private void ImagePaintWindow_PreviewKeyDown(object sender, KeyEventArgs e)
 	{
 		bool isControlPressed = (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control;
+		bool isShiftPressed = (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
 		Key key = GetInputKey(e);
-		bool isTextInputSource = IsTextInputSource(e.OriginalSource);
+		TextBox? textInputSource = FindFocusedTextBox(e.OriginalSource);
+		bool isTextInputSource = textInputSource != null;
+		ArrowTextRectangle? arrowTextInputSource = textInputSource == null
+			? null
+			: FindVisualParent<ArrowTextRectangle>(textInputSource);
 
 		if (key == Key.Escape && isTextInputSource)
 		{
@@ -278,12 +283,19 @@ internal sealed class ImagePaintWindow : Window
 
 		if (isTextInputSource && isControlPressed && IsUndoRedoKey(key))
 		{
+			if (arrowTextInputSource != null &&
+				ShouldUsePaintHistoryForTextInputUndoRedo(arrowTextInputSource, key, isShiftPressed))
+			{
+				HandlePaintHistoryShortcut(key, isShiftPressed);
+				e.Handled = true;
+			}
+
 			return;
 		}
 
 		if (isControlPressed && key == Key.Z)
 		{
-			if ((Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift)
+			if (isShiftPressed)
 			{
 				Redo();
 				e.Handled = true;
@@ -319,10 +331,47 @@ internal sealed class ImagePaintWindow : Window
 		return key is Key.Z or Key.Y;
 	}
 
-	private static bool IsTextInputSource(object source)
+	private static TextBox? FindFocusedTextBox(object source)
 	{
-		return source is DependencyObject dependencyObject &&
-			FindVisualParent<TextBox>(dependencyObject) is { IsKeyboardFocusWithin: true };
+		if (source is not DependencyObject dependencyObject)
+		{
+			return null;
+		}
+
+		TextBox? textBox = FindVisualParent<TextBox>(dependencyObject);
+		return textBox is { IsKeyboardFocusWithin: true } ? textBox : null;
+	}
+
+	private static bool ShouldUsePaintHistoryForTextInputUndoRedo(
+		ArrowTextRectangle arrowTextRectangle,
+		Key key,
+		bool isShiftPressed)
+	{
+		if (!arrowTextRectangle.IsTextInputEmpty)
+		{
+			return false;
+		}
+
+		// 空文字の矢印矩形だけ親の履歴へ逃がす。Backspace/Delete はここに入れない。
+		return IsRedoShortcut(key, isShiftPressed)
+			? !arrowTextRectangle.CanRedoTextInput
+			: !arrowTextRectangle.CanUndoTextInput;
+	}
+
+	private static bool IsRedoShortcut(Key key, bool isShiftPressed)
+	{
+		return key == Key.Y || (key == Key.Z && isShiftPressed);
+	}
+
+	private void HandlePaintHistoryShortcut(Key key, bool isShiftPressed)
+	{
+		if (IsRedoShortcut(key, isShiftPressed))
+		{
+			Redo();
+			return;
+		}
+
+		Undo();
 	}
 
 	private void ExitTextInputMode()

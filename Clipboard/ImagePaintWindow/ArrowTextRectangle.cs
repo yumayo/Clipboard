@@ -139,6 +139,12 @@ internal sealed class ArrowTextRectangle : Canvas
 
 	public double StrokeThickness => _strokeThickness;
 
+	public bool IsTextInputEmpty => _textBox.Text.Length == 0;
+
+	public bool CanUndoTextInput => _textBox.CanUndo;
+
+	public bool CanRedoTextInput => _textBox.CanRedo;
+
 	public bool IsDrawable =>
 		_textRectangleBounds.Width >= MinArrowTextRectangleWidth &&
 		_textRectangleBounds.Height >= MinArrowTextRectangleHeight;
