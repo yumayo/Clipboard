@@ -66,6 +66,8 @@ internal sealed class PlacedImage : Canvas
 
 	public Rect Bounds => _bounds;
 
+	public BitmapSource Source => (BitmapSource)_image.Source;
+
 	public bool IsEditing => _isMoving || _isResizing;
 
 	// レンダリング時に輪郭やリサイズ用ヒット領域を画像へ焼き込まないよう、一時的に隠す。

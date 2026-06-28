@@ -142,6 +142,10 @@ internal sealed class ArrowTextRectangle : Canvas
 
 	public double StrokeThickness => _strokeThickness;
 
+	public string Text => _textBox.Text;
+
+	public Point ArrowTip => _arrowTip;
+
 	public bool IsTextInputEmpty => _textBox.Text.Length == 0;
 
 	public bool CanUndoTextInput => _textBox.CanUndo || _textBox.Text.Length > 0;
@@ -167,6 +171,26 @@ internal sealed class ArrowTextRectangle : Canvas
 
 		UpdateArrow(_textRectangleBounds);
 		Changed?.Invoke(this, EventArgs.Empty);
+	}
+
+	public void RestoreState(Rect textRectangleBounds, Point arrowTip, string text)
+	{
+		SetTextRectangleBounds(textRectangleBounds, notifyChanged: false);
+		_arrowTip = arrowTip;
+		_isArrowTipCustomized = true;
+		bool wasUndoEnabled = _textBox.IsUndoEnabled;
+		_textBox.IsUndoEnabled = false;
+		try
+		{
+			_textBox.Text = text;
+		}
+		finally
+		{
+			_textBox.IsUndoEnabled = wasUndoEnabled;
+		}
+
+		_redoTextSnapshots.Clear();
+		UpdateArrow(_textRectangleBounds);
 	}
 
 	private void SetTextRectangleBounds(Rect bounds, bool notifyChanged = true)

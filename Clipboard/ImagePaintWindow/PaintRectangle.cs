@@ -87,6 +87,11 @@ internal sealed class PaintRectangle : Canvas
 		_bounds.Width >= MinPaintRectangleWidth &&
 		_bounds.Height >= MinPaintRectangleHeight;
 
+	public void RestoreBounds(Rect bounds)
+	{
+		SetBounds(bounds, notifyChanged: false);
+	}
+
 	public void Update(Point startPoint, Point currentPoint)
 	{
 		double left = Math.Min(startPoint.X, currentPoint.X);

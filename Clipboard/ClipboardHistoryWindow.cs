@@ -1068,7 +1068,7 @@ internal sealed class ClipboardHistoryWindow : Window
 
 			CloseOpenPreviews();
 			Hide();
-			var paintWindow = new ImagePaintWindow(content.Bytes);
+			ImagePaintWindow paintWindow = CreateImagePaintWindow(content);
 			paintWindow.Show();
 			paintWindow.Activate();
 		}
@@ -1077,6 +1077,24 @@ internal sealed class ClipboardHistoryWindow : Window
 			Logger.Error(ex, $"ClipboardHistoryWindow: ペイント画面を開けませんでした。Id={entry.Id}");
 			MessageBox.Show(this, "ペイント画面を開けませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
 		}
+	}
+
+	private static ImagePaintWindow CreateImagePaintWindow(ClipboardStoredContent content)
+	{
+		if (ImagePaintSerializedState.TryDeserialize(content.PaintStateJson, out ImagePaintSerializedState? savedState) &&
+			savedState != null)
+		{
+			try
+			{
+				return new ImagePaintWindow(savedState);
+			}
+			catch (Exception ex)
+			{
+				Logger.Warning($"ClipboardHistoryWindow: 保存されたペイント状態の復元に失敗したため画像として開きます。Error={ex.Message}");
+			}
+		}
+
+		return new ImagePaintWindow(content.Bytes);
 	}
 
 	private async void OpenMultiImagePaintWindow()

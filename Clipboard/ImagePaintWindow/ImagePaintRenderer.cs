@@ -42,8 +42,13 @@ internal sealed class ImagePaintRenderer
 
 	internal BitmapSource RenderPaintedImage()
 	{
+		return RenderPaintedImage(out _);
+	}
+
+	internal BitmapSource RenderPaintedImage(out Rect renderBounds)
+	{
 		PrepareTextInputsForRender();
-		Rect renderBounds = CalculateRenderBounds();
+		renderBounds = CalculateRenderBounds();
 		SetPlacedImagesEditingChromeVisible(false);
 		try
 		{

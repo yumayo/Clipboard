@@ -77,6 +77,123 @@ internal sealed class ImagePaintWindow : Window
 		InitializeWindow(layout.ReferenceHeight, layout.PlacedImages, PaintMode.MoveImage);
 	}
 
+	public ImagePaintWindow(ImagePaintSerializedState savedState)
+	{
+		_sourceImage = CreateWhiteCanvasImage(savedState.ContentWidth, savedState.ContentHeight);
+		InitializeWindow(savedState.ContentHeight, CreatePlacedImageLayouts(savedState), savedState.PaintMode);
+		RestoreSerializedState(savedState);
+	}
+
+	private static List<PlacedImageLayout> CreatePlacedImageLayouts(ImagePaintSerializedState savedState)
+	{
+		var placedImages = new List<PlacedImageLayout>();
+		foreach (ImagePaintSerializedImage imageState in savedState.Images)
+		{
+			if (imageState.ImageBytes.Length == 0)
+			{
+				continue;
+			}
+
+			Rect bounds = imageState.Bounds.ToRect();
+			if (bounds.Width <= 0 || bounds.Height <= 0)
+			{
+				continue;
+			}
+
+			placedImages.Add(new PlacedImageLayout(LoadImage(imageState.ImageBytes), bounds));
+		}
+
+		if (placedImages.Count == 0)
+		{
+			throw new InvalidOperationException("ペイント状態に画像がありません。");
+		}
+
+		return placedImages;
+	}
+
+	private void RestoreSerializedState(ImagePaintSerializedState savedState)
+	{
+		_state.Tools.PaintStrokeThickness = GetPositiveFiniteValue(
+			savedState.PaintStrokeThickness,
+			_state.Tools.PaintStrokeThickness);
+		_state.Tools.CurrentArrowTextFontSize = GetPositiveFiniteValue(
+			savedState.CurrentArrowTextFontSize,
+			_state.Tools.CurrentArrowTextFontSize);
+		_state.Tools.ShowOutlineNumbers = savedState.ShowOutlineNumbers;
+		_outlineNumberCheckBox.IsChecked = savedState.ShowOutlineNumbers;
+		UpdateStrokeThicknessTextBox(_state.Tools.PaintStrokeThickness);
+		UpdateFontSizeTextBox(_state.Tools.CurrentArrowTextFontSize);
+
+		RestoreSerializedPaintElements(savedState.Elements);
+		SetPaintMode(Enum.IsDefined(savedState.PaintMode) ? savedState.PaintMode : PaintMode.RedOutlineRectangle);
+		UpdateOutlineNumberLabels();
+		_state.HasPaintChanges = false;
+	}
+
+	private void RestoreSerializedPaintElements(IEnumerable<ImagePaintSerializedElement> elementStates)
+	{
+		foreach (ImagePaintSerializedElement elementState in elementStates)
+		{
+			UIElement? element = elementState.Kind switch
+			{
+				ImagePaintSerializedState.FillRectangleElementKind => CreateRestoredPaintRectangle(elementState, isOutline: false),
+				ImagePaintSerializedState.OutlineRectangleElementKind => CreateRestoredPaintRectangle(elementState, isOutline: true),
+				ImagePaintSerializedState.ArrowTextRectangleElementKind => CreateRestoredArrowTextRectangle(elementState),
+				_ => null
+			};
+			if (element == null || !IsDrawableElement(element))
+			{
+				continue;
+			}
+
+			_overlayCanvas.Children.Add(element);
+			_state.History.CompletedElements.Add(element);
+		}
+	}
+
+	private PaintRectangle CreateRestoredPaintRectangle(ImagePaintSerializedElement elementState, bool isOutline)
+	{
+		var paintRectangle = new PaintRectangle(
+			_overlayCanvas.Width,
+			_overlayCanvas.Height,
+			isOutline,
+			GetPositiveFiniteValue(elementState.StrokeThickness, _state.Tools.PaintStrokeThickness));
+		paintRectangle.RestoreBounds(ToWorkspaceRect(elementState.Bounds.ToRect()));
+		AttachPaintRectangleHandlers(paintRectangle);
+		return paintRectangle;
+	}
+
+	private ArrowTextRectangle? CreateRestoredArrowTextRectangle(ImagePaintSerializedElement elementState)
+	{
+		if (elementState.ArrowTip == null)
+		{
+			return null;
+		}
+
+		var arrowTextRectangle = new ArrowTextRectangle(
+			_overlayCanvas.Width,
+			_overlayCanvas.Height,
+			GetPositiveFiniteValue(elementState.StrokeThickness, _state.Tools.PaintStrokeThickness),
+			GetPositiveFiniteValue(elementState.TextFontSize, _state.Tools.CurrentArrowTextFontSize));
+		arrowTextRectangle.RestoreState(
+			ToWorkspaceRect(elementState.Bounds.ToRect()),
+			ToWorkspacePoint(elementState.ArrowTip.ToPoint()),
+			elementState.Text ?? string.Empty);
+		AttachArrowTextRectangleHandlers(arrowTextRectangle);
+		return arrowTextRectangle;
+	}
+
+	private static Rect ToWorkspaceRect(Rect rect)
+	{
+		rect.Offset(WorkspaceInitialMargin, WorkspaceInitialMargin);
+		return rect;
+	}
+
+	private static Point ToWorkspacePoint(Point point)
+	{
+		return new Point(point.X + WorkspaceInitialMargin, point.Y + WorkspaceInitialMargin);
+	}
+
 	private void InitializeWindow(
 		double referenceHeight,
 		IReadOnlyList<PlacedImageLayout> placedImages,
@@ -380,7 +497,7 @@ internal sealed class ImagePaintWindow : Window
 
 	private bool TryUndoArrowTextInput(ArrowTextRectangle? arrowTextRectangle)
 	{
-		if (!IsCompletedArrowTextRectangle(arrowTextRectangle))
+		if (arrowTextRectangle == null || !IsCompletedArrowTextRectangle(arrowTextRectangle))
 		{
 			return false;
 		}
@@ -402,7 +519,8 @@ internal sealed class ImagePaintWindow : Window
 
 	private bool TryRedoArrowTextInput(ArrowTextRectangle? arrowTextRectangle)
 	{
-		if (!IsCompletedArrowTextRectangle(arrowTextRectangle) ||
+		if (arrowTextRectangle == null ||
+			!IsCompletedArrowTextRectangle(arrowTextRectangle) ||
 			!arrowTextRectangle.CanRedoTextInput)
 		{
 			return false;
@@ -894,7 +1012,13 @@ internal sealed class ImagePaintWindow : Window
 			return false;
 		}
 
-		ClipboardManager.CopyImageToClipboard(_renderer.RenderPaintedImage());
+		BitmapSource paintedImage = _renderer.RenderPaintedImage(out Rect renderBounds);
+		string paintStateJson = ImagePaintSerializedState.CreateJson(
+			_imageLayerCanvas.Children.OfType<PlacedImage>(),
+			_state.History.CompletedElements,
+			_state.Tools,
+			renderBounds);
+		ClipboardManager.CopyPaintedImageToClipboard(paintedImage, paintStateJson);
 		return true;
 	}
 
@@ -1685,15 +1809,25 @@ internal sealed class ImagePaintWindow : Window
 				_overlayCanvas.Height,
 				_state.Tools.PaintStrokeThickness,
 				_state.Tools.CurrentArrowTextFontSize);
-			arrowTextRectangle.TextInputFocused += ArrowTextRectangle_TextInputFocused;
-			arrowTextRectangle.Changed += ArrowTextRectangle_Changed;
+			AttachArrowTextRectangleHandlers(arrowTextRectangle);
 			return arrowTextRectangle;
 		}
 
 		var paintRectangle = CreateRectangle(mode, _overlayCanvas.Width, _overlayCanvas.Height, _state.Tools.PaintStrokeThickness);
+		AttachPaintRectangleHandlers(paintRectangle);
+		return paintRectangle;
+	}
+
+	private void AttachPaintRectangleHandlers(PaintRectangle paintRectangle)
+	{
 		paintRectangle.Focused += PaintRectangle_Focused;
 		paintRectangle.BoundsChanged += PaintRectangle_BoundsChanged;
-		return paintRectangle;
+	}
+
+	private void AttachArrowTextRectangleHandlers(ArrowTextRectangle arrowTextRectangle)
+	{
+		arrowTextRectangle.TextInputFocused += ArrowTextRectangle_TextInputFocused;
+		arrowTextRectangle.Changed += ArrowTextRectangle_Changed;
 	}
 
 	private static PaintRectangle CreateRectangle(PaintMode mode, double canvasWidth, double canvasHeight, double strokeThickness)

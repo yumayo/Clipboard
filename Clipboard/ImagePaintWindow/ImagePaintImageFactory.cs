@@ -41,6 +41,15 @@ internal static class ImagePaintImageFactory
 		return image;
 	}
 
+	internal static byte[] EncodePng(BitmapSource image)
+	{
+		using var output = new MemoryStream();
+		var encoder = new PngBitmapEncoder();
+		encoder.Frames.Add(BitmapFrame.Create(image));
+		encoder.Save(output);
+		return output.ToArray();
+	}
+
 	internal static BitmapFrame? LoadIcon()
 	{
 		string path = Path.Combine(AppContext.BaseDirectory, "Clipboard.ico");

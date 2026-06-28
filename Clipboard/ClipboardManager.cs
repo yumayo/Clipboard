@@ -124,6 +124,31 @@ public static class ClipboardManager
 		SetClipboardWithRetry(() => System.Windows.Clipboard.SetImage(image), "Image", suppressNextClipboardSave: false);
 	}
 
+	internal static void CopyPaintedImageToClipboard(BitmapSource image, string paintStateJson)
+	{
+		byte[] bytes = ImagePaintImageFactory.EncodePng(image);
+		string contentHash = ClipboardContentHash.CalculateSha256(bytes);
+		string previousSavedContent = _lastSavedContent;
+		_lastSavedContent = contentHash;
+
+		try
+		{
+			SetClipboardWithRetry(() => System.Windows.Clipboard.SetImage(image), "Image", suppressNextClipboardSave: false);
+			ClipboardDatabase.InsertHistory(
+				ClipboardHistoryKind.Image,
+				bytes,
+				contentHash,
+				DateTime.Now,
+				paintStateJson: paintStateJson);
+			Logger.Info($"ClipboardManager: ペイント画像をDBに保存しました。Size={bytes.Length}");
+		}
+		catch
+		{
+			_lastSavedContent = previousSavedContent;
+			throw;
+		}
+	}
+
 	private static IntPtr SetHook(NativeMethods.LowLevelKeyboardProc proc)
 	{
 		using var curProcess = Process.GetCurrentProcess();
@@ -433,11 +458,7 @@ public static class ClipboardManager
 				BitmapSource? image = System.Windows.Clipboard.GetImage();
 				if (image != null)
 				{
-					using var ms = new MemoryStream();
-					var encoder = new PngBitmapEncoder();
-					encoder.Frames.Add(BitmapFrame.Create(image));
-					encoder.Save(ms);
-					return (ms.ToArray(), ClipboardHistoryKind.Image);
+					return (ImagePaintImageFactory.EncodePng(image), ClipboardHistoryKind.Image);
 				}
 				break;
 
