@@ -23,8 +23,8 @@ internal static class ImagePaintMetrics
 	internal const double ArrowResizeHandleSize = 18;
 	internal const double ArrowBendDistanceRatio = 0.55;
 	internal const double ArrowTextPadding = 6;
-	internal const double ArrowTextFontSizeHeightRatio = 1.0 / 64.0;
-	internal const double MinArrowTextFontSize = 24;
+	internal const double ArrowTextFontSizeHeightRatio = 1.0 / 32.0;
+	internal const double MinArrowTextFontSize = 36;
 	internal const double MinArrowTextRectangleWidth = 36;
 	internal const double MinArrowTextRectangleHeight = 24;
 	internal const double MultiImageGap = 24;
