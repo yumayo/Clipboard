@@ -1834,7 +1834,7 @@ internal sealed class ClipboardHistoryWindow : Window
 
 	private static string CreatePreviewText(ClipboardHistorySummary summary)
 	{
-		if (summary.Kind != ClipboardHistoryKind.Html)
+		if (summary.Kind != ClipboardHistoryKind.Html && summary.Kind != ClipboardHistoryKind.Rtf)
 		{
 			return summary.PreviewText;
 		}
@@ -1842,17 +1842,17 @@ internal sealed class ClipboardHistoryWindow : Window
 		try
 		{
 			ClipboardStoredContent? content = ClipboardDatabase.LoadContent(summary.Id);
-			if (content == null || content.Kind != ClipboardHistoryKind.Html)
+			if (content == null || content.Kind != summary.Kind)
 			{
 				return summary.PreviewText;
 			}
 
-			string plainText = ClipboardHistoryMetadata.CreateSearchableText(content.Bytes, content.Kind);
+			string plainText = ClipboardHistoryMetadata.CreateSearchableText(content.Bytes, content.Kind, content.PlainText);
 			return ClipboardHistoryMetadata.CreatePreviewText(plainText, summary.PreviewText);
 		}
 		catch (Exception ex)
 		{
-			Logger.Debug($"ClipboardHistoryWindow: HTML プレビューの再生成に失敗しました。Id={summary.Id} Error={ex.Message}");
+			Logger.Debug($"ClipboardHistoryWindow: テキストプレビューの再生成に失敗しました。Id={summary.Id} Error={ex.Message}");
 			return summary.PreviewText;
 		}
 	}
@@ -1949,7 +1949,7 @@ internal sealed class ClipboardHistoryWindow : Window
 				};
 			}
 
-			string text = ClipboardHistoryMetadata.CreateDisplayText(content.Bytes, content.Kind);
+			string text = ClipboardHistoryMetadata.CreateDisplayText(content.Bytes, content.Kind, content.PlainText);
 			if (string.IsNullOrWhiteSpace(text))
 			{
 				text = entry.PreviewText;

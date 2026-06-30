@@ -5,7 +5,7 @@ namespace Clipboard;
 
 internal static class ClipboardHtmlTextConverter
 {
-	public static string ConvertToPlainText(string html)
+	public static string FallbackConvertToPlainText(string html)
 	{
 		string fragment = GetHtmlFragment(html);
 		fragment = Regex.Replace(
@@ -31,7 +31,8 @@ internal static class ClipboardHtmlTextConverter
 
 		string noTags = Regex.Replace(fragment, "<[^>]+>", string.Empty);
 		string decoded = WebUtility.HtmlDecode(noTags);
-		return NormalizePlainTextWhitespace(decoded);
+		string plainText = NormalizePlainTextWhitespace(decoded);
+		return ClipboardTextNormalizer.NormalizeNoBreakSpaces(plainText);
 	}
 
 	private static string GetHtmlFragment(string html)

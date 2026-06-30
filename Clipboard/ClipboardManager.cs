@@ -29,7 +29,6 @@ public static class ClipboardManager
 	private const int ClipboardSetRetryCount = 20;
 	private const int ClipboardSetRetryDelayMilliseconds = 25;
 	private const int ClipboardOpenFailedErrorCode = unchecked((int)0x800401D0);
-	private const char ByteOrderMark = '\uFEFF';
 	private const string ConsoleWindowClassName = "ConsoleWindowClass";
 	private const string WindowsTerminalClassName = "CASCADIA_HOSTING_WINDOW_CLASS";
 	private static ClipboardMonitorWindow? _monitorWindow;
@@ -411,8 +410,8 @@ public static class ClipboardManager
 				}
 			}
 
-			var (bytes, kind) = GetClipboardContentAsBytes();
-			string currentContent = ClipboardContentHash.CalculateSha256(bytes);
+			var (bytes, kind, plainText) = GetClipboardContent();
+			string currentContent = CalculateClipboardContentHash(kind, bytes, plainText);
 			if (currentContent == _lastSavedContent)
 			{
 				Logger.Debug("ClipboardManager: 前回保存した内容と同じのため、保存をスキップします。");
@@ -421,8 +420,8 @@ public static class ClipboardManager
 
 			if (bytes.Length > 0 && kind != ClipboardHistoryKind.Unknown)
 			{
-				ClipboardDatabase.InsertHistory(kind, bytes, currentContent, DateTime.Now);
-				Logger.Info($"ClipboardManager: クリップボードの内容をDBに保存しました。Kind={kind} Size={bytes.Length}");
+				ClipboardDatabase.InsertHistory(kind, bytes, currentContent, DateTime.Now, plainText: plainText);
+				Logger.Info($"ClipboardManager: クリップボードの内容をDBに保存しました。Kind={kind} Size={bytes.Length} PlainTextLength={plainText?.Length ?? 0}");
 				_lastSavedContent = currentContent;
 			}
 		}
@@ -454,9 +453,10 @@ public static class ClipboardManager
 		return ClipboardDataType.Unknown;
 	}
 
-	private static (byte[] bytes, ClipboardHistoryKind kind) GetClipboardContentAsBytes()
+	private static (byte[] bytes, ClipboardHistoryKind kind, string? plainText) GetClipboardContent()
 	{
 		ClipboardDataType dataType = GetClipboardDataType();
+		string? plainText = GetClipboardPlainText();
 
 		switch (dataType)
 		{
@@ -464,35 +464,77 @@ public static class ClipboardManager
 				BitmapSource? image = System.Windows.Clipboard.GetImage();
 				if (image != null)
 				{
-					return (ImagePaintImageFactory.EncodePng(image), ClipboardHistoryKind.Image);
+					return (ImagePaintImageFactory.EncodePng(image), ClipboardHistoryKind.Image, plainText);
 				}
 				break;
 
 			case ClipboardDataType.Html:
 				if (GetClipboardStringData(DataFormats.Html) is { } htmlData)
 				{
-					return (Encoding.UTF8.GetBytes(htmlData), ClipboardHistoryKind.Html);
+					return (Encoding.UTF8.GetBytes(htmlData), ClipboardHistoryKind.Html, plainText);
 				}
 				break;
 
 			case ClipboardDataType.Rtf:
 				if (GetClipboardStringData(DataFormats.Rtf) is { } rtfData)
 				{
-					return (Encoding.UTF8.GetBytes(rtfData), ClipboardHistoryKind.Rtf);
+					return (Encoding.UTF8.GetBytes(rtfData), ClipboardHistoryKind.Rtf, plainText);
 				}
 				break;
 
 			case ClipboardDataType.Text:
-				string text = System.Windows.Clipboard.GetText();
-				return (Encoding.UTF8.GetBytes(text), ClipboardHistoryKind.Text);
+				string text = plainText ?? System.Windows.Clipboard.GetText();
+				return (Encoding.UTF8.GetBytes(text), ClipboardHistoryKind.Text, text);
 		}
 
-		return (Array.Empty<byte>(), ClipboardHistoryKind.Unknown);
+		if (plainText != null)
+		{
+			return (Encoding.UTF8.GetBytes(plainText), ClipboardHistoryKind.Text, plainText);
+		}
+
+		return (Array.Empty<byte>(), ClipboardHistoryKind.Unknown, null);
 	}
 
 	private static string? GetClipboardStringData(string format)
 	{
 		return System.Windows.Clipboard.GetData(format) as string;
+	}
+
+	private static string? GetClipboardPlainText()
+	{
+		if (System.Windows.Clipboard.ContainsText(TextDataFormat.UnicodeText))
+		{
+			return NormalizeEmptyPlainText(System.Windows.Clipboard.GetText(TextDataFormat.UnicodeText));
+		}
+
+		return System.Windows.Clipboard.ContainsText()
+			? NormalizeEmptyPlainText(System.Windows.Clipboard.GetText())
+			: null;
+	}
+
+	private static string? NormalizeEmptyPlainText(string text)
+	{
+		return text.Length == 0 ? null : text;
+	}
+
+	private static string CalculateClipboardContentHash(ClipboardHistoryKind kind, byte[] bytes, string? plainText)
+	{
+		using var stream = new MemoryStream();
+		using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true))
+		{
+			writer.Write((int)kind);
+			writer.Write(bytes.Length);
+			writer.Write(bytes);
+			writer.Write(plainText != null);
+			if (plainText != null)
+			{
+				byte[] plainTextBytes = Encoding.UTF8.GetBytes(plainText);
+				writer.Write(plainTextBytes.Length);
+				writer.Write(plainTextBytes);
+			}
+		}
+
+		return ClipboardContentHash.CalculateSha256(stream.ToArray());
 	}
 
 	private static void ShowHistoryFromHotKey()
@@ -544,19 +586,19 @@ public static class ClipboardManager
 		switch (content.Kind)
 		{
 			case ClipboardHistoryKind.Image:
-				SetClipboardImage(content.Bytes);
+				SetClipboardImage(content.Bytes, content.PlainText);
 				break;
 
 			case ClipboardHistoryKind.Html:
-				SetClipboardHtml(Encoding.UTF8.GetString(content.Bytes), pasteAsPlainText);
+				SetClipboardHtml(Encoding.UTF8.GetString(content.Bytes), pasteAsPlainText, content.PlainText);
 				break;
 
 			case ClipboardHistoryKind.Rtf:
-				SetClipboardRtf(Encoding.UTF8.GetString(content.Bytes), pasteAsPlainText);
+				SetClipboardRtf(Encoding.UTF8.GetString(content.Bytes), pasteAsPlainText, content.PlainText);
 				break;
 
 			default:
-				SetClipboardText(Encoding.UTF8.GetString(content.Bytes));
+				SetClipboardText(content.PlainText ?? Encoding.UTF8.GetString(content.Bytes));
 				break;
 		}
 	}
@@ -567,7 +609,7 @@ public static class ClipboardManager
 		SetClipboardWithRetry(() => System.Windows.Clipboard.SetText(text), "Text");
 	}
 
-	private static void SetClipboardImage(byte[] bytes)
+	private static void SetClipboardImage(byte[] bytes, string? plainText)
 	{
 		using var stream = new MemoryStream(bytes);
 		var bitmap = new BitmapImage();
@@ -577,44 +619,53 @@ public static class ClipboardManager
 		bitmap.EndInit();
 		bitmap.Freeze();
 
+		if (!string.IsNullOrEmpty(plainText))
+		{
+			var dataObject = new DataObject();
+			dataObject.SetImage(bitmap);
+			dataObject.SetText(NormalizeTextForClipboardPaste(plainText));
+			SetClipboardWithRetry(() => System.Windows.Clipboard.SetDataObject(dataObject, true), "Image");
+			return;
+		}
+
 		SetClipboardWithRetry(() => System.Windows.Clipboard.SetImage(bitmap), "Image");
 	}
 
-	private static void SetClipboardHtml(string html, bool pasteAsPlainText)
+	private static void SetClipboardHtml(string html, bool pasteAsPlainText, string? plainText)
 	{
 		if (pasteAsPlainText)
 		{
-			SetClipboardText(ConvertHtmlToPlainText(html));
+			SetClipboardText(plainText ?? FallbackConvertHtmlToPlainText(html));
 			return;
 		}
 
 		var dataObject = new DataObject();
 		dataObject.SetData(DataFormats.Html, html);
 
-		string plainText = NormalizeTextForClipboardPaste(ConvertHtmlToPlainText(html));
-		if (!string.IsNullOrWhiteSpace(plainText))
+		string text = NormalizeTextForClipboardPaste(plainText ?? FallbackConvertHtmlToPlainText(html));
+		if (!string.IsNullOrEmpty(text))
 		{
-			dataObject.SetText(plainText);
+			dataObject.SetText(text);
 		}
 
 		SetClipboardWithRetry(() => System.Windows.Clipboard.SetDataObject(dataObject, true), "Html");
 	}
 
-	private static void SetClipboardRtf(string rtf, bool pasteAsPlainText)
+	private static void SetClipboardRtf(string rtf, bool pasteAsPlainText, string? plainText)
 	{
 		if (pasteAsPlainText)
 		{
-			SetClipboardText(ConvertRtfToPlainText(rtf));
+			SetClipboardText(plainText ?? FallbackConvertRtfToPlainText(rtf));
 			return;
 		}
 
 		var dataObject = new DataObject();
 		dataObject.SetData(DataFormats.Rtf, rtf);
 
-		string plainText = NormalizeTextForClipboardPaste(ConvertRtfToPlainText(rtf));
-		if (!string.IsNullOrWhiteSpace(plainText))
+		string text = NormalizeTextForClipboardPaste(plainText ?? FallbackConvertRtfToPlainText(rtf));
+		if (!string.IsNullOrEmpty(text))
 		{
-			dataObject.SetText(plainText);
+			dataObject.SetText(text);
 		}
 
 		SetClipboardWithRetry(() => System.Windows.Clipboard.SetDataObject(dataObject, true), "Rtf");
@@ -669,18 +720,7 @@ public static class ClipboardManager
 
 	private static string NormalizeTextForClipboardPaste(string text)
 	{
-		if (text.Length == 0 || text[0] != ByteOrderMark)
-		{
-			return text;
-		}
-
-		int startIndex = 0;
-		while (startIndex < text.Length && text[startIndex] == ByteOrderMark)
-		{
-			startIndex++;
-		}
-
-		return text[startIndex..];
+		return ClipboardTextNormalizer.NormalizeForPaste(text);
 	}
 
 	private static void PasteToTargetWindow(IntPtr targetWindow, bool useConsolePaste)
@@ -780,12 +820,12 @@ public static class ClipboardManager
 		return NativeMethods.GetForegroundWindow() == targetWindow;
 	}
 
-	private static string ConvertHtmlToPlainText(string html)
+	private static string FallbackConvertHtmlToPlainText(string html)
 	{
-		return ClipboardHtmlTextConverter.ConvertToPlainText(html);
+		return ClipboardHtmlTextConverter.FallbackConvertToPlainText(html);
 	}
 
-	private static string ConvertRtfToPlainText(string rtf)
+	private static string FallbackConvertRtfToPlainText(string rtf)
 	{
 		try
 		{

@@ -49,10 +49,13 @@ internal sealed class ClipboardHistoryMetadata
 		ClipboardHistoryKind kind,
 		DateTime createdAt,
 		string? displayName,
-		string? sourcePath)
+		string? sourcePath,
+		string? plainText = null)
 	{
 		string previewText;
-		string searchableContent = string.Empty;
+		string searchableContent = kind == ClipboardHistoryKind.Image && plainText == null
+			? string.Empty
+			: CreateSearchableText(content, kind, plainText);
 		byte[]? thumbnailBytes = null;
 
 		if (kind == ClipboardHistoryKind.Image)
@@ -61,7 +64,6 @@ internal sealed class ClipboardHistoryMetadata
 		}
 		else
 		{
-			searchableContent = CreateSearchableText(content, kind);
 			previewText = CreatePreviewText(searchableContent, displayName);
 		}
 
@@ -73,31 +75,41 @@ internal sealed class ClipboardHistoryMetadata
 		};
 	}
 
-	public static string CreateSearchableText(byte[] content, ClipboardHistoryKind kind)
+	public static string CreateSearchableText(byte[] content, ClipboardHistoryKind kind, string? plainText = null)
 	{
-		string text = Encoding.UTF8.GetString(content);
+		string text = plainText ?? Encoding.UTF8.GetString(content);
+		if (plainText != null)
+		{
+			return NormalizePreviewText(text);
+		}
+
 		if (kind == ClipboardHistoryKind.Html)
 		{
-			text = ClipboardHtmlTextConverter.ConvertToPlainText(text);
+			text = ClipboardHtmlTextConverter.FallbackConvertToPlainText(text);
 		}
 		else if (kind == ClipboardHistoryKind.Rtf)
 		{
-			text = ConvertRtfToPlainText(text);
+			text = FallbackConvertRtfToPlainText(text);
 		}
 
 		return NormalizePreviewText(text);
 	}
 
-	public static string CreateDisplayText(byte[] content, ClipboardHistoryKind kind)
+	public static string CreateDisplayText(byte[] content, ClipboardHistoryKind kind, string? plainText = null)
 	{
-		string text = Encoding.UTF8.GetString(content);
+		string text = plainText ?? Encoding.UTF8.GetString(content);
+		if (plainText != null)
+		{
+			return NormalizeDisplayText(text);
+		}
+
 		if (kind == ClipboardHistoryKind.Html)
 		{
-			text = ClipboardHtmlTextConverter.ConvertToPlainText(text);
+			text = ClipboardHtmlTextConverter.FallbackConvertToPlainText(text);
 		}
 		else if (kind == ClipboardHistoryKind.Rtf)
 		{
-			text = ConvertRtfToMultilinePlainText(text);
+			text = FallbackConvertRtfToMultilinePlainText(text);
 		}
 
 		return NormalizeDisplayText(text);
@@ -193,12 +205,12 @@ internal sealed class ClipboardHistoryMetadata
 		return text.Trim();
 	}
 
-	private static string ConvertRtfToPlainText(string rtf)
+	private static string FallbackConvertRtfToPlainText(string rtf)
 	{
-		return NormalizePreviewText(ConvertRtfToMultilinePlainText(rtf));
+		return NormalizePreviewText(FallbackConvertRtfToMultilinePlainText(rtf));
 	}
 
-	private static string ConvertRtfToMultilinePlainText(string rtf)
+	private static string FallbackConvertRtfToMultilinePlainText(string rtf)
 	{
 		string text = Regex.Replace(rtf, @"\\'[0-9a-fA-F]{2}", " ");
 		text = Regex.Replace(text, @"\\(par|line)\b\s*", "\n");

@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text;
 using Microsoft.Data.Sqlite;
 
 namespace Clipboard;
@@ -16,12 +17,13 @@ internal sealed class ClipboardStoredContent
 {
 	public required ClipboardHistoryKind Kind { get; init; }
 	public required byte[] Bytes { get; init; }
+	public string? PlainText { get; init; }
 	public string? PaintStateJson { get; init; }
 }
 
 internal static class ClipboardDatabase
 {
-	private const int SchemaVersion = 3;
+	private const int SchemaVersion = 4;
 	private const string ConcatenationSeparatorKey = "ConcatenationSeparator";
 	private static readonly object Sync = new();
 	private static bool _initialized;
@@ -69,6 +71,7 @@ internal static class ClipboardDatabase
 					created_at_utc_ticks INTEGER NOT NULL,
 					content_hash TEXT NOT NULL,
 					content BLOB NOT NULL,
+					plain_text TEXT NULL,
 					preview_text TEXT NOT NULL,
 					search_text TEXT NOT NULL,
 					thumbnail BLOB NULL,
@@ -102,6 +105,7 @@ internal static class ClipboardDatabase
 				MigrateImageHistoryToFilePointers(connection, transaction);
 			}
 			EnsureHistoryPaintStateColumn(connection, transaction);
+			EnsureHistoryPlainTextColumn(connection, transaction);
 
 			SetStateValue(connection, transaction, "schema_version", SchemaVersion.ToString());
 			transaction.Commit();
@@ -178,10 +182,11 @@ internal static class ClipboardDatabase
 		string? sourceFilePath = null,
 		DateTime? sourceLastWriteTime = null,
 		string? displayName = null,
-		string? paintStateJson = null)
+		string? paintStateJson = null,
+		string? plainText = null)
 	{
 		Initialize();
-		var metadata = ClipboardHistoryMetadata.Create(content, kind, createdAt, displayName, sourceFilePath);
+		var metadata = ClipboardHistoryMetadata.Create(content, kind, createdAt, displayName, sourceFilePath, plainText);
 
 		lock (Sync)
 		{
@@ -197,7 +202,8 @@ internal static class ClipboardDatabase
 				metadata,
 				sourceFilePath,
 				sourceLastWriteTime,
-				paintStateJson);
+				paintStateJson,
+				plainText);
 			transaction.Commit();
 		}
 	}
@@ -234,7 +240,8 @@ internal static class ClipboardDatabase
 				metadata,
 				null,
 				null,
-				paintStateJson);
+				paintStateJson,
+				null);
 			transaction.Commit();
 			return true;
 		}
@@ -257,7 +264,7 @@ internal static class ClipboardDatabase
 		}
 
 		var metadata = ClipboardHistoryMetadata.Create(content, kind, createdAt, displayName, sourceFilePath);
-		InsertHistory(connection, transaction, kind, content, contentHash, createdAt, metadata, sourceFilePath, sourceLastWriteTime, null);
+		InsertHistory(connection, transaction, kind, content, contentHash, createdAt, metadata, sourceFilePath, sourceLastWriteTime, null, null);
 		return true;
 	}
 
@@ -378,7 +385,7 @@ internal static class ClipboardDatabase
 		{
 			using var connection = OpenConnection();
 			using var command = connection.CreateCommand();
-			command.CommandText = "SELECT kind, content, paint_state FROM clipboard_history WHERE id = $id;";
+			command.CommandText = "SELECT kind, content, paint_state, plain_text FROM clipboard_history WHERE id = $id;";
 			AddParameter(command, "$id", id);
 			using var reader = command.ExecuteReader();
 			if (!reader.Read())
@@ -389,6 +396,7 @@ internal static class ClipboardDatabase
 			var kind = (ClipboardHistoryKind)reader.GetInt32(0);
 			byte[] content = (byte[])reader.GetValue(1);
 			string? paintStateJson = reader.IsDBNull(2) ? null : reader.GetString(2);
+			string? plainText = reader.IsDBNull(3) ? null : reader.GetString(3);
 			byte[] resolvedContent = content;
 			if (kind == ClipboardHistoryKind.Image &&
 				!ClipboardImageStore.TryResolveImageBytes(content, out resolvedContent, out _, out string? errorMessage))
@@ -405,6 +413,7 @@ internal static class ClipboardDatabase
 			{
 				Kind = kind,
 				Bytes = content,
+				PlainText = plainText,
 				PaintStateJson = paintStateJson
 			};
 		}
@@ -443,6 +452,16 @@ internal static class ClipboardDatabase
 		}
 
 		ExecuteNonQuery(connection, transaction, "ALTER TABLE clipboard_history ADD COLUMN paint_state TEXT NULL;");
+	}
+
+	private static void EnsureHistoryPlainTextColumn(SqliteConnection connection, SqliteTransaction transaction)
+	{
+		if (ColumnExists(connection, transaction, "clipboard_history", "plain_text"))
+		{
+			return;
+		}
+
+		ExecuteNonQuery(connection, transaction, "ALTER TABLE clipboard_history ADD COLUMN plain_text TEXT NULL;");
 	}
 
 	private static bool ColumnExists(
@@ -755,7 +774,8 @@ internal static class ClipboardDatabase
 		ClipboardHistoryMetadata metadata,
 		string? sourceFilePath,
 		DateTime? sourceLastWriteTime,
-		string? paintStateJson)
+		string? paintStateJson,
+		string? plainText)
 	{
 		using var command = connection.CreateCommand();
 		command.Transaction = transaction;
@@ -765,6 +785,7 @@ internal static class ClipboardDatabase
 		byte[] storedContent = content;
 		string storedContentHash = contentHash;
 		string? storedPaintStateJson = kind == ClipboardHistoryKind.Image ? paintStateJson : null;
+		string? storedPlainText = CreateStoredPlainText(kind, content, plainText);
 		if (kind == ClipboardHistoryKind.Image)
 		{
 			ClipboardImagePointer pointer = ClipboardImageStore.StoreImage(content);
@@ -781,6 +802,7 @@ internal static class ClipboardDatabase
 				created_at_utc_ticks,
 				content_hash,
 				content,
+				plain_text,
 				preview_text,
 				search_text,
 				thumbnail,
@@ -794,6 +816,7 @@ internal static class ClipboardDatabase
 				$created_at_utc_ticks,
 				$content_hash,
 				$content,
+				$plain_text,
 				$preview_text,
 				$search_text,
 				$thumbnail,
@@ -807,6 +830,7 @@ internal static class ClipboardDatabase
 		AddParameter(command, "$created_at_utc_ticks", createdAt.ToUniversalTime().Ticks);
 		AddParameter(command, "$content_hash", storedContentHash);
 		AddParameter(command, "$content", storedContent);
+		AddParameter(command, "$plain_text", storedPlainText);
 		AddParameter(command, "$preview_text", metadata.PreviewText);
 		AddParameter(command, "$search_text", metadata.SearchText);
 		AddParameter(command, "$thumbnail", metadata.ThumbnailBytes);
@@ -814,6 +838,18 @@ internal static class ClipboardDatabase
 		AddParameter(command, "$source_file_path", sourceFilePath);
 		AddParameter(command, "$source_last_write_time_utc_ticks", sourceLastWriteTimeUtcTicks);
 		command.ExecuteNonQuery();
+	}
+
+	private static string? CreateStoredPlainText(ClipboardHistoryKind kind, byte[] content, string? plainText)
+	{
+		if (plainText != null)
+		{
+			return plainText;
+		}
+
+		return kind == ClipboardHistoryKind.Text
+			? Encoding.UTF8.GetString(content)
+			: null;
 	}
 
 	private static bool HistorySourceExists(SqliteConnection connection, SqliteTransaction transaction, string sourceFilePath)
