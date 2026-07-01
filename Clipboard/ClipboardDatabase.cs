@@ -298,6 +298,42 @@ internal static class ClipboardDatabase
 		return LoadHistorySummariesCore(searchText, beforeId, maxEntryCount, cancellationToken);
 	}
 
+	public static List<ClipboardHistorySummary> LoadImageHistorySummaries(
+		long? beforeId,
+		int maxEntryCount,
+		CancellationToken cancellationToken)
+	{
+		if (maxEntryCount <= 0)
+		{
+			return new List<ClipboardHistorySummary>();
+		}
+
+		Initialize();
+		lock (Sync)
+		{
+			using var connection = OpenConnection();
+			using var command = connection.CreateCommand();
+			command.CommandText = CreateImageHistorySummariesSql(beforeId.HasValue);
+			AddParameter(command, "$kind", (int)ClipboardHistoryKind.Image);
+			if (beforeId.HasValue)
+			{
+				AddParameter(command, "$before_id", beforeId.Value);
+			}
+
+			AddParameter(command, "$limit", maxEntryCount);
+
+			var entries = new List<ClipboardHistorySummary>();
+			using var reader = command.ExecuteReader();
+			while (reader.Read())
+			{
+				cancellationToken.ThrowIfCancellationRequested();
+				entries.Add(ReadHistorySummary(reader));
+			}
+
+			return entries;
+		}
+	}
+
 	private static List<ClipboardHistorySummary> LoadHistorySummariesCore(
 		string? searchText,
 		long? beforeId,
@@ -906,6 +942,22 @@ internal static class ClipboardDatabase
 		}
 
 		return sql + ";";
+	}
+
+	private static string CreateImageHistorySummariesSql(bool hasBeforeId)
+	{
+		string sql =
+			"""
+			SELECT id, kind, created_at_utc_ticks, preview_text, thumbnail
+			FROM clipboard_history
+			WHERE kind = $kind
+			""";
+		if (hasBeforeId)
+		{
+			sql += " AND id < $before_id";
+		}
+
+		return sql + " ORDER BY id DESC LIMIT $limit;";
 	}
 
 	private static string[] SplitSearchTerms(string? searchText)

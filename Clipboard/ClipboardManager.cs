@@ -33,6 +33,7 @@ public static class ClipboardManager
 	private const string WindowsTerminalClassName = "CASCADIA_HOSTING_WINDOW_CLASS";
 	private static ClipboardMonitorWindow? _monitorWindow;
 	private static ClipboardHistoryWindow? _historyWindow;
+	private static ClipboardImageGalleryWindow? _imageGalleryWindow;
 	private static string _concatenatedText = string.Empty;
 	private static int _concatenationCount = 0;
 	private static readonly object _concatenationLock = new();
@@ -47,10 +48,12 @@ public static class ClipboardManager
 	private static bool _winKeySuppressed = false;
 	private static bool _winComboHandled = false;
 	private static bool _swallowWinVKeyUp = false;
+	private static bool _swallowWinBKeyUp = false;
 	private static int _suppressedWinKeyCode = 0;
 	private static uint _hookThreadId = 0;
 	private static int _historyConsumedKeyUpCode = 0;
 	private static volatile bool _historyWindowVisible = false;
+	private static volatile bool _imageGalleryWindowVisible = false;
 
 	private static string _lastSavedContent = string.Empty;
 	private static bool _suppressNextClipboardSave = false;
@@ -81,6 +84,13 @@ public static class ClipboardManager
 			_historyWindowVisible = false;
 			_historyWindow.CloseWindow();
 			_historyWindow = null;
+		}
+
+		if (_imageGalleryWindow != null)
+		{
+			_imageGalleryWindowVisible = false;
+			_imageGalleryWindow.CloseWindow();
+			_imageGalleryWindow = null;
 		}
 	}
 
@@ -214,6 +224,7 @@ public static class ClipboardManager
 		_hookThreadReady.Reset();
 		ResetSuppressedWindowsKeyState();
 		_swallowWinVKeyUp = false;
+		_swallowWinBKeyUp = false;
 	}
 
 	private static void KeyboardHookThreadMain()
@@ -254,6 +265,7 @@ public static class ClipboardManager
 			_hookDispatcher = null;
 			ResetSuppressedWindowsKeyState();
 			_swallowWinVKeyUp = false;
+			_swallowWinBKeyUp = false;
 		}
 	}
 
@@ -272,25 +284,42 @@ public static class ClipboardManager
 			bool isKeyUp = wParam == (IntPtr)NativeMethods.WM_KEYUP || wParam == (IntPtr)NativeMethods.WM_SYSKEYUP;
 			bool isWindowsKey = IsWindowsKey(vkCode);
 
-			if (TryHandleHistoryKey(vkCode, isKeyDown, isKeyUp))
+			if (TryHandleVisibleWindowKey(vkCode, isKeyDown, isKeyUp))
 			{
 				return (IntPtr)1;
 			}
 
 			if (isKeyDown)
 			{
-				if (vkCode == NativeMethods.VK_V && (_winKeySuppressed || IsPhysicalWindowsKeyDown()))
+				if (IsWindowsHistoryComboKey(vkCode) && (_winKeySuppressed || IsPhysicalWindowsKeyDown()))
 				{
-					if (!_swallowWinVKeyUp)
+					bool isGalleryKey = vkCode == NativeMethods.VK_B;
+					bool shouldHandleCombo = isGalleryKey ? !_swallowWinBKeyUp : !_swallowWinVKeyUp;
+					if (shouldHandleCombo)
 					{
-						_swallowWinVKeyUp = true;
+						if (isGalleryKey)
+						{
+							_swallowWinBKeyUp = true;
+						}
+						else
+						{
+							_swallowWinVKeyUp = true;
+						}
+
 						_winComboHandled = true;
 						if (!_winKeySuppressed)
 						{
 							NeutralizeWindowsKey();
 						}
 
-						ShowHistoryFromHotKey();
+						if (isGalleryKey)
+						{
+							ShowImageGalleryFromHotKey();
+						}
+						else
+						{
+							ShowHistoryFromHotKey();
+						}
 					}
 
 					return (IntPtr)1;
@@ -357,6 +386,11 @@ public static class ClipboardManager
 				else if (vkCode == NativeMethods.VK_V && _swallowWinVKeyUp)
 				{
 					_swallowWinVKeyUp = false;
+					return (IntPtr)1;
+				}
+				else if (vkCode == NativeMethods.VK_B && _swallowWinBKeyUp)
+				{
+					_swallowWinBKeyUp = false;
 					return (IntPtr)1;
 				}
 			}
@@ -544,6 +578,13 @@ public static class ClipboardManager
 		DispatchToUi(() => ShowHistoryWindow(targetWindow));
 	}
 
+	private static void ShowImageGalleryFromHotKey()
+	{
+		IntPtr targetWindow = NativeMethods.GetForegroundWindow();
+		Logger.Debug($"ClipboardManager: Win+B 対象ウィンドウを取得しました。TargetWindow={FormatHandle(targetWindow)}");
+		DispatchToUi(() => ShowImageGalleryWindow(targetWindow));
+	}
+
 	private static void DispatchToUi(Action action)
 	{
 		Dispatcher? dispatcher = Application.Current?.Dispatcher;
@@ -565,6 +606,11 @@ public static class ClipboardManager
 	{
 		try
 		{
+			if (_imageGalleryWindow?.IsVisible == true)
+			{
+				_imageGalleryWindow.HideFromKeyboard();
+			}
+
 			if (_historyWindow == null || _historyWindow.IsClosed)
 			{
 				_historyWindow = new ClipboardHistoryWindow();
@@ -578,6 +624,31 @@ public static class ClipboardManager
 		{
 			Logger.Error(ex, "ClipboardManager: 履歴画面を開けませんでした。");
 			MessageBox.Show("履歴画面を開けませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
+		}
+	}
+
+	private static void ShowImageGalleryWindow(IntPtr targetWindow)
+	{
+		try
+		{
+			if (_historyWindow?.IsVisible == true)
+			{
+				_historyWindow.HideFromKeyboard();
+			}
+
+			if (_imageGalleryWindow == null || _imageGalleryWindow.IsClosed)
+			{
+				_imageGalleryWindow = new ClipboardImageGalleryWindow();
+				_imageGalleryWindow.VisibleStateChanged += isVisible => _imageGalleryWindowVisible = isVisible;
+			}
+
+			_imageGalleryWindow.ShowGallery(targetWindow);
+			_imageGalleryWindowVisible = _imageGalleryWindow.IsVisible;
+		}
+		catch (Exception ex)
+		{
+			Logger.Error(ex, "ClipboardManager: 画像ギャラリーを開けませんでした。");
+			MessageBox.Show("画像ギャラリーを開けませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
 		}
 	}
 
@@ -846,7 +917,7 @@ public static class ClipboardManager
 		return vkCode == NativeMethods.VK_LWIN || vkCode == NativeMethods.VK_RWIN;
 	}
 
-	private static bool TryHandleHistoryKey(int vkCode, bool isKeyDown, bool isKeyUp)
+	private static bool TryHandleVisibleWindowKey(int vkCode, bool isKeyDown, bool isKeyUp)
 	{
 		if (isKeyUp && vkCode == _historyConsumedKeyUpCode)
 		{
@@ -854,39 +925,62 @@ public static class ClipboardManager
 			return true;
 		}
 
-		if (!_historyWindowVisible || !isKeyDown || IsModifierKeyDown())
+		if (!isKeyDown || IsModifierKeyDown())
 		{
 			return false;
 		}
 
-		if (_historyWindow?.IsForegroundWindow() == true)
+		if (_historyWindowVisible)
 		{
-			return false;
+			if (_historyWindow?.IsForegroundWindow() == true)
+			{
+				return false;
+			}
+
+			if (IsHistoryNavigationKey(vkCode))
+			{
+				_historyConsumedKeyUpCode = vkCode;
+				int offset = vkCode == NativeMethods.VK_DOWN ? 1 : -1;
+				DispatchToUi(() => _historyWindow?.MoveSelectionFromKeyboard(offset));
+				return true;
+			}
+
+			if (vkCode == NativeMethods.VK_RETURN)
+			{
+				_historyConsumedKeyUpCode = vkCode;
+				DispatchToUi(() => _historyWindow?.ActivateSelectedItemFromKeyboard());
+				return true;
+			}
+
+			if (vkCode == NativeMethods.VK_ESCAPE)
+			{
+				_historyConsumedKeyUpCode = vkCode;
+				DispatchToUi(() => _historyWindow?.HideFromKeyboard());
+				return true;
+			}
 		}
 
-		if (IsHistoryNavigationKey(vkCode))
+		if (_imageGalleryWindowVisible)
 		{
-			_historyConsumedKeyUpCode = vkCode;
-			int offset = vkCode == NativeMethods.VK_DOWN ? 1 : -1;
-			DispatchToUi(() => _historyWindow?.MoveSelectionFromKeyboard(offset));
-			return true;
-		}
+			if (_imageGalleryWindow?.IsForegroundWindow() == true)
+			{
+				return false;
+			}
 
-		if (vkCode == NativeMethods.VK_RETURN)
-		{
-			_historyConsumedKeyUpCode = vkCode;
-			DispatchToUi(() => _historyWindow?.ActivateSelectedItemFromKeyboard());
-			return true;
-		}
-
-		if (vkCode == NativeMethods.VK_ESCAPE)
-		{
-			_historyConsumedKeyUpCode = vkCode;
-			DispatchToUi(() => _historyWindow?.HideFromKeyboard());
-			return true;
+			if (vkCode == NativeMethods.VK_ESCAPE)
+			{
+				_historyConsumedKeyUpCode = vkCode;
+				DispatchToUi(() => _imageGalleryWindow?.HideFromKeyboard());
+				return true;
+			}
 		}
 
 		return false;
+	}
+
+	private static bool IsWindowsHistoryComboKey(int vkCode)
+	{
+		return vkCode == NativeMethods.VK_V || vkCode == NativeMethods.VK_B;
 	}
 
 	private static bool IsHistoryNavigationKey(int vkCode)
@@ -1002,6 +1096,7 @@ public static class ClipboardManager
 	{
 		private readonly HwndSource _source;
 		private bool _registeredWinVHotkey;
+		private bool _registeredWinBHotkey;
 		private bool _isDisposed;
 
 		public ClipboardMonitorWindow()
@@ -1031,6 +1126,21 @@ public static class ClipboardManager
 			{
 				Logger.Warning($"ClipboardManager: Win+V ホットキー登録に失敗しました。低レベルフックで代替します。Win32Error={Marshal.GetLastWin32Error()}");
 			}
+
+			_registeredWinBHotkey = NativeMethods.RegisterHotKey(
+				_source.Handle,
+				NativeMethods.HOTKEY_ID_WIN_B,
+				NativeMethods.MOD_WIN | NativeMethods.MOD_NOREPEAT,
+				NativeMethods.VK_B);
+
+			if (_registeredWinBHotkey)
+			{
+				Logger.Debug("ClipboardManager: Win+B ホットキーを登録しました。");
+			}
+			else
+			{
+				Logger.Warning($"ClipboardManager: Win+B ホットキー登録に失敗しました。低レベルフックで代替します。Win32Error={Marshal.GetLastWin32Error()}");
+			}
 		}
 
 		public void Dispose()
@@ -1047,6 +1157,12 @@ public static class ClipboardManager
 				_registeredWinVHotkey = false;
 			}
 
+			if (_registeredWinBHotkey)
+			{
+				NativeMethods.UnregisterHotKey(_source.Handle, NativeMethods.HOTKEY_ID_WIN_B);
+				_registeredWinBHotkey = false;
+			}
+
 			NativeMethods.RemoveClipboardFormatListener(_source.Handle);
 			_source.RemoveHook(WndProc);
 			_source.Dispose();
@@ -1057,6 +1173,13 @@ public static class ClipboardManager
 			if (msg == NativeMethods.WM_HOTKEY && wParam.ToInt32() == NativeMethods.HOTKEY_ID_WIN_V)
 			{
 				ShowHistoryFromHotKey();
+				handled = true;
+				return IntPtr.Zero;
+			}
+
+			if (msg == NativeMethods.WM_HOTKEY && wParam.ToInt32() == NativeMethods.HOTKEY_ID_WIN_B)
+			{
+				ShowImageGalleryFromHotKey();
 				handled = true;
 				return IntPtr.Zero;
 			}
