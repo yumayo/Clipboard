@@ -19,20 +19,23 @@ namespace Clipboard;
 
 internal sealed class ClipboardImageGalleryWindow : Window
 {
-	private const int GalleryPageSize = 120;
+	private const int GalleryPageSize = 80;
 	private const double LoadMoreScrollThreshold = 160;
-	private const double DefaultImageSize = 180;
-	private const double MinImageSize = 96;
-	private const double MaxImageSize = 360;
-	private const double ImageSizeStep = 20;
-	private const int GalleryDecodeMaxPixelWidth = 900;
-	private const int GalleryDecodeMaxPixelHeight = 900;
+	private const double ThumbnailImageSize = 128;
+	private const double DefaultImageSize = 224;
+	private const double MinImageSize = 64;
+	private const double MaxImageSize = 960;
+	private const double ImageSizeStep = 32;
+	private const int GalleryThumbnailMinPixelSize = 600;
+	private const int GalleryDecodeMaxPixelWidth = 1200;
+	private const int GalleryDecodeMaxPixelHeight = 1200;
 	private readonly ScrollViewer _scrollViewer;
 	private readonly WrapPanel _galleryPanel;
 	private readonly Border _selectionFooter;
 	private readonly TextBlock _selectionCountLabel;
 	private readonly List<ImageGalleryEntry> _imageEntries = new();
 	private readonly NativeMethods.LowLevelMouseProc _outsideClickProc;
+	private Slider _imageSizeSlider = null!;
 	private CancellationTokenSource? _loadImagesCancellation;
 	private CancellationTokenSource? _loadMoreImagesCancellation;
 	private IntPtr _outsideClickHook;
@@ -52,8 +55,8 @@ internal sealed class ClipboardImageGalleryWindow : Window
 		_outsideClickProc = OnOutsideClickMouseHook;
 		Title = "画像履歴";
 		WindowStartupLocation = WindowStartupLocation.Manual;
-		Width = 1040;
-		Height = 680;
+		Width = 1240;
+		Height = 760;
 		MinWidth = 720;
 		MinHeight = 420;
 		ShowInTaskbar = false;
@@ -71,6 +74,10 @@ internal sealed class ClipboardImageGalleryWindow : Window
 
 		var rootPanel = new DockPanel();
 		rootPanel.SetResourceReference(Panel.BackgroundProperty, AppTheme.WindowBackgroundBrushKey);
+
+		var toolbar = CreateToolbar();
+		DockPanel.SetDock(toolbar, Dock.Top);
+		rootPanel.Children.Add(toolbar);
 
 		_selectionFooter = CreateSelectionFooter(out _selectionCountLabel);
 		DockPanel.SetDock(_selectionFooter, Dock.Bottom);
@@ -246,6 +253,73 @@ internal sealed class ClipboardImageGalleryWindow : Window
 		footer.SetResourceReference(Border.BackgroundProperty, AppTheme.WindowBackgroundBrushKey);
 		footer.SetResourceReference(Border.BorderBrushProperty, AppTheme.BorderBrushKey);
 		return footer;
+	}
+
+	private Border CreateToolbar()
+	{
+		var panel = new StackPanel
+		{
+			Orientation = Orientation.Horizontal,
+			Margin = new Thickness(10, 10, 10, 0),
+			VerticalAlignment = VerticalAlignment.Center
+		};
+
+		var sizeLabel = new TextBlock
+		{
+			Text = "サイズ",
+			VerticalAlignment = VerticalAlignment.Center,
+			Margin = new Thickness(0, 0, 8, 0),
+			FontWeight = FontWeights.Bold
+		};
+		sizeLabel.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
+		panel.Children.Add(sizeLabel);
+
+		_imageSizeSlider = new Slider
+		{
+			Minimum = MinImageSize,
+			Maximum = MaxImageSize,
+			Value = _imageSize,
+			Width = 260,
+			TickFrequency = ImageSizeStep,
+			SmallChange = ImageSizeStep,
+			LargeChange = ImageSizeStep * 3,
+			IsSnapToTickEnabled = true,
+			VerticalAlignment = VerticalAlignment.Center,
+			Margin = new Thickness(0, 0, 10, 0),
+			ToolTip = "画像サイズ"
+		};
+		_imageSizeSlider.ValueChanged += (_, _) => SetImageSize(_imageSizeSlider.Value, updateSlider: false);
+		panel.Children.Add(_imageSizeSlider);
+
+		panel.Children.Add(CreateSizeButton("サムネイル", ThumbnailImageSize));
+		panel.Children.Add(CreateSizeButton("標準", DefaultImageSize));
+		panel.Children.Add(CreateSizeButton("最大", MaxImageSize));
+
+		var toolbar = new Border
+		{
+			Child = panel,
+			Padding = new Thickness(0, 0, 0, 10),
+			BorderThickness = new Thickness(0, 0, 0, 1)
+		};
+		toolbar.SetResourceReference(Border.BackgroundProperty, AppTheme.WindowBackgroundBrushKey);
+		toolbar.SetResourceReference(Border.BorderBrushProperty, AppTheme.BorderBrushKey);
+		return toolbar;
+	}
+
+	private Button CreateSizeButton(string text, double imageSize)
+	{
+		var button = new Button
+		{
+			Content = text,
+			MinHeight = 30,
+			Padding = new Thickness(10, 4, 10, 4),
+			Margin = new Thickness(0, 0, 8, 0),
+			Focusable = false,
+			Cursor = Cursors.Hand
+		};
+		AppTheme.ApplyButton(button);
+		button.Click += (_, _) => SetImageSize(imageSize);
+		return button;
 	}
 
 	private void UpdateSelectionFooter()
@@ -594,11 +668,15 @@ internal sealed class ClipboardImageGalleryWindow : Window
 			return;
 		}
 
-		double nextSize = _imageSize + (e.Delta > 0 ? ImageSizeStep : -ImageSizeStep);
-		nextSize = Math.Max(MinImageSize, Math.Min(MaxImageSize, nextSize));
+		SetImageSize(_imageSize + (e.Delta > 0 ? ImageSizeStep : -ImageSizeStep));
+		e.Handled = true;
+	}
+
+	private void SetImageSize(double imageSize, bool updateSlider = true)
+	{
+		double nextSize = Math.Max(MinImageSize, Math.Min(MaxImageSize, imageSize));
 		if (Math.Abs(nextSize - _imageSize) < 0.1)
 		{
-			e.Handled = true;
 			return;
 		}
 
@@ -608,8 +686,12 @@ internal sealed class ClipboardImageGalleryWindow : Window
 			item.SetImageSize(_imageSize);
 		}
 
+		if (updateSlider && Math.Abs(_imageSizeSlider.Value - _imageSize) > 0.1)
+		{
+			_imageSizeSlider.Value = _imageSize;
+		}
+
 		_galleryPanel.InvalidateMeasure();
-		e.Handled = true;
 	}
 
 	private void AddMessage(string text)
@@ -991,8 +1073,26 @@ internal sealed class ClipboardImageGalleryWindow : Window
 			Id = summary.Id,
 			CreatedAt = summary.CreatedAt,
 			PreviewText = summary.PreviewText,
-			Thumbnail = CreateThumbnail(summary.ThumbnailBytes) ?? CreateThumbnailFromContent(summary.Id)
+			Thumbnail = CreateGalleryThumbnail(summary)
 		};
+	}
+
+	private static ImageSource? CreateGalleryThumbnail(ClipboardHistorySummary summary)
+	{
+		ImageSource? storedThumbnail = CreateThumbnail(summary.ThumbnailBytes);
+		if (IsLargeEnoughGalleryThumbnail(storedThumbnail))
+		{
+			return storedThumbnail;
+		}
+
+		return CreateThumbnailFromContent(summary.Id) ?? storedThumbnail;
+	}
+
+	private static bool IsLargeEnoughGalleryThumbnail(ImageSource? thumbnail)
+	{
+		return thumbnail is BitmapSource bitmap &&
+			(bitmap.PixelWidth >= GalleryThumbnailMinPixelSize ||
+				bitmap.PixelHeight >= GalleryThumbnailMinPixelSize);
 	}
 
 	private static ImageSource? CreateThumbnail(byte[]? bytes)
