@@ -41,6 +41,8 @@ internal sealed class ClipboardHistoryWindow : Window
 	private readonly TextBox _searchBox;
 	private readonly ScrollViewer _scrollViewer;
 	private readonly StackPanel _listPanel;
+	private readonly HistoryStickyDateHeaderControl _stickyDateHeader;
+	private readonly TranslateTransform _stickyDateHeaderTransform = new();
 	private readonly Border _selectionFooter;
 	private readonly TextBlock _selectionCountLabel;
 	private readonly Button _paintSelectedButton;
@@ -62,6 +64,7 @@ internal sealed class ClipboardHistoryWindow : Window
 	private bool _allowClose;
 	private bool _suppressOutsideMouseButtonUp;
 	private bool _targetUsesTerminalInput;
+	private bool _isStickyDateHeaderUpdateQueued;
 	private IntPtr _lastTerminalTargetWindow;
 	private Rect _lastTerminalAnchorBoundsDevice = Rect.Empty;
 
@@ -139,6 +142,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		{
 			Margin = new Thickness(10)
 		};
+		_listPanel.SizeChanged += (_, _) => RequestStickyDateHeaderUpdate();
 
 		_scrollViewer = new ScrollViewer
 		{
@@ -147,8 +151,31 @@ internal sealed class ClipboardHistoryWindow : Window
 			HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
 		};
 		_scrollViewer.SetResourceReference(Control.BackgroundProperty, AppTheme.WindowBackgroundBrushKey);
-		_scrollViewer.ScrollChanged += (_, _) => TryBeginLoadMoreHistory();
-		rootPanel.Children.Add(_scrollViewer);
+		_scrollViewer.ScrollChanged += (_, _) =>
+		{
+			TryBeginLoadMoreHistory();
+			UpdateStickyDateHeader();
+		};
+		_scrollViewer.SizeChanged += (_, _) => RequestStickyDateHeaderUpdate();
+
+		var historyHost = new Grid
+		{
+			ClipToBounds = true
+		};
+		historyHost.Children.Add(_scrollViewer);
+
+		_stickyDateHeader = new HistoryStickyDateHeaderControl
+		{
+			HorizontalAlignment = HorizontalAlignment.Left,
+			VerticalAlignment = VerticalAlignment.Top,
+			Margin = new Thickness(_listPanel.Margin.Left, 0, 0, 0),
+			RenderTransform = _stickyDateHeaderTransform,
+			Visibility = Visibility.Collapsed
+		};
+		Panel.SetZIndex(_stickyDateHeader, 1);
+		historyHost.Children.Add(_stickyDateHeader);
+
+		rootPanel.Children.Add(historyHost);
 		Content = rootPanel;
 		IsVisibleChanged += (_, _) =>
 		{
@@ -442,6 +469,96 @@ internal sealed class ClipboardHistoryWindow : Window
 		}
 
 		_lastDisplayedHistoryDate = _listPanel.Children.OfType<HistoryItemControl>().LastOrDefault()?.CreatedDate;
+		RequestStickyDateHeaderUpdate();
+	}
+
+	private void RequestStickyDateHeaderUpdate()
+	{
+		if (_isStickyDateHeaderUpdateQueued || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+		{
+			return;
+		}
+
+		_isStickyDateHeaderUpdateQueued = true;
+		Dispatcher.BeginInvoke((Action)(() =>
+		{
+			_isStickyDateHeaderUpdateQueued = false;
+			UpdateStickyDateHeader();
+		}));
+	}
+
+	private void UpdateStickyDateHeader()
+	{
+		if (!_scrollViewer.IsLoaded || _listPanel.Children.Count == 0)
+		{
+			HideStickyDateHeader();
+			return;
+		}
+
+		var visibleSeparators = new List<(HistoryDateSeparatorControl Separator, double Top)>();
+		foreach (var separator in _listPanel.Children.OfType<HistoryDateSeparatorControl>())
+		{
+			try
+			{
+				double top = separator.TransformToAncestor(_scrollViewer).Transform(new Point(0, 0)).Y;
+				visibleSeparators.Add((separator, top));
+			}
+			catch (InvalidOperationException)
+			{
+				HideStickyDateHeader();
+				return;
+			}
+		}
+
+		if (visibleSeparators.Count == 0)
+		{
+			HideStickyDateHeader();
+			return;
+		}
+
+		const double stickyTop = 0;
+		int activeIndex = -1;
+		for (int i = 0; i < visibleSeparators.Count; i++)
+		{
+			if (visibleSeparators[i].Top > stickyTop)
+			{
+				break;
+			}
+
+			activeIndex = i;
+		}
+
+		if (activeIndex < 0)
+		{
+			HideStickyDateHeader();
+			return;
+		}
+
+		UpdateStickyDateHeaderWidth();
+		_stickyDateHeader.SetDate(visibleSeparators[activeIndex].Separator.Date);
+		_stickyDateHeader.Visibility = Visibility.Visible;
+
+		double nextSeparatorTop = activeIndex + 1 < visibleSeparators.Count
+			? visibleSeparators[activeIndex + 1].Top
+			: double.PositiveInfinity;
+		_stickyDateHeaderTransform.Y = Math.Min(0, nextSeparatorTop - stickyTop - _stickyDateHeader.Height);
+	}
+
+	private void UpdateStickyDateHeaderWidth()
+	{
+		double viewportWidth = _scrollViewer.ViewportWidth;
+		if (double.IsNaN(viewportWidth) || double.IsInfinity(viewportWidth) || viewportWidth <= 0)
+		{
+			return;
+		}
+
+		_stickyDateHeader.Width = Math.Max(0, viewportWidth - _listPanel.Margin.Left - _listPanel.Margin.Right);
+	}
+
+	private void HideStickyDateHeader()
+	{
+		_stickyDateHeader.Visibility = Visibility.Collapsed;
+		_stickyDateHeaderTransform.Y = 0;
 	}
 
 	private void RefreshSelectionAfterDeletion()
@@ -934,6 +1051,8 @@ internal sealed class ClipboardHistoryWindow : Window
 		{
 			SelectFirstHistoryItem();
 		}
+
+		RequestStickyDateHeaderUpdate();
 	}
 
 	private void AddDateSeparatorIfNeeded(DateTime entryDate)
@@ -1165,6 +1284,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		_selectedItemIndex = -1;
 		_lastDisplayedHistoryDate = null;
 		_scrollViewer.ScrollToTop();
+		HideStickyDateHeader();
 		UpdateSelectionFooter();
 	}
 
@@ -2075,6 +2195,7 @@ internal sealed class ClipboardHistoryWindow : Window
 
 		public HistoryDateSeparatorControl(DateTime date)
 		{
+			Date = date;
 			Margin = new Thickness(0, 8, 0, 6);
 			Padding = new Thickness(2, 0, 2, 0);
 			Focusable = false;
@@ -2088,7 +2209,9 @@ internal sealed class ClipboardHistoryWindow : Window
 			Child = label;
 		}
 
-		private static string FormatDate(DateTime date)
+		public DateTime Date { get; }
+
+		public static string FormatDate(DateTime date)
 		{
 			DateTime today = DateTime.Today;
 			if (date == today)
@@ -2105,6 +2228,43 @@ internal sealed class ClipboardHistoryWindow : Window
 				? "M月d日 (ddd)"
 				: "yyyy年M月d日 (ddd)";
 			return date.ToString(format, JapaneseCulture);
+		}
+	}
+
+	private sealed class HistoryStickyDateHeaderControl : Border
+	{
+		private readonly TextBlock _label;
+		private DateTime? _date;
+
+		public HistoryStickyDateHeaderControl()
+		{
+			Height = 28;
+			Padding = new Thickness(2, 0, 2, 0);
+			Focusable = false;
+			IsHitTestVisible = false;
+			BorderThickness = new Thickness(0, 0, 0, 1);
+			SetResourceReference(BackgroundProperty, AppTheme.WindowBackgroundBrushKey);
+			SetResourceReference(BorderBrushProperty, AppTheme.BorderBrushKey);
+
+			_label = new TextBlock
+			{
+				FontSize = 12,
+				FontWeight = FontWeights.SemiBold,
+				VerticalAlignment = VerticalAlignment.Center
+			};
+			_label.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.MutedTextBrushKey);
+			Child = _label;
+		}
+
+		public void SetDate(DateTime date)
+		{
+			if (_date == date)
+			{
+				return;
+			}
+
+			_date = date;
+			_label.Text = HistoryDateSeparatorControl.FormatDate(date);
 		}
 	}
 
