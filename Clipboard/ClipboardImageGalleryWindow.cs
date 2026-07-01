@@ -335,6 +335,12 @@ internal sealed class ClipboardImageGalleryWindow : Window
 		_selectionFooter.Visibility = Visibility.Visible;
 	}
 
+	// チェックが1つでも付いている選択モード中かどうか。フッターの表示状態と同期している。
+	private bool IsSelectionModeActive()
+	{
+		return _selectionFooter.Visibility == Visibility.Visible;
+	}
+
 	private async void BeginLoadImages(bool preserveExistingItems)
 	{
 		CancelImageLoad();
@@ -503,7 +509,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 		RemoveMessageControls();
 		foreach (ImageGalleryEntry entry in entries)
 		{
-			var item = new ImageGalleryItemControl(entry, _imageSize);
+			var item = new ImageGalleryItemControl(entry, _imageSize, IsSelectionModeActive);
 			item.Activated += (_, _) => PasteEntry(entry);
 			item.PaintRequested += (_, _) => OpenImagePaintWindow(entry);
 			item.CheckedChanged += (_, _) => UpdateSelectionFooter();
@@ -1242,11 +1248,16 @@ internal sealed class ClipboardImageGalleryWindow : Window
 	{
 		private readonly ImageGalleryEntry _entry;
 		private readonly CheckBox _selectionCheckBox;
+		private readonly Func<bool> _isSelectionModeActive;
 		private bool _isMouseInside;
 
-		public ImageGalleryItemControl(ImageGalleryEntry entry, double imageSize)
+		public ImageGalleryItemControl(
+			ImageGalleryEntry entry,
+			double imageSize,
+			Func<bool> isSelectionModeActive)
 		{
 			_entry = entry;
+			_isSelectionModeActive = isSelectionModeActive;
 			Margin = new Thickness(0, 0, 10, 10);
 			BorderThickness = new Thickness(1);
 			Cursor = Cursors.Hand;
@@ -1288,6 +1299,13 @@ internal sealed class ClipboardImageGalleryWindow : Window
 		{
 			if (e.Handled)
 			{
+				return;
+			}
+
+			if (_isSelectionModeActive())
+			{
+				_selectionCheckBox.IsChecked = !IsChecked;
+				e.Handled = true;
 				return;
 			}
 
