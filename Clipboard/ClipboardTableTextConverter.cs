@@ -11,6 +11,14 @@ internal enum ClipboardTableTextFormat
 
 internal static class ClipboardTableTextConverter
 {
+	private enum SourceFormat
+	{
+		PlainText,
+		Tsv,
+		Csv,
+		Markdown
+	}
+
 	internal static string Convert(string text, ClipboardTableTextFormat outputFormat)
 	{
 		if (text.Length == 0)
@@ -19,7 +27,7 @@ internal static class ClipboardTableTextConverter
 		}
 
 		string normalizedText = NormalizeNewLines(ClipboardTextNormalizer.NormalizeForPaste(text));
-		List<List<string>> rows = ParseRows(normalizedText);
+		List<List<string>> rows = ParseRows(normalizedText, DetectSourceFormat(normalizedText));
 		return outputFormat switch
 		{
 			ClipboardTableTextFormat.Tsv => SerializeDelimited(rows, '\t'),
@@ -29,30 +37,58 @@ internal static class ClipboardTableTextConverter
 		};
 	}
 
-	private static List<List<string>> ParseRows(string text)
+	internal static bool IsTableText(string text)
+	{
+		if (text.Length == 0)
+		{
+			return false;
+		}
+
+		string normalizedText = NormalizeNewLines(ClipboardTextNormalizer.NormalizeForPaste(text));
+		return DetectSourceFormat(normalizedText) != SourceFormat.PlainText;
+	}
+
+	private static SourceFormat DetectSourceFormat(string text)
 	{
 		string[] lines = text.Split('\n');
 		if (CountUnquotedCharacters(text, '\t') > 0)
 		{
-			return ParseDelimited(text, '\t');
+			return SourceFormat.Tsv;
 		}
 
 		if (LooksLikeMarkdown(lines))
 		{
-			return ParseMarkdown(lines);
+			return SourceFormat.Markdown;
 		}
 
 		if (CountUnquotedCharacters(text, ',') > 0)
 		{
-			return ParseDelimited(text, ',');
+			return SourceFormat.Csv;
 		}
 
 		if (lines.Any(line => CountUnescapedPipes(line) > 0))
 		{
-			return ParseMarkdown(lines);
+			return SourceFormat.Markdown;
 		}
 
-		var rows = lines
+		return SourceFormat.PlainText;
+	}
+
+	private static List<List<string>> ParseRows(string text, SourceFormat sourceFormat)
+	{
+		return sourceFormat switch
+		{
+			SourceFormat.Tsv => ParseDelimited(text, '\t'),
+			SourceFormat.Csv => ParseDelimited(text, ','),
+			SourceFormat.Markdown => ParseMarkdown(text.Split('\n')),
+			_ => ParsePlainText(text)
+		};
+	}
+
+	private static List<List<string>> ParsePlainText(string text)
+	{
+		var rows = text
+			.Split('\n')
 			.Select(line => new List<string> { line })
 			.ToList();
 		RemoveTrailingEmptyRows(rows);

@@ -1949,22 +1949,24 @@ internal sealed class ClipboardHistoryWindow : Window
 
 	private static ClipboardHistoryEntry CreateHistoryEntry(ClipboardHistorySummary summary)
 	{
+		(string previewText, bool isTableText) = CreateTextEntryInfo(summary);
 		return new ClipboardHistoryEntry
 		{
 			Id = summary.Id,
 			Kind = summary.Kind,
 			CreatedAt = summary.CreatedAt,
-			PreviewText = CreatePreviewText(summary),
+			PreviewText = previewText,
 			Thumbnail = CreateThumbnail(summary),
-			IsEdited = summary.HasPaintState
+			IsEdited = summary.HasPaintState,
+			IsTableText = isTableText
 		};
 	}
 
-	private static string CreatePreviewText(ClipboardHistorySummary summary)
+	private static (string PreviewText, bool IsTableText) CreateTextEntryInfo(ClipboardHistorySummary summary)
 	{
-		if (summary.Kind != ClipboardHistoryKind.Html && summary.Kind != ClipboardHistoryKind.Rtf)
+		if (summary.Kind is not (ClipboardHistoryKind.Text or ClipboardHistoryKind.Html or ClipboardHistoryKind.Rtf))
 		{
-			return summary.PreviewText;
+			return (summary.PreviewText, false);
 		}
 
 		try
@@ -1972,16 +1974,21 @@ internal sealed class ClipboardHistoryWindow : Window
 			ClipboardStoredContent? content = ClipboardDatabase.LoadContent(summary.Id);
 			if (content == null || content.Kind != summary.Kind)
 			{
-				return summary.PreviewText;
+				return (summary.PreviewText, false);
 			}
 
-			string plainText = ClipboardHistoryMetadata.CreateSearchableText(content.Bytes, content.Kind, content.PlainText);
-			return ClipboardHistoryMetadata.CreatePreviewText(plainText, summary.PreviewText);
+			string displayText = ClipboardHistoryMetadata.CreateConvertibleText(content.Bytes, content.Kind, content.PlainText);
+			string previewText = summary.Kind is ClipboardHistoryKind.Html or ClipboardHistoryKind.Rtf
+				? ClipboardHistoryMetadata.CreatePreviewText(
+					ClipboardHistoryMetadata.NormalizePreviewText(displayText),
+					summary.PreviewText)
+				: summary.PreviewText;
+			return (previewText, ClipboardTableTextConverter.IsTableText(displayText));
 		}
 		catch (Exception ex)
 		{
-			Logger.Debug($"ClipboardHistoryWindow: テキストプレビューの再生成に失敗しました。Id={summary.Id} Error={ex.Message}");
-			return summary.PreviewText;
+			Logger.Debug($"ClipboardHistoryWindow: テキスト履歴の形式判定に失敗しました。Id={summary.Id} Error={ex.Message}");
+			return (summary.PreviewText, false);
 		}
 	}
 
@@ -2051,6 +2058,7 @@ internal sealed class ClipboardHistoryWindow : Window
 
 	private static Task<HistoryHoverPreview> LoadHistoryHoverPreviewAsync(
 		ClipboardHistoryEntry entry,
+		ClipboardTableTextFormat? tableTextFormat,
 		CancellationToken cancellationToken)
 	{
 		return Task.Run(() =>
@@ -2077,7 +2085,13 @@ internal sealed class ClipboardHistoryWindow : Window
 				};
 			}
 
-			string text = ClipboardHistoryMetadata.CreateDisplayText(content.Bytes, content.Kind, content.PlainText);
+			string text = tableTextFormat.HasValue
+				? ClipboardHistoryMetadata.CreateConvertibleText(content.Bytes, content.Kind, content.PlainText)
+				: ClipboardHistoryMetadata.CreateDisplayText(content.Bytes, content.Kind, content.PlainText);
+			if (tableTextFormat.HasValue)
+			{
+				text = ClipboardTableTextConverter.Convert(text, tableTextFormat.Value);
+			}
 			if (string.IsNullOrWhiteSpace(text))
 			{
 				text = entry.PreviewText;
@@ -2189,6 +2203,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		public required string PreviewText { get; init; }
 		public ImageSource? Thumbnail { get; init; }
 		public bool IsEdited { get; init; }
+		public bool IsTableText { get; init; }
 	}
 
 	private sealed class HistoryHoverPreview
@@ -2280,7 +2295,7 @@ internal sealed class ClipboardHistoryWindow : Window
 	private sealed class HistoryItemControl : Border
 	{
 		private readonly ClipboardHistoryEntry _entry;
-		private readonly Func<ClipboardHistoryEntry, CancellationToken, Task<HistoryHoverPreview>> _previewLoader;
+		private readonly Func<ClipboardHistoryEntry, ClipboardTableTextFormat?, CancellationToken, Task<HistoryHoverPreview>> _previewLoader;
 		private readonly Func<bool> _isSelectionModeActive;
 		private readonly Popup _previewPopup;
 		private readonly CheckBox _selectionCheckBox;
@@ -2288,6 +2303,8 @@ internal sealed class ClipboardHistoryWindow : Window
 		private bool _isSelected;
 		private bool _isMouseOverPreview;
 		private int _previewHideVersion;
+		private ClipboardTableTextFormat? _hoveredTableTextFormat;
+		private ClipboardTableTextFormat? _displayedTableTextFormat;
 
 		public event EventHandler? Activated;
 		public event EventHandler? PaintRequested;
@@ -2319,7 +2336,7 @@ internal sealed class ClipboardHistoryWindow : Window
 
 		public HistoryItemControl(
 			ClipboardHistoryEntry entry,
-			Func<ClipboardHistoryEntry, CancellationToken, Task<HistoryHoverPreview>> previewLoader,
+			Func<ClipboardHistoryEntry, ClipboardTableTextFormat?, CancellationToken, Task<HistoryHoverPreview>> previewLoader,
 			Func<bool> isSelectionModeActive)
 		{
 			_entry = entry;
@@ -2342,7 +2359,7 @@ internal sealed class ClipboardHistoryWindow : Window
 			MouseEnter += (_, _) =>
 			{
 				UpdateVisualState();
-				BeginShowPreview();
+				BeginShowPreview(_hoveredTableTextFormat);
 			};
 			MouseLeave += (_, _) =>
 			{
@@ -2422,11 +2439,14 @@ internal sealed class ClipboardHistoryWindow : Window
 			};
 		}
 
-		private async void BeginShowPreview()
+		private async void BeginShowPreview(ClipboardTableTextFormat? tableTextFormat = null)
 		{
 			_previewHideVersion++;
-			if (_previewPopup.IsOpen && _previewPopup.Child != null)
+			if (_previewPopup.IsOpen &&
+				_previewPopup.Child != null &&
+				_displayedTableTextFormat == tableTextFormat)
 			{
+				CancelPreviewLoad();
 				return;
 			}
 
@@ -2437,18 +2457,18 @@ internal sealed class ClipboardHistoryWindow : Window
 			try
 			{
 				await Task.Delay(HoverPreviewDelayMilliseconds, cancellationTokenSource.Token);
-				if (!IsPreviewRequested(cancellationTokenSource))
+				if (!IsPreviewRequested(cancellationTokenSource, tableTextFormat))
 				{
 					return;
 				}
 
-				HistoryHoverPreview preview = await _previewLoader(_entry, cancellationTokenSource.Token);
-				if (!IsPreviewRequested(cancellationTokenSource))
+				HistoryHoverPreview preview = await _previewLoader(_entry, tableTextFormat, cancellationTokenSource.Token);
+				if (!IsPreviewRequested(cancellationTokenSource, tableTextFormat))
 				{
 					return;
 				}
 
-				ShowPreviewContent(CreatePreviewContent(preview));
+				ShowPreviewContent(CreatePreviewContent(preview), tableTextFormat);
 			}
 			catch (OperationCanceledException)
 			{
@@ -2456,9 +2476,9 @@ internal sealed class ClipboardHistoryWindow : Window
 			catch (Exception ex)
 			{
 				Logger.Error(ex, $"ClipboardHistoryWindow: QuickView の表示に失敗しました。Id={_entry.Id}");
-				if (IsPreviewRequested(cancellationTokenSource))
+				if (IsPreviewRequested(cancellationTokenSource, tableTextFormat))
 				{
-					ShowPreviewContent(CreateTextPreviewContent("プレビューを表示できません"));
+					ShowPreviewContent(CreateTextPreviewContent("プレビューを表示できません"), tableTextFormat);
 				}
 			}
 			finally
@@ -2470,17 +2490,23 @@ internal sealed class ClipboardHistoryWindow : Window
 			}
 		}
 
-		private void ShowPreviewContent(FrameworkElement content)
+		private void ShowPreviewContent(FrameworkElement content, ClipboardTableTextFormat? tableTextFormat)
 		{
 			SetPreviewContent(content);
+			_displayedTableTextFormat = tableTextFormat;
 			_previewPopup.IsOpen = true;
 		}
 
-		private bool IsPreviewRequested(CancellationTokenSource cancellationTokenSource)
+		private bool IsPreviewRequested(
+			CancellationTokenSource cancellationTokenSource,
+			ClipboardTableTextFormat? tableTextFormat)
 		{
+			bool isPointerRequestActive = tableTextFormat.HasValue
+				? _hoveredTableTextFormat == tableTextFormat
+				: !_hoveredTableTextFormat.HasValue && (IsMouseOver || _isMouseOverPreview);
 			return _previewCancellation == cancellationTokenSource &&
 				!cancellationTokenSource.IsCancellationRequested &&
-				(IsMouseOver || _isMouseOverPreview);
+				isPointerRequestActive;
 		}
 
 		private async void BeginHidePreview()
@@ -2497,6 +2523,8 @@ internal sealed class ClipboardHistoryWindow : Window
 		{
 			CancelPreviewLoad();
 			_isMouseOverPreview = false;
+			_hoveredTableTextFormat = null;
+			_displayedTableTextFormat = null;
 			_previewPopup.IsOpen = false;
 			_previewPopup.Child = null;
 		}
@@ -2661,7 +2689,8 @@ internal sealed class ClipboardHistoryWindow : Window
 		private Grid CreateContent(ClipboardHistoryEntry entry)
 		{
 			var grid = new Grid();
-			bool supportsTableTextPaste = entry.Kind is ClipboardHistoryKind.Text or ClipboardHistoryKind.Html or ClipboardHistoryKind.Rtf;
+			bool supportsTableTextPaste = entry.IsTableText &&
+				(entry.Kind is ClipboardHistoryKind.Text or ClipboardHistoryKind.Html or ClipboardHistoryKind.Rtf);
 			if (entry.Kind == ClipboardHistoryKind.Image)
 			{
 				grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(ClipboardHistoryMetadata.ThumbnailLogicalWidth + 12) });
@@ -2769,6 +2798,23 @@ internal sealed class ClipboardHistoryWindow : Window
 				Padding = new Thickness(4, 0, 4, 0)
 			};
 			AppTheme.ApplyButton(button);
+			button.MouseEnter += (_, _) =>
+			{
+				_hoveredTableTextFormat = format;
+				BeginShowPreview(format);
+			};
+			button.MouseLeave += (_, _) =>
+			{
+				if (_hoveredTableTextFormat == format)
+				{
+					_hoveredTableTextFormat = null;
+				}
+
+				if (IsMouseOver)
+				{
+					BeginShowPreview();
+				}
+			};
 			button.Click += (_, e) =>
 			{
 				e.Handled = true;

@@ -115,6 +115,24 @@ internal sealed class ClipboardHistoryMetadata
 		return NormalizeDisplayText(text);
 	}
 
+	public static string CreateConvertibleText(byte[] content, ClipboardHistoryKind kind, string? plainText = null)
+	{
+		string text = plainText ?? Encoding.UTF8.GetString(content);
+		if (plainText == null)
+		{
+			if (kind == ClipboardHistoryKind.Html)
+			{
+				text = ClipboardHtmlTextConverter.FallbackConvertToPlainText(text);
+			}
+			else if (kind == ClipboardHistoryKind.Rtf)
+			{
+				text = FallbackConvertRtfToMultilinePlainText(text);
+			}
+		}
+
+		return ClipboardTextNormalizer.NormalizeForPaste(text);
+	}
+
 	public static string CreatePreviewText(string text, string? displayName = null)
 	{
 		if (text.Length > PreviewTextLength)
