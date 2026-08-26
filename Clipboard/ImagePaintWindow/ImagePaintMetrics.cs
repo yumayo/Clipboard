@@ -11,6 +11,7 @@ internal static class ImagePaintMetrics
 	internal const double OutlineNumberGap = 4;
 	internal const double PaintStrokeThicknessHeightRatio = 1.0 / 256.0;
 	internal const double MinPaintStrokeThickness = 1;
+	internal const double MinDefaultPaintStrokeThickness = 5;
 	internal const double MinPaintRectangleWidth = 2;
 	internal const double MinPaintRectangleHeight = 2;
 	internal const double PaintRectangleResizeHandleSize = 18;

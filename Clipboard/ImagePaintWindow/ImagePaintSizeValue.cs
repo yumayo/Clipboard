@@ -7,7 +7,7 @@ internal static class ImagePaintSizeValue
 {
 	internal static double CalculatePaintStrokeThickness(double canvasHeight)
 	{
-		return Math.Max(MinPaintStrokeThickness, RoundSizeValue(canvasHeight * PaintStrokeThicknessHeightRatio));
+		return Math.Max(MinDefaultPaintStrokeThickness, RoundSizeValue(canvasHeight * PaintStrokeThicknessHeightRatio));
 	}
 
 	internal static double CalculateDefaultArrowTextFontSize(double canvasHeight)
