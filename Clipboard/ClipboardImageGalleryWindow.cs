@@ -1118,7 +1118,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 			thumbnail.StreamSource = stream;
 			thumbnail.EndInit();
 			thumbnail.Freeze();
-			return thumbnail;
+			return ClipboardImageAlphaNormalizer.NormalizeInvalidAlpha(thumbnail);
 		}
 		catch
 		{
@@ -1163,7 +1163,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 			ConfigureDecodePixelSize(image, pixelSize, maxPixelWidth, maxPixelHeight);
 			image.EndInit();
 			image.Freeze();
-			return image;
+			return ClipboardImageAlphaNormalizer.NormalizeInvalidAlpha(image);
 		}
 		catch
 		{

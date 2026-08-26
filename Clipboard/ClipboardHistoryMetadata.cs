@@ -176,10 +176,10 @@ internal sealed class ClipboardHistoryMetadata
 			scale = 1;
 		}
 
-		BitmapSource thumbnailSource = frame;
+		BitmapSource thumbnailSource = ClipboardImageAlphaNormalizer.NormalizeInvalidAlpha(frame);
 		if (scale < 1)
 		{
-			var transformed = new TransformedBitmap(frame, new ScaleTransform(scale, scale));
+			var transformed = new TransformedBitmap(thumbnailSource, new ScaleTransform(scale, scale));
 			transformed.Freeze();
 			thumbnailSource = transformed;
 		}
