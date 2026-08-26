@@ -34,7 +34,6 @@ internal static class ImagePaintMetrics
 	internal const double WorkspaceGridCellSize = 64;
 	internal const double WorkspaceInitialMargin = 1024;
 	internal const double WorkspaceExpansionChunk = 1024;
-	internal const double RenderBoundsPadding = 2;
 	internal const string ArrowTextFontFamilyName = "Meiryo UI";
 
 	internal static readonly SolidColorBrush ArrowBrush = CreateFrozenBrush(Color.FromRgb(226, 104, 0));

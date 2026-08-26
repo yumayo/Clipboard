@@ -1,6 +1,5 @@
 using System.Windows;
 using System.Windows.Controls;
-using static Clipboard.ImagePaintMetrics;
 
 namespace Clipboard;
 
@@ -67,7 +66,6 @@ internal static class ImagePaintBounds
 
 	internal static Rect RoundRenderBounds(Rect bounds)
 	{
-		bounds.Inflate(RenderBoundsPadding, RenderBoundsPadding);
 		double left = Math.Floor(bounds.Left);
 		double top = Math.Floor(bounds.Top);
 		double right = Math.Ceiling(bounds.Right);
