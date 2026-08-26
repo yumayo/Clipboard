@@ -92,9 +92,9 @@ internal sealed class ImagePaintRenderer
 			}
 		}
 
-		foreach (TextBlock label in _outlineNumberLabelManager.Labels)
+		foreach (ImagePaintOutlineNumberLabel label in _outlineNumberLabelManager.Labels)
 		{
-			UnionBounds(ref bounds, GetTextBlockBounds(label));
+			UnionBounds(ref bounds, GetFrameworkElementBounds(label));
 		}
 
 		if (bounds.IsEmpty)

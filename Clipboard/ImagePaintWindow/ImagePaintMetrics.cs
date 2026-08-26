@@ -9,6 +9,10 @@ internal static class ImagePaintMetrics
 	internal const double MaxZoom = 8;
 	internal const double ZoomStep = 1.1;
 	internal const double OutlineNumberGap = 4;
+	internal const double OutlineNumberStrokeThickness = 3;
+	internal const double OutlineNumberTextStrokeThickness = 2;
+	internal const double OutlineNumberShadowBlurRadius = 3;
+	internal const double OutlineNumberShadowDepth = 2;
 	internal const double PaintStrokeThicknessHeightRatio = 1.0 / 256.0;
 	internal const double MinPaintStrokeThickness = 1;
 	internal const double MinDefaultPaintStrokeThickness = 5;
@@ -38,12 +42,6 @@ internal static class ImagePaintMetrics
 	internal const string ArrowTextFontFamilyName = "Meiryo UI";
 
 	internal static readonly SolidColorBrush ArrowBrush = CreateFrozenBrush(Color.FromRgb(226, 104, 0));
-	internal static readonly string[] CircledNumberTexts =
-	{
-		"①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩",
-		"⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳"
-	};
-
 	private static SolidColorBrush CreateFrozenBrush(Color color)
 	{
 		var brush = new SolidColorBrush(color);

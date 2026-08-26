@@ -30,11 +30,11 @@ internal static class ImagePaintBounds
 		}
 	}
 
-	internal static Rect GetTextBlockBounds(TextBlock textBlock)
+	internal static Rect GetFrameworkElementBounds(FrameworkElement element)
 	{
-		textBlock.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-		Size size = textBlock.DesiredSize;
-		return GetCanvasChildBounds(textBlock, size.Width, size.Height);
+		element.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+		Size size = element.DesiredSize;
+		return GetCanvasChildBounds(element, size.Width, size.Height);
 	}
 
 	internal static Rect GetCanvasChildBounds(UIElement element, double width, double height)

@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Media;
 using static Clipboard.ImagePaintMetrics;
 
 namespace Clipboard;
@@ -11,13 +10,13 @@ internal sealed class ImagePaintOutlineNumberLabelManager
 {
 	private readonly Canvas _canvas;
 	private readonly PaintElementHistory _history;
-	private readonly Dictionary<PaintRectangle, TextBlock> _labels;
+	private readonly Dictionary<PaintRectangle, ImagePaintOutlineNumberLabel> _labels;
 	private readonly Func<double> _fontSizeProvider;
 
 	internal ImagePaintOutlineNumberLabelManager(
 		Canvas canvas,
 		PaintElementHistory history,
-		Dictionary<PaintRectangle, TextBlock> labels,
+		Dictionary<PaintRectangle, ImagePaintOutlineNumberLabel> labels,
 		Func<double> fontSizeProvider)
 	{
 		_canvas = canvas;
@@ -26,11 +25,11 @@ internal sealed class ImagePaintOutlineNumberLabelManager
 		_fontSizeProvider = fontSizeProvider;
 	}
 
-	internal IEnumerable<TextBlock> Labels => _labels.Values;
+	internal IEnumerable<ImagePaintOutlineNumberLabel> Labels => _labels.Values;
 
 	internal void Update(bool showOutlineNumbers)
 	{
-		foreach (TextBlock label in _labels.Values)
+		foreach (ImagePaintOutlineNumberLabel label in _labels.Values)
 		{
 			_canvas.Children.Remove(label);
 		}
@@ -66,7 +65,7 @@ internal sealed class ImagePaintOutlineNumberLabelManager
 
 	internal void ShiftLabels(double offsetX, double offsetY)
 	{
-		foreach (TextBlock label in _labels.Values)
+		foreach (ImagePaintOutlineNumberLabel label in _labels.Values)
 		{
 			OffsetCanvasChild(label, offsetX, offsetY);
 		}
@@ -86,31 +85,16 @@ internal sealed class ImagePaintOutlineNumberLabelManager
 		return count;
 	}
 
-	private TextBlock CreateOutlineNumberLabel(int number)
+	private ImagePaintOutlineNumberLabel CreateOutlineNumberLabel(int number)
 	{
-		return new TextBlock
-		{
-			Text = GetOutlineNumberText(number),
-			Foreground = Brushes.Red,
-			FontSize = _fontSizeProvider(),
-			FontWeight = FontWeights.Bold,
-			IsHitTestVisible = false
-		};
-	}
-
-	private static string GetOutlineNumberText(int number)
-	{
-		if (number >= 1 && number <= CircledNumberTexts.Length)
-		{
-			return CircledNumberTexts[number - 1];
-		}
-
-		return number.ToString(System.Globalization.CultureInfo.InvariantCulture);
+		return new ImagePaintOutlineNumberLabel(
+			number.ToString(System.Globalization.CultureInfo.InvariantCulture),
+			_fontSizeProvider());
 	}
 
 	private void PositionOutlineNumberLabel(
 		PaintRectangle paintRectangle,
-		TextBlock label,
+		ImagePaintOutlineNumberLabel label,
 		List<Rect> placedLabelBounds)
 	{
 		label.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));

@@ -1,6 +1,5 @@
 using System.Collections.Generic;
 using System.Windows;
-using System.Windows.Controls;
 using System.Windows.Input;
 
 namespace Clipboard;
@@ -17,7 +16,7 @@ internal sealed class ImagePaintEditorState
 
 	internal ImagePaintWorkspaceState Workspace { get; } = new();
 
-	internal Dictionary<PaintRectangle, TextBlock> OutlineNumberLabels { get; } = new();
+	internal Dictionary<PaintRectangle, ImagePaintOutlineNumberLabel> OutlineNumberLabels { get; } = new();
 
 	internal bool HasPaintChanges { get; set; }
 }
