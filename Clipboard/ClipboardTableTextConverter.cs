@@ -51,24 +51,19 @@ internal static class ClipboardTableTextConverter
 	private static SourceFormat DetectSourceFormat(string text)
 	{
 		string[] lines = text.Split('\n');
-		if (CountUnquotedCharacters(text, '\t') > 0)
+		if (HasConsistentDelimitedColumns(text, '\t', minimumRowCount: 1))
 		{
 			return SourceFormat.Tsv;
 		}
 
-		if (LooksLikeMarkdown(lines))
+		if (HasConsistentMarkdownColumns(lines))
 		{
 			return SourceFormat.Markdown;
 		}
 
-		if (CountUnquotedCharacters(text, ',') > 0)
+		if (HasConsistentDelimitedColumns(text, ',', minimumRowCount: 2))
 		{
 			return SourceFormat.Csv;
-		}
-
-		if (lines.Any(line => CountUnescapedPipes(line) > 0))
-		{
-			return SourceFormat.Markdown;
 		}
 
 		return SourceFormat.PlainText;
@@ -95,40 +90,60 @@ internal static class ClipboardTableTextConverter
 		return rows;
 	}
 
-	private static bool LooksLikeMarkdown(string[] lines)
+	private static bool HasConsistentDelimitedColumns(string text, char delimiter, int minimumRowCount)
 	{
-		List<string> meaningfulLines = lines
-			.Where(line => !string.IsNullOrWhiteSpace(line))
-			.Take(12)
-			.ToList();
-		if (meaningfulLines.Count == 0)
+		if (!TryParseDelimited(text, delimiter, out List<List<string>> rows))
 		{
 			return false;
 		}
 
-		if (meaningfulLines.Count >= 2 &&
-			(CountUnescapedPipes(meaningfulLines[0]) > 0 || CountUnescapedPipes(meaningfulLines[1]) > 0) &&
-			IsMarkdownSeparatorRow(ParseMarkdownRow(meaningfulLines[1])))
+		List<List<string>> meaningfulRows = rows
+			.Where(row => !IsBlankRow(row))
+			.ToList();
+		if (meaningfulRows.Count < minimumRowCount)
 		{
-			return true;
+			return false;
 		}
 
-		foreach (string line in meaningfulLines)
+		int columnCount = meaningfulRows[0].Count;
+		return columnCount >= 2 && meaningfulRows.All(row => row.Count == columnCount);
+	}
+
+	private static bool HasConsistentMarkdownColumns(string[] lines)
+	{
+		List<string> meaningfulLines = lines
+			.Where(line => !string.IsNullOrWhiteSpace(line))
+			.ToList();
+		if (meaningfulLines.Count < 2 || !meaningfulLines.Any(line => CountUnescapedPipes(line) > 0))
 		{
-			string trimmed = line.Trim();
-			if (CountUnescapedPipes(trimmed) > 0 &&
-				(trimmed.StartsWith('|') || EndsWithUnescapedPipe(trimmed)))
-			{
-				return true;
-			}
+			return false;
 		}
 
-		return meaningfulLines.Count >= 2 && meaningfulLines.All(line => CountUnescapedPipes(line) > 0);
+		List<List<string>> rows = meaningfulLines
+			.Select(ParseMarkdownRow)
+			.ToList();
+		int columnCount = rows[0].Count;
+		bool hasSeparatorRow = IsMarkdownSeparatorRow(rows[1]);
+		if (hasSeparatorRow)
+		{
+			return rows[1].Count == columnCount &&
+				rows.Skip(2).All(row => row.Count == columnCount);
+		}
+
+		return columnCount >= 2 && rows.All(row => row.Count == columnCount);
 	}
 
 	private static List<List<string>> ParseDelimited(string text, char delimiter)
 	{
-		var rows = new List<List<string>>();
+		TryParseDelimited(text, delimiter, out List<List<string>> rows);
+		return rows
+			.Where(row => !IsBlankRow(row))
+			.ToList();
+	}
+
+	private static bool TryParseDelimited(string text, char delimiter, out List<List<string>> rows)
+	{
+		rows = new List<List<string>>();
 		var row = new List<string>();
 		var cell = new StringBuilder();
 		bool inQuotes = false;
@@ -176,15 +191,15 @@ internal static class ClipboardTableTextConverter
 		row.Add(cell.ToString());
 		rows.Add(row);
 		RemoveTrailingEmptyRows(rows);
-		return rows;
+		return !inQuotes;
 	}
 
 	private static List<List<string>> ParseMarkdown(string[] lines)
 	{
 		var rows = lines
+			.Where(line => !string.IsNullOrWhiteSpace(line))
 			.Select(ParseMarkdownRow)
 			.ToList();
-		RemoveLeadingAndTrailingEmptyRows(rows);
 		if (rows.Count >= 2 && IsMarkdownSeparatorRow(rows[1]))
 		{
 			rows.RemoveAt(1);
@@ -308,32 +323,6 @@ internal static class ClipboardTableTextConverter
 			.Replace("\n", "<br>");
 	}
 
-	private static int CountUnquotedCharacters(string text, char target)
-	{
-		int count = 0;
-		bool inQuotes = false;
-		for (int index = 0; index < text.Length; index++)
-		{
-			if (text[index] == '"')
-			{
-				if (inQuotes && index + 1 < text.Length && text[index + 1] == '"')
-				{
-					index++;
-				}
-				else
-				{
-					inQuotes = !inQuotes;
-				}
-			}
-			else if (!inQuotes && text[index] == target)
-			{
-				count++;
-			}
-		}
-
-		return count;
-	}
-
 	private static int CountUnescapedPipes(string text)
 	{
 		int count = 0;
@@ -367,20 +356,16 @@ internal static class ClipboardTableTextConverter
 		return slashCount % 2 == 0;
 	}
 
+	private static bool IsBlankRow(List<string> row)
+	{
+		return row.Count == 1 && string.IsNullOrWhiteSpace(row[0]);
+	}
+
 	private static void RemoveTrailingEmptyRows(List<List<string>> rows)
 	{
 		while (rows.Count > 1 && rows[^1].All(string.IsNullOrEmpty))
 		{
 			rows.RemoveAt(rows.Count - 1);
-		}
-	}
-
-	private static void RemoveLeadingAndTrailingEmptyRows(List<List<string>> rows)
-	{
-		RemoveTrailingEmptyRows(rows);
-		while (rows.Count > 1 && rows[0].All(string.IsNullOrWhiteSpace))
-		{
-			rows.RemoveAt(0);
 		}
 	}
 
