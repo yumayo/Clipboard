@@ -1043,6 +1043,7 @@ internal sealed class ClipboardHistoryWindow : Window
 			var item = new HistoryItemControl(entry, LoadHistoryHoverPreviewAsync, IsSelectionModeActive);
 			item.Activated += (_, _) => PasteEntry(entry);
 			item.PaintRequested += (_, _) => OpenImagePaintWindow(entry);
+			item.TableTextPasteRequested += format => PasteEntryAsTableText(entry, format);
 			item.CheckedChanged += (_, _) => UpdateSelectionFooter();
 			_listPanel.Children.Add(item);
 		}
@@ -1168,6 +1169,12 @@ internal sealed class ClipboardHistoryWindow : Window
 	{
 		Hide();
 		ClipboardManager.PasteHistoryEntry(entry.Id, _targetWindow, _targetUsesTerminalInput);
+	}
+
+	private void PasteEntryAsTableText(ClipboardHistoryEntry entry, ClipboardTableTextFormat format)
+	{
+		Hide();
+		ClipboardManager.PasteHistoryEntryAsTableText(entry.Id, _targetWindow, format, _targetUsesTerminalInput);
 	}
 
 	private async void OpenImagePaintWindow(ClipboardHistoryEntry entry)
@@ -2284,6 +2291,7 @@ internal sealed class ClipboardHistoryWindow : Window
 
 		public event EventHandler? Activated;
 		public event EventHandler? PaintRequested;
+		public event Action<ClipboardTableTextFormat>? TableTextPasteRequested;
 		public event EventHandler? CheckedChanged;
 
 		public long EntryId => _entry.Id;
@@ -2653,6 +2661,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		private Grid CreateContent(ClipboardHistoryEntry entry)
 		{
 			var grid = new Grid();
+			bool supportsTableTextPaste = entry.Kind is ClipboardHistoryKind.Text or ClipboardHistoryKind.Html or ClipboardHistoryKind.Rtf;
 			if (entry.Kind == ClipboardHistoryKind.Image)
 			{
 				grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(ClipboardHistoryMetadata.ThumbnailLogicalWidth + 12) });
@@ -2700,6 +2709,14 @@ internal sealed class ClipboardHistoryWindow : Window
 			else
 			{
 				grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+				if (supportsTableTextPaste)
+				{
+					grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+					var formatButtons = CreateTableTextPasteButtons();
+					Grid.SetColumn(formatButtons, 1);
+					grid.Children.Add(formatButtons);
+				}
 			}
 
 			var previewLabel = new TextBlock
@@ -2708,13 +2725,56 @@ internal sealed class ClipboardHistoryWindow : Window
 				TextWrapping = TextWrapping.Wrap,
 				TextTrimming = TextTrimming.CharacterEllipsis,
 				VerticalAlignment = VerticalAlignment.Stretch,
-				Margin = entry.Kind == ClipboardHistoryKind.Image ? new Thickness(0, 0, 8, 0) : new Thickness(0)
+				Margin = entry.Kind == ClipboardHistoryKind.Image || supportsTableTextPaste
+					? new Thickness(0, 0, 8, 0)
+					: new Thickness(0)
 			};
 			previewLabel.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
 
 			Grid.SetColumn(previewLabel, entry.Kind == ClipboardHistoryKind.Image ? 1 : 0);
 			grid.Children.Add(previewLabel);
 			return grid;
+		}
+
+		private StackPanel CreateTableTextPasteButtons()
+		{
+			var panel = new StackPanel
+			{
+				Orientation = Orientation.Horizontal,
+				VerticalAlignment = VerticalAlignment.Center
+			};
+			panel.Children.Add(CreateTableTextPasteButton("TSV", "TSVとして貼り付け", ClipboardTableTextFormat.Tsv, 44));
+			panel.Children.Add(CreateTableTextPasteButton("CSV", "CSVとして貼り付け", ClipboardTableTextFormat.Csv, 44));
+			panel.Children.Add(CreateTableTextPasteButton("Markdown", "Markdownとして貼り付け", ClipboardTableTextFormat.Markdown, 72));
+			return panel;
+		}
+
+		private Button CreateTableTextPasteButton(
+			string label,
+			string toolTip,
+			ClipboardTableTextFormat format,
+			double width)
+		{
+			var button = new Button
+			{
+				Content = label,
+				Width = width,
+				Height = 32,
+				Margin = new Thickness(4, 0, 0, 0),
+				VerticalAlignment = VerticalAlignment.Center,
+				Focusable = false,
+				Cursor = Cursors.Hand,
+				ToolTip = toolTip,
+				FontSize = 11,
+				Padding = new Thickness(4, 0, 4, 0)
+			};
+			AppTheme.ApplyButton(button);
+			button.Click += (_, e) =>
+			{
+				e.Handled = true;
+				TableTextPasteRequested?.Invoke(format);
+			};
+			return button;
 		}
 
 		private Button CreatePaintButton()

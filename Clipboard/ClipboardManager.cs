@@ -128,6 +128,47 @@ public static class ClipboardManager
 		}
 	}
 
+	internal static bool PasteHistoryEntryAsTableText(
+		long historyId,
+		IntPtr targetWindow,
+		ClipboardTableTextFormat format,
+		bool preferPlainTextPaste = false)
+	{
+		try
+		{
+			ClipboardStoredContent? content = ClipboardDatabase.LoadContent(historyId);
+			if (content == null)
+			{
+				Logger.Warning($"ClipboardManager: 履歴が見つかりません: Id={historyId}");
+				return false;
+			}
+
+			if (content.Kind is not (ClipboardHistoryKind.Text or ClipboardHistoryKind.Html or ClipboardHistoryKind.Rtf))
+			{
+				Logger.Warning($"ClipboardManager: テキストではない履歴は表形式へ変換できません: Id={historyId} Kind={content.Kind}");
+				return false;
+			}
+
+			string sourceText = content.PlainText ?? (content.Kind switch
+			{
+				ClipboardHistoryKind.Html => FallbackConvertHtmlToPlainText(Encoding.UTF8.GetString(content.Bytes)),
+				ClipboardHistoryKind.Rtf => FallbackConvertRtfToPlainText(Encoding.UTF8.GetString(content.Bytes)),
+				_ => Encoding.UTF8.GetString(content.Bytes)
+			});
+			string convertedText = ClipboardTableTextConverter.Convert(sourceText, format);
+			bool useConsolePaste = preferPlainTextPaste || IsConsoleLikeWindow(targetWindow);
+			SetClipboardText(convertedText);
+			PasteToTargetWindow(targetWindow, useConsolePaste);
+			return true;
+		}
+		catch (Exception ex)
+		{
+			Logger.Error(ex, $"ClipboardManager: 履歴の表形式貼り付けに失敗しました: Id={historyId} Format={format}");
+			MessageBox.Show("表形式で貼り付けできませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
+			return false;
+		}
+	}
+
 	internal static void CopyImageToClipboard(BitmapSource image)
 	{
 		SetClipboardWithRetry(() => System.Windows.Clipboard.SetImage(image), "Image", suppressNextClipboardSave: false);
