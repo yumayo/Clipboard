@@ -1079,7 +1079,8 @@ internal sealed class ClipboardImageGalleryWindow : Window
 			Id = summary.Id,
 			CreatedAt = summary.CreatedAt,
 			PreviewText = summary.PreviewText,
-			Thumbnail = CreateGalleryThumbnail(summary)
+			Thumbnail = CreateGalleryThumbnail(summary),
+			IsEdited = summary.HasPaintState
 		};
 	}
 
@@ -1238,6 +1239,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 		public required DateTime CreatedAt { get; init; }
 		public required string PreviewText { get; init; }
 		public ImageSource? Thumbnail { get; init; }
+		public bool IsEdited { get; init; }
 	}
 
 	private sealed class GalleryMessageControl : TextBlock
@@ -1326,6 +1328,13 @@ internal sealed class ClipboardImageGalleryWindow : Window
 
 			Grid.SetZIndex(_selectionCheckBox, 1);
 			grid.Children.Add(_selectionCheckBox);
+
+			if (entry.IsEdited)
+			{
+				Border editBadge = ImageEditBadgeFactory.Create();
+				Grid.SetZIndex(editBadge, 1);
+				grid.Children.Add(editBadge);
+			}
 
 			var paintButton = CreatePaintButton();
 			Grid.SetZIndex(paintButton, 1);

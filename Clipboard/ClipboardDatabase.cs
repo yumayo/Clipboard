@@ -11,6 +11,7 @@ internal sealed class ClipboardHistorySummary
 	public required DateTime CreatedAt { get; init; }
 	public required string PreviewText { get; init; }
 	public byte[]? ThumbnailBytes { get; init; }
+	public bool HasPaintState { get; init; }
 }
 
 internal sealed class ClipboardStoredContent
@@ -907,7 +908,8 @@ internal static class ClipboardDatabase
 			Kind = (ClipboardHistoryKind)reader.GetInt32(1),
 			CreatedAt = new DateTime(utcTicks, DateTimeKind.Utc).ToLocalTime(),
 			PreviewText = reader.GetString(3),
-			ThumbnailBytes = thumbnailBytes
+			ThumbnailBytes = thumbnailBytes,
+			HasPaintState = reader.GetInt64(5) != 0
 		};
 	}
 
@@ -918,7 +920,8 @@ internal static class ClipboardDatabase
 	{
 		string sql =
 			"""
-			SELECT id, kind, created_at_utc_ticks, preview_text, thumbnail
+			SELECT id, kind, created_at_utc_ticks, preview_text, thumbnail,
+				paint_state IS NOT NULL AS has_paint_state
 			FROM clipboard_history
 			""";
 		var whereClauses = new List<string>();
@@ -948,7 +951,8 @@ internal static class ClipboardDatabase
 	{
 		string sql =
 			"""
-			SELECT id, kind, created_at_utc_ticks, preview_text, thumbnail
+			SELECT id, kind, created_at_utc_ticks, preview_text, thumbnail,
+				paint_state IS NOT NULL AS has_paint_state
 			FROM clipboard_history
 			WHERE kind = $kind
 			""";

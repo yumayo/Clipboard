@@ -1948,7 +1948,8 @@ internal sealed class ClipboardHistoryWindow : Window
 			Kind = summary.Kind,
 			CreatedAt = summary.CreatedAt,
 			PreviewText = CreatePreviewText(summary),
-			Thumbnail = CreateThumbnail(summary)
+			Thumbnail = CreateThumbnail(summary),
+			IsEdited = summary.HasPaintState
 		};
 	}
 
@@ -2180,6 +2181,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		public required DateTime CreatedAt { get; init; }
 		public required string PreviewText { get; init; }
 		public ImageSource? Thumbnail { get; init; }
+		public bool IsEdited { get; init; }
 	}
 
 	private sealed class HistoryHoverPreview
@@ -2676,8 +2678,20 @@ internal sealed class ClipboardHistoryWindow : Window
 					Child = thumbnailImage
 				};
 				thumbnailBox.SetResourceReference(Border.BackgroundProperty, AppTheme.ThumbnailBackgroundBrushKey);
-				Grid.SetColumn(thumbnailBox, 0);
-				grid.Children.Add(thumbnailBox);
+
+				var thumbnailContainer = new Grid
+				{
+					Width = ClipboardHistoryMetadata.ThumbnailLogicalWidth,
+					Height = ClipboardHistoryMetadata.ThumbnailLogicalHeight
+				};
+				thumbnailContainer.Children.Add(thumbnailBox);
+				if (entry.IsEdited)
+				{
+					thumbnailContainer.Children.Add(ImageEditBadgeFactory.Create());
+				}
+
+				Grid.SetColumn(thumbnailContainer, 0);
+				grid.Children.Add(thumbnailContainer);
 
 				var paintButton = CreatePaintButton();
 				Grid.SetColumn(paintButton, 2);
