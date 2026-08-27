@@ -263,7 +263,7 @@ internal static class ClipboardTableTextConverter
 			value = value[..^1];
 		}
 
-		return value.Length >= 3 && value.All(character => character == '-');
+		return value.Length >= 1 && value.All(character => character == '-');
 	}
 
 	private static string SerializeDelimited(List<List<string>> rows, char delimiter)
