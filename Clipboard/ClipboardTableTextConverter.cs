@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 
 namespace Clipboard;
@@ -11,12 +12,25 @@ internal enum ClipboardTableTextFormat
 
 internal static class ClipboardTableTextConverter
 {
+	private const int HeaderInferenceSampleRowCount = 20;
+	private static readonly CultureInfo JapaneseCulture = CultureInfo.GetCultureInfo("ja-JP");
+
 	private enum SourceFormat
 	{
 		PlainText,
 		Tsv,
 		Csv,
 		Markdown
+	}
+
+	private enum CellDataType
+	{
+		Empty,
+		Boolean,
+		Integer,
+		Decimal,
+		DateTime,
+		Text
 	}
 
 	internal static string Convert(string text, ClipboardTableTextFormat outputFormat)
@@ -27,12 +41,15 @@ internal static class ClipboardTableTextConverter
 		}
 
 		string normalizedText = NormalizeNewLines(ClipboardTextNormalizer.NormalizeForPaste(text));
-		List<List<string>> rows = ParseRows(normalizedText, DetectSourceFormat(normalizedText));
+		SourceFormat sourceFormat = DetectSourceFormat(normalizedText);
+		List<List<string>> rows = ParseRows(normalizedText, sourceFormat);
 		return outputFormat switch
 		{
 			ClipboardTableTextFormat.Tsv => SerializeDelimited(rows, '\t'),
 			ClipboardTableTextFormat.Csv => SerializeDelimited(rows, ','),
-			ClipboardTableTextFormat.Markdown => SerializeMarkdown(rows),
+			ClipboardTableTextFormat.Markdown => SerializeMarkdown(
+				rows,
+				sourceFormat == SourceFormat.Markdown && HasExplicitMarkdownHeader(normalizedText.Split('\n'))),
 			_ => normalizedText
 		};
 	}
@@ -131,6 +148,22 @@ internal static class ClipboardTableTextConverter
 		}
 
 		return columnCount >= 2 && rows.All(row => row.Count == columnCount);
+	}
+
+	private static bool HasExplicitMarkdownHeader(string[] lines)
+	{
+		List<string> meaningfulLines = lines
+			.Where(line => !string.IsNullOrWhiteSpace(line))
+			.Take(2)
+			.ToList();
+		if (meaningfulLines.Count < 2 || !meaningfulLines.Any(line => CountUnescapedPipes(line) > 0))
+		{
+			return false;
+		}
+
+		List<string> headerRow = ParseMarkdownRow(meaningfulLines[0]);
+		List<string> separatorRow = ParseMarkdownRow(meaningfulLines[1]);
+		return separatorRow.Count == headerRow.Count && IsMarkdownSeparatorRow(separatorRow);
 	}
 
 	private static List<List<string>> ParseDelimited(string text, char delimiter)
@@ -284,7 +317,7 @@ internal static class ClipboardTableTextConverter
 		return '"' + cell.Replace("\"", "\"\"") + '"';
 	}
 
-	private static string SerializeMarkdown(List<List<string>> rows)
+	private static string SerializeMarkdown(List<List<string>> rows, bool hasExplicitHeader)
 	{
 		if (rows.Count == 0)
 		{
@@ -292,17 +325,146 @@ internal static class ClipboardTableTextConverter
 		}
 
 		int columnCount = Math.Max(1, rows.Max(row => row.Count));
+		bool useFirstRowAsHeader = hasExplicitHeader || ShouldUseFirstRowAsHeader(rows, columnCount);
+		List<string> headerRow = useFirstRowAsHeader
+			? rows[0]
+			: Enumerable.Range(1, columnCount).Select(index => $"Header{index}").ToList();
 		var outputLines = new List<string>(rows.Count + 1)
 		{
-			SerializeMarkdownRow(rows[0], columnCount),
+			SerializeMarkdownRow(headerRow, columnCount),
 			"| " + string.Join(" | ", Enumerable.Repeat("---", columnCount)) + " |"
 		};
-		for (int rowIndex = 1; rowIndex < rows.Count; rowIndex++)
+		for (int rowIndex = useFirstRowAsHeader ? 1 : 0; rowIndex < rows.Count; rowIndex++)
 		{
 			outputLines.Add(SerializeMarkdownRow(rows[rowIndex], columnCount));
 		}
 
 		return string.Join("\r\n", outputLines);
+	}
+
+	private static bool ShouldUseFirstRowAsHeader(List<List<string>> rows, int columnCount)
+	{
+		if (rows.Count < 2)
+		{
+			return false;
+		}
+
+		int score = 0;
+		bool hasStrongTypedColumn = false;
+		bool firstRowIsAllText = Enumerable.Range(0, columnCount)
+			.Select(columnIndex => GetCell(rows[0], columnIndex).Trim())
+			.All(value => value.Length > 0 && InferCellDataType(value) == CellDataType.Text);
+		int sampledRowCount = Math.Min(HeaderInferenceSampleRowCount, rows.Count - 1);
+		for (int columnIndex = 0; columnIndex < columnCount; columnIndex++)
+		{
+			string headerValue = GetCell(rows[0], columnIndex).Trim();
+			List<string> dataValues = rows
+				.Skip(1)
+				.Take(sampledRowCount)
+				.Select(row => GetCell(row, columnIndex).Trim())
+				.Where(value => value.Length > 0)
+				.ToList();
+			if (!TryGetDominantDataType(dataValues, out CellDataType dataType))
+			{
+				continue;
+			}
+
+			CellDataType headerType = InferCellDataType(headerValue);
+			if (headerType == CellDataType.Text && dataType != CellDataType.Text)
+			{
+				hasStrongTypedColumn = true;
+				score += 2;
+			}
+			else if (headerType == dataType && dataType != CellDataType.Text)
+			{
+				score -= 2;
+			}
+			else if (headerType == CellDataType.Text && dataType == CellDataType.Text)
+			{
+				int[] dataLengths = dataValues.Select(value => value.Length).Distinct().Take(2).ToArray();
+				if (dataLengths.Length == 1)
+				{
+					score += headerValue.Length == dataLengths[0] ? -1 : 1;
+				}
+			}
+			else if (headerType != CellDataType.Empty)
+			{
+				score--;
+			}
+		}
+
+		return (firstRowIsAllText && hasStrongTypedColumn) || score > 0;
+	}
+
+	private static bool TryGetDominantDataType(List<string> values, out CellDataType dataType)
+	{
+		dataType = CellDataType.Empty;
+		if (values.Count == 0)
+		{
+			return false;
+		}
+
+		var dominantType = values
+			.Select(InferCellDataType)
+			.GroupBy(type => type)
+			.Select(group => new { Type = group.Key, Count = group.Count() })
+			.OrderByDescending(group => group.Count)
+			.First();
+		int requiredCount = (int)Math.Ceiling(values.Count * 0.75);
+		if (dominantType.Count < requiredCount)
+		{
+			return false;
+		}
+
+		dataType = dominantType.Type;
+		return true;
+	}
+
+	private static CellDataType InferCellDataType(string value)
+	{
+		if (value.Length == 0)
+		{
+			return CellDataType.Empty;
+		}
+
+		if (bool.TryParse(value, out _))
+		{
+			return CellDataType.Boolean;
+		}
+
+		if (long.TryParse(value, NumberStyles.Integer | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out _))
+		{
+			return CellDataType.Integer;
+		}
+
+		if (decimal.TryParse(value, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out _))
+		{
+			return CellDataType.Decimal;
+		}
+
+		if (LooksLikeDateOrTime(value) &&
+			(DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out _) ||
+			 DateTime.TryParse(value, JapaneseCulture, DateTimeStyles.AllowWhiteSpaces, out _)))
+		{
+			return CellDataType.DateTime;
+		}
+
+		return CellDataType.Text;
+	}
+
+	private static bool LooksLikeDateOrTime(string value)
+	{
+		if (value.Contains(':') || value.Contains('年') || value.Contains('月') || value.Contains('日'))
+		{
+			return true;
+		}
+
+		return value.Count(character => character == '-' || character == '/') >= 2;
+	}
+
+	private static string GetCell(List<string> row, int columnIndex)
+	{
+		return columnIndex < row.Count ? row[columnIndex] : string.Empty;
 	}
 
 	private static string SerializeMarkdownRow(List<string> row, int columnCount)
