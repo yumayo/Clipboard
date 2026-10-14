@@ -746,7 +746,16 @@ public static class ClipboardManager
 			if (_historyWindow == null || _historyWindow.IsClosed)
 			{
 				_historyWindow = new ClipboardHistoryWindow();
-				_historyWindow.VisibleStateChanged += isVisible => _historyWindowVisible = isVisible;
+				_historyWindow.VisibleStateChanged += isVisible =>
+				{
+					_historyWindowVisible = isVisible;
+					UpdatePreviewWindowTopmost();
+				};
+			}
+
+			if (_previewWindow?.IsVisible == true)
+			{
+				_previewWindow.Topmost = false;
 			}
 
 			_historyWindow.ShowHistory(targetWindow);
@@ -756,6 +765,10 @@ public static class ClipboardManager
 		{
 			Logger.Error(ex, "ClipboardManager: 履歴画面を開けませんでした。");
 			MessageBox.Show("履歴画面を開けませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
+		}
+		finally
+		{
+			UpdatePreviewWindowTopmost();
 		}
 	}
 
@@ -771,7 +784,16 @@ public static class ClipboardManager
 			if (_imageGalleryWindow == null || _imageGalleryWindow.IsClosed)
 			{
 				_imageGalleryWindow = new ClipboardImageGalleryWindow();
-				_imageGalleryWindow.VisibleStateChanged += isVisible => _imageGalleryWindowVisible = isVisible;
+				_imageGalleryWindow.VisibleStateChanged += isVisible =>
+				{
+					_imageGalleryWindowVisible = isVisible;
+					UpdatePreviewWindowTopmost();
+				};
+			}
+
+			if (_previewWindow?.IsVisible == true)
+			{
+				_previewWindow.Topmost = false;
 			}
 
 			_imageGalleryWindow.ShowGallery(targetWindow);
@@ -781,6 +803,18 @@ public static class ClipboardManager
 		{
 			Logger.Error(ex, "ClipboardManager: 画像ギャラリーを開けませんでした。");
 			MessageBox.Show("画像ギャラリーを開けませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
+		}
+		finally
+		{
+			UpdatePreviewWindowTopmost();
+		}
+	}
+
+	private static void UpdatePreviewWindowTopmost()
+	{
+		if (_previewWindow?.IsVisible == true)
+		{
+			_previewWindow.Topmost = _historyWindow?.IsVisible != true && _imageGalleryWindow?.IsVisible != true;
 		}
 	}
 
@@ -1057,6 +1091,12 @@ public static class ClipboardManager
 			return true;
 		}
 
+		// 一度閉じるために使ったEscは、キーを離すまで背後のウィンドウへ渡さない。
+		if (isKeyDown && vkCode == NativeMethods.VK_ESCAPE && vkCode == _historyConsumedKeyUpCode)
+		{
+			return true;
+		}
+
 		if (!isKeyDown || IsModifierKeyDown())
 		{
 			return false;
@@ -1064,6 +1104,13 @@ public static class ClipboardManager
 
 		if (_historyWindowVisible)
 		{
+			if (vkCode == NativeMethods.VK_ESCAPE)
+			{
+				_historyConsumedKeyUpCode = vkCode;
+				DispatchToUi(() => _historyWindow?.HideFromKeyboard());
+				return true;
+			}
+
 			if (_historyWindow?.IsForegroundWindow() == true)
 			{
 				return false;
@@ -1083,22 +1130,10 @@ public static class ClipboardManager
 				DispatchToUi(() => _historyWindow?.ActivateSelectedItemFromKeyboard());
 				return true;
 			}
-
-			if (vkCode == NativeMethods.VK_ESCAPE)
-			{
-				_historyConsumedKeyUpCode = vkCode;
-				DispatchToUi(() => _historyWindow?.HideFromKeyboard());
-				return true;
-			}
 		}
 
 		if (_imageGalleryWindowVisible)
 		{
-			if (_imageGalleryWindow?.IsForegroundWindow() == true)
-			{
-				return false;
-			}
-
 			if (vkCode == NativeMethods.VK_ESCAPE)
 			{
 				_historyConsumedKeyUpCode = vkCode;
