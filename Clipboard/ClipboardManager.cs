@@ -4,6 +4,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Documents;
 using System.Windows.Interop;
@@ -29,11 +30,15 @@ public static class ClipboardManager
 	private const int ClipboardSetRetryCount = 20;
 	private const int ClipboardSetRetryDelayMilliseconds = 25;
 	private const int ClipboardOpenFailedErrorCode = unchecked((int)0x800401D0);
+	private const int ClipboardReadRetryCount = 10;
+	private const int ClipboardReadRetryDelayMilliseconds = 25;
 	private const string ConsoleWindowClassName = "ConsoleWindowClass";
 	private const string WindowsTerminalClassName = "CASCADIA_HOSTING_WINDOW_CLASS";
 	private static ClipboardMonitorWindow? _monitorWindow;
 	private static ClipboardHistoryWindow? _historyWindow;
 	private static ClipboardImageGalleryWindow? _imageGalleryWindow;
+	private static ClipboardPreviewWindow? _previewWindow;
+	private static bool _isOpeningClipboardPreview;
 	private static string _concatenatedText = string.Empty;
 	private static int _concatenationCount = 0;
 	private static readonly object _concatenationLock = new();
@@ -49,6 +54,7 @@ public static class ClipboardManager
 	private static bool _winComboHandled = false;
 	private static bool _swallowWinVKeyUp = false;
 	private static bool _swallowWinBKeyUp = false;
+	private static bool _swallowWinCKeyUp = false;
 	private static int _suppressedWinKeyCode = 0;
 	private static uint _hookThreadId = 0;
 	private static int _historyConsumedKeyUpCode = 0;
@@ -92,6 +98,9 @@ public static class ClipboardManager
 			_imageGalleryWindow.CloseWindow();
 			_imageGalleryWindow = null;
 		}
+
+		_previewWindow?.Close();
+		_previewWindow = null;
 	}
 
 	public static string GetSaveDirectoryPath()
@@ -266,6 +275,7 @@ public static class ClipboardManager
 		ResetSuppressedWindowsKeyState();
 		_swallowWinVKeyUp = false;
 		_swallowWinBKeyUp = false;
+		_swallowWinCKeyUp = false;
 	}
 
 	private static void KeyboardHookThreadMain()
@@ -332,15 +342,23 @@ public static class ClipboardManager
 
 			if (isKeyDown)
 			{
-				if (IsWindowsHistoryComboKey(vkCode) && (_winKeySuppressed || IsPhysicalWindowsKeyDown()))
+				if (IsWindowsClipboardComboKey(vkCode) && (_winKeySuppressed || IsPhysicalWindowsKeyDown()))
 				{
-					bool isGalleryKey = vkCode == NativeMethods.VK_B;
-					bool shouldHandleCombo = isGalleryKey ? !_swallowWinBKeyUp : !_swallowWinVKeyUp;
+					bool shouldHandleCombo = vkCode switch
+					{
+						NativeMethods.VK_B => !_swallowWinBKeyUp,
+						NativeMethods.VK_C => !_swallowWinCKeyUp,
+						_ => !_swallowWinVKeyUp
+					};
 					if (shouldHandleCombo)
 					{
-						if (isGalleryKey)
+						if (vkCode == NativeMethods.VK_B)
 						{
 							_swallowWinBKeyUp = true;
+						}
+						else if (vkCode == NativeMethods.VK_C)
+						{
+							_swallowWinCKeyUp = true;
 						}
 						else
 						{
@@ -353,9 +371,13 @@ public static class ClipboardManager
 							NeutralizeWindowsKey();
 						}
 
-						if (isGalleryKey)
+						if (vkCode == NativeMethods.VK_B)
 						{
 							ShowImageGalleryFromHotKey();
+						}
+						else if (vkCode == NativeMethods.VK_C)
+						{
+							ShowClipboardPreviewFromHotKey();
 						}
 						else
 						{
@@ -432,6 +454,11 @@ public static class ClipboardManager
 				else if (vkCode == NativeMethods.VK_B && _swallowWinBKeyUp)
 				{
 					_swallowWinBKeyUp = false;
+					return (IntPtr)1;
+				}
+				else if (vkCode == NativeMethods.VK_C && _swallowWinCKeyUp)
+				{
+					_swallowWinCKeyUp = false;
 					return (IntPtr)1;
 				}
 			}
@@ -624,6 +651,70 @@ public static class ClipboardManager
 		IntPtr targetWindow = NativeMethods.GetForegroundWindow();
 		Logger.Debug($"ClipboardManager: Win+B 対象ウィンドウを取得しました。TargetWindow={FormatHandle(targetWindow)}");
 		DispatchToUi(() => ShowImageGalleryWindow(targetWindow));
+	}
+
+	private static void ShowClipboardPreviewFromHotKey()
+	{
+		DispatchToUi(() => _ = ShowClipboardPreviewWindowAsync());
+	}
+
+	private static async Task ShowClipboardPreviewWindowAsync()
+	{
+		if (_isOpeningClipboardPreview)
+		{
+			return;
+		}
+
+		_isOpeningClipboardPreview = true;
+		try
+		{
+			var (bytes, kind, plainText) = await ReadClipboardForPreviewAsync();
+			if (_monitorWindow == null)
+			{
+				return;
+			}
+
+			_historyWindow?.HideFromKeyboard();
+			_imageGalleryWindow?.HideFromKeyboard();
+			if (_previewWindow == null)
+			{
+				_previewWindow = new ClipboardPreviewWindow();
+				_previewWindow.Closed += (_, _) => _previewWindow = null;
+			}
+
+			_previewWindow.ShowContent(bytes, kind, plainText);
+		}
+		catch (Exception ex)
+		{
+			Logger.Error(ex, "ClipboardManager: クリップボードのプレビューを表示できませんでした。");
+			MessageBox.Show("クリップボードの内容を表示できませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
+		}
+		finally
+		{
+			_isOpeningClipboardPreview = false;
+		}
+	}
+
+	private static async Task<(byte[] bytes, ClipboardHistoryKind kind, string? plainText)> ReadClipboardForPreviewAsync()
+	{
+		for (int attempt = 0; ; attempt++)
+		{
+			try
+			{
+				var content = GetClipboardContent();
+				if (content.kind == ClipboardHistoryKind.Unknown && System.Windows.Clipboard.ContainsFileDropList())
+				{
+					string paths = string.Join(Environment.NewLine, System.Windows.Clipboard.GetFileDropList().Cast<string>());
+					return (Encoding.UTF8.GetBytes(paths), ClipboardHistoryKind.Text, paths);
+				}
+
+				return content;
+			}
+			catch (ExternalException ex) when (ex.HResult == ClipboardOpenFailedErrorCode && attempt < ClipboardReadRetryCount - 1)
+			{
+				await Task.Delay(ClipboardReadRetryDelayMilliseconds);
+			}
+		}
 	}
 
 	private static void DispatchToUi(Action action)
@@ -1019,9 +1110,9 @@ public static class ClipboardManager
 		return false;
 	}
 
-	private static bool IsWindowsHistoryComboKey(int vkCode)
+	private static bool IsWindowsClipboardComboKey(int vkCode)
 	{
-		return vkCode == NativeMethods.VK_V || vkCode == NativeMethods.VK_B;
+		return vkCode == NativeMethods.VK_V || vkCode == NativeMethods.VK_B || vkCode == NativeMethods.VK_C;
 	}
 
 	private static bool IsHistoryNavigationKey(int vkCode)
@@ -1138,6 +1229,7 @@ public static class ClipboardManager
 		private readonly HwndSource _source;
 		private bool _registeredWinVHotkey;
 		private bool _registeredWinBHotkey;
+		private bool _registeredWinCHotkey;
 		private bool _isDisposed;
 
 		public ClipboardMonitorWindow()
@@ -1182,6 +1274,21 @@ public static class ClipboardManager
 			{
 				Logger.Warning($"ClipboardManager: Win+B ホットキー登録に失敗しました。低レベルフックで代替します。Win32Error={Marshal.GetLastWin32Error()}");
 			}
+
+			_registeredWinCHotkey = NativeMethods.RegisterHotKey(
+				_source.Handle,
+				NativeMethods.HOTKEY_ID_WIN_C,
+				NativeMethods.MOD_WIN | NativeMethods.MOD_NOREPEAT,
+				NativeMethods.VK_C);
+
+			if (_registeredWinCHotkey)
+			{
+				Logger.Debug("ClipboardManager: Win+C ホットキーを登録しました。");
+			}
+			else
+			{
+				Logger.Warning($"ClipboardManager: Win+C ホットキー登録に失敗しました。低レベルフックで代替します。Win32Error={Marshal.GetLastWin32Error()}");
+			}
 		}
 
 		public void Dispose()
@@ -1204,6 +1311,12 @@ public static class ClipboardManager
 				_registeredWinBHotkey = false;
 			}
 
+			if (_registeredWinCHotkey)
+			{
+				NativeMethods.UnregisterHotKey(_source.Handle, NativeMethods.HOTKEY_ID_WIN_C);
+				_registeredWinCHotkey = false;
+			}
+
 			NativeMethods.RemoveClipboardFormatListener(_source.Handle);
 			_source.RemoveHook(WndProc);
 			_source.Dispose();
@@ -1221,6 +1334,13 @@ public static class ClipboardManager
 			if (msg == NativeMethods.WM_HOTKEY && wParam.ToInt32() == NativeMethods.HOTKEY_ID_WIN_B)
 			{
 				ShowImageGalleryFromHotKey();
+				handled = true;
+				return IntPtr.Zero;
+			}
+
+			if (msg == NativeMethods.WM_HOTKEY && wParam.ToInt32() == NativeMethods.HOTKEY_ID_WIN_C)
+			{
+				ShowClipboardPreviewFromHotKey();
 				handled = true;
 				return IntPtr.Zero;
 			}

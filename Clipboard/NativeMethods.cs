@@ -37,6 +37,7 @@ internal static class NativeMethods
 	public const int VK_RETURN = 0x0D;
 	public const int VK_ESCAPE = 0x1B;
 	public const int VK_B = 0x42;
+	public const int VK_C = 0x43;
 	public const int VK_V = 0x56;
 	public const int VK_CONTROL = 0x11;
 	public const int VK_SHIFT = 0x10;
@@ -47,6 +48,7 @@ internal static class NativeMethods
 
 	public const int HOTKEY_ID_WIN_V = 0x5601;
 	public const int HOTKEY_ID_WIN_B = 0x4201;
+	public const int HOTKEY_ID_WIN_C = 0x4301;
 	public const uint MOD_WIN = 0x0008;
 	public const uint MOD_NOREPEAT = 0x4000;
 
