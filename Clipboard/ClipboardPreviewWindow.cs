@@ -12,7 +12,16 @@ namespace Clipboard;
 
 internal sealed class ClipboardPreviewWindow : Window
 {
+	private const double BaseTextFontSize = 15;
+	private const double MinZoom = 0.1;
+	private const double MaxZoom = 10;
+	private const double ZoomStep = 1.1;
 	private readonly Grid _contentPanel;
+	private TextBox? _textBox;
+	private Image? _image;
+	private ScrollViewer? _imageScrollViewer;
+	private double _zoom = 1;
+	private bool _fitImageToWindow;
 
 	public ClipboardPreviewWindow()
 	{
@@ -30,11 +39,17 @@ internal sealed class ClipboardPreviewWindow : Window
 		AppTheme.ApplyWindow(this);
 
 		_contentPanel = new Grid();
+		_contentPanel.SizeChanged += (_, _) => FitImageToWindow();
 		Content = _contentPanel;
 	}
 
 	public void ShowContent(byte[] bytes, ClipboardHistoryKind kind, string? plainText)
 	{
+		_textBox = null;
+		_image = null;
+		_imageScrollViewer = null;
+		_zoom = 1;
+		_fitImageToWindow = kind == ClipboardHistoryKind.Image;
 		FrameworkElement content = kind switch
 		{
 			ClipboardHistoryKind.Image => CreateImageContent(bytes),
@@ -51,12 +66,20 @@ internal sealed class ClipboardPreviewWindow : Window
 		}
 
 		Show();
+		FitImageToWindow();
 		Activate();
 		content.Focus();
 	}
 
 	protected override void OnPreviewKeyDown(KeyEventArgs e)
 	{
+		if ((Keyboard.Modifiers & ModifierKeys.Control) != 0 && (e.Key == Key.D0 || e.Key == Key.NumPad0))
+		{
+			SetZoom(1);
+			e.Handled = true;
+			return;
+		}
+
 		if (e.Key == Key.Escape)
 		{
 			e.Handled = true;
@@ -67,7 +90,85 @@ internal sealed class ClipboardPreviewWindow : Window
 		base.OnPreviewKeyDown(e);
 	}
 
-	private static FrameworkElement CreateTextContent(string text)
+	protected override void OnPreviewMouseWheel(MouseWheelEventArgs e)
+	{
+		if ((Keyboard.Modifiers & ModifierKeys.Control) != 0 && (_textBox != null || _image != null))
+		{
+			ScrollViewer? scrollViewer = GetContentScrollViewer();
+			Point? anchor = scrollViewer == null ? null : e.GetPosition(scrollViewer);
+			SetZoom(_zoom * Math.Pow(ZoomStep, e.Delta / 120.0), anchor);
+			e.Handled = true;
+			return;
+		}
+
+		base.OnPreviewMouseWheel(e);
+	}
+
+	private void SetZoom(double zoom, Point? anchor = null)
+	{
+		if (_textBox == null && _image == null)
+		{
+			return;
+		}
+
+		_fitImageToWindow = false;
+		// 初期の画像フィット率が範囲外でも、ホイールの方向と逆に拡縮しないようにする。
+		double nextZoom = Math.Clamp(zoom, Math.Min(MinZoom, _zoom), Math.Max(MaxZoom, _zoom));
+		if (Math.Abs(nextZoom - _zoom) < 0.0001)
+		{
+			return;
+		}
+
+		ScrollViewer? scrollViewer = GetContentScrollViewer();
+		Point anchorPoint = anchor ?? new Point(
+			(scrollViewer?.ViewportWidth ?? 0) / 2,
+			(scrollViewer?.ViewportHeight ?? 0) / 2);
+		double zoomRatio = nextZoom / _zoom;
+		double horizontalOffset = ((scrollViewer?.HorizontalOffset ?? 0) + anchorPoint.X) * zoomRatio - anchorPoint.X;
+		double verticalOffset = ((scrollViewer?.VerticalOffset ?? 0) + anchorPoint.Y) * zoomRatio - anchorPoint.Y;
+
+		_zoom = nextZoom;
+		UpdateZoomedContent();
+		if (scrollViewer != null)
+		{
+			scrollViewer.UpdateLayout();
+			scrollViewer.ScrollToHorizontalOffset(Math.Clamp(horizontalOffset, 0, scrollViewer.ScrollableWidth));
+			scrollViewer.ScrollToVerticalOffset(Math.Clamp(verticalOffset, 0, scrollViewer.ScrollableHeight));
+		}
+	}
+
+	private ScrollViewer? GetContentScrollViewer()
+	{
+		return _imageScrollViewer ?? _textBox?.Template.FindName("PART_ContentHost", _textBox) as ScrollViewer;
+	}
+
+	private void FitImageToWindow()
+	{
+		if (!_fitImageToWindow || _image?.Source is not BitmapSource source ||
+			_contentPanel.ActualWidth <= 0 || _contentPanel.ActualHeight <= 0)
+		{
+			return;
+		}
+
+		_zoom = Math.Min(_contentPanel.ActualWidth / source.Width, _contentPanel.ActualHeight / source.Height);
+		UpdateZoomedContent();
+	}
+
+	private void UpdateZoomedContent()
+	{
+		if (_textBox != null)
+		{
+			_textBox.FontSize = BaseTextFontSize * _zoom;
+		}
+
+		if (_image?.Source is BitmapSource source)
+		{
+			_image.Width = source.Width * _zoom;
+			_image.Height = source.Height * _zoom;
+		}
+	}
+
+	private FrameworkElement CreateTextContent(string text)
 	{
 		if (text.Length == 0)
 		{
@@ -83,16 +184,15 @@ internal sealed class ClipboardPreviewWindow : Window
 			TextWrapping = TextWrapping.NoWrap,
 			VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
 			HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-			FontSize = 15,
+			FontSize = BaseTextFontSize,
 			Padding = new Thickness(0),
 			BorderThickness = new Thickness(0),
 			Template = CreateTextBoxTemplate()
 		};
 		AppTheme.ApplyTextBox(textBox);
-		var scrollViewerStyle = new Style(typeof(ScrollViewer));
-		scrollViewerStyle.Setters.Add(new Setter(Control.TemplateProperty, CreateTextScrollViewerTemplate()));
-		textBox.Resources[typeof(ScrollViewer)] = scrollViewerStyle;
+		ApplyScrollViewerStyle(textBox);
 		textBox.PreviewMouseWheel += TextBox_PreviewMouseWheel;
+		_textBox = textBox;
 		return textBox;
 	}
 
@@ -125,7 +225,14 @@ internal sealed class ClipboardPreviewWindow : Window
 		e.Handled = true;
 	}
 
-	private static ControlTemplate CreateTextScrollViewerTemplate()
+	private static void ApplyScrollViewerStyle(FrameworkElement element)
+	{
+		var style = new Style(typeof(ScrollViewer));
+		style.Setters.Add(new Setter(Control.TemplateProperty, CreateScrollViewerTemplate()));
+		element.Resources[typeof(ScrollViewer)] = style;
+	}
+
+	private static ControlTemplate CreateScrollViewerTemplate()
 	{
 		// 標準テンプレートの右下の交差部分はOSのコントロール色を使うため、
 		// スクロールバーと同じアプリのテーマ色を明示する。
@@ -168,7 +275,7 @@ internal sealed class ClipboardPreviewWindow : Window
 			""");
 	}
 
-	private static FrameworkElement CreateImageContent(byte[] bytes)
+	private FrameworkElement CreateImageContent(byte[] bytes)
 	{
 		using var stream = new MemoryStream(bytes);
 		BitmapDecoder decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
@@ -177,17 +284,39 @@ internal sealed class ClipboardPreviewWindow : Window
 		var image = new Image
 		{
 			Source = source,
+			Width = source.Width,
+			Height = source.Height,
+			HorizontalAlignment = HorizontalAlignment.Left,
+			VerticalAlignment = VerticalAlignment.Top,
 			Stretch = Stretch.Uniform,
 			SnapsToDevicePixels = true,
 			ToolTip = $"{source.PixelWidth} × {source.PixelHeight}"
 		};
 		RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.HighQuality);
-		var border = new Border
+		var scrollViewer = new ScrollViewer
 		{
-			Child = image
+			Content = image,
+			HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+			VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+			Focusable = true
 		};
-		border.SetResourceReference(Border.BackgroundProperty, AppTheme.ThumbnailBackgroundBrushKey);
-		return border;
+		scrollViewer.SetResourceReference(Control.BackgroundProperty, AppTheme.ThumbnailBackgroundBrushKey);
+		ApplyScrollViewerStyle(scrollViewer);
+		scrollViewer.PreviewMouseWheel += ImageScrollViewer_PreviewMouseWheel;
+		_image = image;
+		_imageScrollViewer = scrollViewer;
+		return scrollViewer;
+	}
+
+	private static void ImageScrollViewer_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+	{
+		if ((Keyboard.Modifiers & ModifierKeys.Shift) == 0 || sender is not ScrollViewer scrollViewer)
+		{
+			return;
+		}
+
+		scrollViewer.ScrollToHorizontalOffset(Math.Max(0, scrollViewer.HorizontalOffset - e.Delta));
+		e.Handled = true;
 	}
 
 	private static string GetDisplayText(byte[] bytes, ClipboardHistoryKind kind, string? plainText)
