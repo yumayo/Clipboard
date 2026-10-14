@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
+using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 
@@ -25,21 +26,11 @@ internal sealed class ClipboardPreviewWindow : Window
 		ShowInTaskbar = false;
 		UseLayoutRounding = true;
 		SnapsToDevicePixels = true;
+		Icon = LoadIcon();
 		AppTheme.ApplyWindow(this);
 
-		var root = new DockPanel { Margin = new Thickness(12) };
-		var hint = new TextBlock
-		{
-			Text = "Windows + C で更新  /  Esc で閉じる",
-			Margin = new Thickness(0, 10, 0, 0)
-		};
-		hint.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.MutedTextBrushKey);
-		DockPanel.SetDock(hint, Dock.Bottom);
-		root.Children.Add(hint);
-
 		_contentPanel = new Grid();
-		root.Children.Add(_contentPanel);
-		Content = root;
+		Content = _contentPanel;
 	}
 
 	public void ShowContent(byte[] bytes, ClipboardHistoryKind kind, string? plainText)
@@ -93,10 +84,88 @@ internal sealed class ClipboardPreviewWindow : Window
 			VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
 			HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
 			FontSize = 15,
-			Padding = new Thickness(10)
+			Padding = new Thickness(0),
+			BorderThickness = new Thickness(0),
+			Template = CreateTextBoxTemplate()
 		};
 		AppTheme.ApplyTextBox(textBox);
+		var scrollViewerStyle = new Style(typeof(ScrollViewer));
+		scrollViewerStyle.Setters.Add(new Setter(Control.TemplateProperty, CreateTextScrollViewerTemplate()));
+		textBox.Resources[typeof(ScrollViewer)] = scrollViewerStyle;
+		textBox.PreviewMouseWheel += TextBox_PreviewMouseWheel;
 		return textBox;
+	}
+
+	private static ControlTemplate CreateTextBoxTemplate()
+	{
+		return (ControlTemplate)XamlReader.Parse(
+			"""
+			<ControlTemplate
+				xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+				xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+				TargetType="{x:Type TextBox}">
+				<ScrollViewer x:Name="PART_ContentHost"
+					Background="{TemplateBinding Background}"
+					Focusable="False"
+					CanContentScroll="True"
+					HorizontalScrollBarVisibility="{TemplateBinding HorizontalScrollBarVisibility}"
+					VerticalScrollBarVisibility="{TemplateBinding VerticalScrollBarVisibility}" />
+			</ControlTemplate>
+			""");
+	}
+
+	private static void TextBox_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+	{
+		if ((Keyboard.Modifiers & ModifierKeys.Shift) == 0 || sender is not TextBox textBox)
+		{
+			return;
+		}
+
+		textBox.ScrollToHorizontalOffset(Math.Max(0, textBox.HorizontalOffset - e.Delta));
+		e.Handled = true;
+	}
+
+	private static ControlTemplate CreateTextScrollViewerTemplate()
+	{
+		// 標準テンプレートの右下の交差部分はOSのコントロール色を使うため、
+		// スクロールバーと同じアプリのテーマ色を明示する。
+		return (ControlTemplate)XamlReader.Parse(
+			"""
+			<ControlTemplate
+				xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+				xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+				TargetType="{x:Type ScrollViewer}">
+				<Grid Background="{TemplateBinding Background}" SnapsToDevicePixels="True">
+					<Grid.ColumnDefinitions>
+						<ColumnDefinition Width="*" />
+						<ColumnDefinition Width="Auto" />
+					</Grid.ColumnDefinitions>
+					<Grid.RowDefinitions>
+						<RowDefinition Height="*" />
+						<RowDefinition Height="Auto" />
+					</Grid.RowDefinitions>
+					<ScrollContentPresenter x:Name="PART_ScrollContentPresenter"
+						Margin="{TemplateBinding Padding}"
+						Content="{TemplateBinding Content}"
+						ContentTemplate="{TemplateBinding ContentTemplate}"
+						CanContentScroll="{TemplateBinding CanContentScroll}" />
+					<ScrollBar x:Name="PART_VerticalScrollBar" Grid.Column="1"
+						Orientation="Vertical"
+						Value="{TemplateBinding VerticalOffset}"
+						Maximum="{TemplateBinding ScrollableHeight}"
+						ViewportSize="{TemplateBinding ViewportHeight}"
+						Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}" />
+					<ScrollBar x:Name="PART_HorizontalScrollBar" Grid.Row="1"
+						Orientation="Horizontal"
+						Value="{TemplateBinding HorizontalOffset}"
+						Maximum="{TemplateBinding ScrollableWidth}"
+						ViewportSize="{TemplateBinding ViewportWidth}"
+						Visibility="{TemplateBinding ComputedHorizontalScrollBarVisibility}" />
+					<Border Grid.Column="1" Grid.Row="1"
+						Background="{DynamicResource AppTheme.ScrollBarTrackBrush}" />
+				</Grid>
+			</ControlTemplate>
+			""");
 	}
 
 	private static FrameworkElement CreateImageContent(byte[] bytes)
@@ -115,12 +184,9 @@ internal sealed class ClipboardPreviewWindow : Window
 		RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.HighQuality);
 		var border = new Border
 		{
-			Child = image,
-			Padding = new Thickness(10),
-			BorderThickness = new Thickness(1)
+			Child = image
 		};
 		border.SetResourceReference(Border.BackgroundProperty, AppTheme.ThumbnailBackgroundBrushKey);
-		border.SetResourceReference(Border.BorderBrushProperty, AppTheme.BorderBrushKey);
 		return border;
 	}
 
@@ -161,5 +227,16 @@ internal sealed class ClipboardPreviewWindow : Window
 		};
 		label.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.MutedTextBrushKey);
 		return label;
+	}
+
+	private static BitmapFrame? LoadIcon()
+	{
+		string path = Path.Combine(AppContext.BaseDirectory, "Clipboard.ico");
+		if (!File.Exists(path))
+		{
+			path = Path.Combine(Directory.GetCurrentDirectory(), "Clipboard.ico");
+		}
+
+		return File.Exists(path) ? BitmapFrame.Create(new Uri(path)) : null;
 	}
 }
