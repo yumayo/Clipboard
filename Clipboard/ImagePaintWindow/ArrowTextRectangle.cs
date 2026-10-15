@@ -105,10 +105,10 @@ internal sealed class ArrowTextRectangle : Canvas
 			_resizeHandles.Add(resizeHandleKind, CreateResizeHandle(resizeHandleKind));
 		}
 
-		Children.Add(_arrowLine);
-		Children.Add(_arrowHead);
 		Children.Add(_rectangle);
 		Children.Add(_textBox);
+		Children.Add(_arrowLine);
+		Children.Add(_arrowHead);
 		foreach (Rectangle resizeHandle in _resizeHandles.Values)
 		{
 			Children.Add(resizeHandle);
@@ -662,43 +662,36 @@ internal sealed class ArrowTextRectangle : Canvas
 
 	private Point GetArrowAttachPoint(Rect rectangleBounds, Point tipPoint, out ArrowAttachSide attachSide)
 	{
-		double leftOverflow = Math.Max(0, rectangleBounds.Left - tipPoint.X);
-		double rightOverflow = Math.Max(0, tipPoint.X - rectangleBounds.Right);
-		double topOverflow = Math.Max(0, rectangleBounds.Top - tipPoint.Y);
-		double bottomOverflow = Math.Max(0, tipPoint.Y - rectangleBounds.Bottom);
-		double horizontalOverflow = Math.Max(leftOverflow, rightOverflow);
-		double verticalOverflow = Math.Max(topOverflow, bottomOverflow);
+		double centerX = rectangleBounds.Left + rectangleBounds.Width / 2;
+		double centerY = rectangleBounds.Top + rectangleBounds.Height / 2;
+		double horizontalOffset = tipPoint.X - centerX;
+		double verticalOffset = tipPoint.Y - centerY;
+		bool isOutsideHorizontally = tipPoint.X < rectangleBounds.Left || tipPoint.X > rectangleBounds.Right;
+		bool isOutsideVertically = tipPoint.Y < rectangleBounds.Top || tipPoint.Y > rectangleBounds.Bottom;
 
-		if (horizontalOverflow >= verticalOverflow && horizontalOverflow > 0)
+		// 同じ中心の正方形を基準に辺を選び、矩形の縦横比には影響されないようにする。
+		bool useHorizontalSide = Math.Abs(horizontalOffset) >= Math.Abs(verticalOffset);
+		// 一方向だけ枠の外にある場合は、その方向の辺から出して枠内への折り返しを防ぐ。
+		if (isOutsideHorizontally != isOutsideVertically)
 		{
-			attachSide = leftOverflow >= rightOverflow ? ArrowAttachSide.Left : ArrowAttachSide.Right;
+			useHorizontalSide = isOutsideHorizontally;
 		}
-		else if (verticalOverflow > 0)
+
+		if (useHorizontalSide)
 		{
-			attachSide = topOverflow >= bottomOverflow ? ArrowAttachSide.Top : ArrowAttachSide.Bottom;
+			attachSide = horizontalOffset <= 0 ? ArrowAttachSide.Left : ArrowAttachSide.Right;
 		}
 		else
 		{
-			double leftDistance = Math.Abs(tipPoint.X - rectangleBounds.Left);
-			double rightDistance = Math.Abs(rectangleBounds.Right - tipPoint.X);
-			double topDistance = Math.Abs(tipPoint.Y - rectangleBounds.Top);
-			double bottomDistance = Math.Abs(rectangleBounds.Bottom - tipPoint.Y);
-			double minDistance = Math.Min(Math.Min(leftDistance, rightDistance), Math.Min(topDistance, bottomDistance));
-			attachSide = minDistance == leftDistance
-				? ArrowAttachSide.Left
-				: minDistance == rightDistance
-					? ArrowAttachSide.Right
-					: minDistance == topDistance
-						? ArrowAttachSide.Top
-						: ArrowAttachSide.Bottom;
+			attachSide = verticalOffset <= 0 ? ArrowAttachSide.Top : ArrowAttachSide.Bottom;
 		}
 
 		return attachSide switch
 		{
-			ArrowAttachSide.Left => new Point(rectangleBounds.Left, rectangleBounds.Top + rectangleBounds.Height / 2),
-			ArrowAttachSide.Right => new Point(rectangleBounds.Right, rectangleBounds.Top + rectangleBounds.Height / 2),
-			ArrowAttachSide.Top => new Point(rectangleBounds.Left + rectangleBounds.Width / 2, rectangleBounds.Top),
-			_ => new Point(rectangleBounds.Left + rectangleBounds.Width / 2, rectangleBounds.Bottom)
+			ArrowAttachSide.Left => new Point(rectangleBounds.Left, centerY),
+			ArrowAttachSide.Right => new Point(rectangleBounds.Right, centerY),
+			ArrowAttachSide.Top => new Point(centerX, rectangleBounds.Top),
+			_ => new Point(centerX, rectangleBounds.Bottom)
 		};
 	}
 
