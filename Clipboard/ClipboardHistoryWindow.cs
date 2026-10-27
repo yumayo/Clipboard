@@ -39,6 +39,9 @@ internal sealed class ClipboardHistoryWindow : Window
 	private const int HoverPreviewImageMaxPixelWidth = 1680;
 	private const int HoverPreviewImageMaxPixelHeight = 1260;
 	private readonly TextBox _searchBox;
+	private readonly StackPanel _searchProgressPanel;
+	private readonly ProgressBar _searchProgressBar;
+	private readonly TextBlock _searchProgressText;
 	private readonly ScrollViewer _scrollViewer;
 	private readonly StackPanel _listPanel;
 	private readonly HistoryStickyDateHeaderControl _stickyDateHeader;
@@ -56,6 +59,7 @@ internal sealed class ClipboardHistoryWindow : Window
 	private IntPtr _windowHandle;
 	private IntPtr _suppressedOutsideMouseButtonUpMessage;
 	private int _selectedItemIndex = -1;
+	private int _searchMatchedEntryCount;
 	private DateTime? _lastDisplayedHistoryDate;
 	private bool _isLoadingHistory;
 	private bool _isLoadingMoreHistory;
@@ -133,6 +137,27 @@ internal sealed class ClipboardHistoryWindow : Window
 
 		DockPanel.SetDock(searchPanel, Dock.Top);
 		rootPanel.Children.Add(searchPanel);
+
+		_searchProgressPanel = new StackPanel
+		{
+			Margin = new Thickness(10, 6, 10, 0),
+			Visibility = Visibility.Collapsed
+		};
+		_searchProgressText = new TextBlock
+		{
+			FontSize = 12,
+			Margin = new Thickness(0, 0, 0, 4)
+		};
+		_searchProgressText.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.MutedTextBrushKey);
+		_searchProgressPanel.Children.Add(_searchProgressText);
+		_searchProgressBar = new ProgressBar
+		{
+			Height = 4
+		};
+		AppTheme.ApplyProgressBar(_searchProgressBar);
+		_searchProgressPanel.Children.Add(_searchProgressBar);
+		DockPanel.SetDock(_searchProgressPanel, Dock.Top);
+		rootPanel.Children.Add(_searchProgressPanel);
 
 		_selectionFooter = CreateSelectionFooter(out _selectionCountLabel, out _paintSelectedButton);
 		DockPanel.SetDock(_selectionFooter, Dock.Bottom);
@@ -944,6 +969,11 @@ internal sealed class ClipboardHistoryWindow : Window
 		_filterHistoryCancellation = cancellationTokenSource;
 
 		string searchText = _searchBox.Text;
+		if (!string.IsNullOrWhiteSpace(searchText))
+		{
+			UpdateSearchProgress(0);
+		}
+
 		var entriesSnapshot = _historyEntries.ToList();
 		_ = ApplyHistoryFilterAsync(entriesSnapshot, searchText, delay, cancellationTokenSource);
 	}
@@ -966,20 +996,18 @@ internal sealed class ClipboardHistoryWindow : Window
 				cancellationTokenSource,
 				() => BeginHistoryFilterDisplay(entriesSnapshot.Count));
 
-			if (entriesSnapshot.Count == 0)
-			{
-				return;
-			}
-
 			bool hasSearchText = !string.IsNullOrWhiteSpace(searchText);
-			int matchedEntryCount;
-			if (hasSearchText)
+			int matchedEntryCount = 0;
+			if (entriesSnapshot.Count > 0)
 			{
-				matchedEntryCount = await DisplaySearchHistoryEntriesProgressivelyAsync(searchText, cancellationTokenSource);
-			}
-			else
-			{
-				matchedEntryCount = await DisplayHistoryEntriesProgressivelyAsync(entriesSnapshot, cancellationTokenSource);
+				if (hasSearchText)
+				{
+					matchedEntryCount = await DisplaySearchHistoryEntriesProgressivelyAsync(searchText, cancellationTokenSource);
+				}
+				else
+				{
+					matchedEntryCount = await DisplayHistoryEntriesProgressivelyAsync(entriesSnapshot, cancellationTokenSource);
+				}
 			}
 
 			if (cancellationToken.IsCancellationRequested || _filterHistoryCancellation != cancellationTokenSource)
@@ -989,7 +1017,14 @@ internal sealed class ClipboardHistoryWindow : Window
 
 			await RunCurrentFilterOnUiAsync(
 				cancellationTokenSource,
-				() => CompleteHistoryFilterDisplay(entriesSnapshot.Count, matchedEntryCount));
+				() =>
+				{
+					CompleteHistoryFilterDisplay(entriesSnapshot.Count, matchedEntryCount);
+					if (hasSearchText)
+					{
+						UpdateSearchProgress(matchedEntryCount, isComplete: true);
+					}
+				});
 		}
 		catch (OperationCanceledException)
 		{
@@ -999,6 +1034,7 @@ internal sealed class ClipboardHistoryWindow : Window
 			Logger.Error(ex, "ClipboardHistoryWindow: 履歴の検索に失敗しました。");
 			if (_filterHistoryCancellation == cancellationTokenSource)
 			{
+				HideSearchProgress();
 				ClearHistoryControls();
 				AddMessage("検索に失敗しました");
 			}
@@ -1023,6 +1059,23 @@ internal sealed class ClipboardHistoryWindow : Window
 
 			action();
 		}).Task;
+	}
+
+	private void UpdateSearchProgress(int matchedEntryCount, bool isComplete = false)
+	{
+		_searchMatchedEntryCount = matchedEntryCount;
+		_searchProgressText.Text = isComplete
+			? $"検索完了: {matchedEntryCount:N0} 件"
+			: $"検索中... {matchedEntryCount:N0} 件見つかりました";
+		_searchProgressBar.IsIndeterminate = !isComplete;
+		_searchProgressBar.Visibility = isComplete ? Visibility.Collapsed : Visibility.Visible;
+		_searchProgressPanel.Visibility = Visibility.Visible;
+	}
+
+	private void HideSearchProgress()
+	{
+		_searchProgressBar.IsIndeterminate = false;
+		_searchProgressPanel.Visibility = Visibility.Collapsed;
 	}
 
 	private void BeginHistoryFilterDisplay(int totalEntryCount)
@@ -1161,7 +1214,14 @@ internal sealed class ClipboardHistoryWindow : Window
 		matchedEntries.Clear();
 		await RunCurrentFilterOnUiAsync(
 			cancellationTokenSource,
-			() => AddMatchedHistoryEntries(entriesToAdd));
+			() =>
+			{
+				AddMatchedHistoryEntries(entriesToAdd);
+				if (!string.IsNullOrWhiteSpace(_searchBox.Text))
+				{
+					UpdateSearchProgress(_searchMatchedEntryCount + entriesToAdd.Count);
+				}
+			});
 		cancellationTokenSource.Token.ThrowIfCancellationRequested();
 	}
 
@@ -1427,6 +1487,7 @@ internal sealed class ClipboardHistoryWindow : Window
 
 	private void CancelHistoryFilter()
 	{
+		HideSearchProgress();
 		if (_filterHistoryCancellation is { IsCancellationRequested: false })
 		{
 			_filterHistoryCancellation.Cancel();
@@ -1908,21 +1969,9 @@ internal sealed class ClipboardHistoryWindow : Window
 		long? beforeId,
 		int maxEntryCount)
 	{
-		try
-		{
-			return ClipboardDatabase.LoadHistorySearchSummaries(searchText, beforeId, maxEntryCount, cancellationToken)
-				.Select(CreateHistoryEntry)
-				.ToList();
-		}
-		catch (OperationCanceledException)
-		{
-			throw;
-		}
-		catch (Exception ex)
-		{
-			Logger.Error(ex, "ClipboardHistoryWindow: 履歴の読み込みに失敗しました。");
-			return new List<ClipboardHistoryEntry>();
-		}
+		return ClipboardDatabase.LoadHistorySearchSummaries(searchText, beforeId, maxEntryCount, cancellationToken)
+			.Select(CreateHistoryEntry)
+			.ToList();
 	}
 
 	private static List<ClipboardHistoryEntry> LoadHistoryPageEntries(
