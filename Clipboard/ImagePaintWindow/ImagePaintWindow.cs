@@ -19,6 +19,7 @@ namespace Clipboard;
 
 internal sealed class ImagePaintWindow : Window
 {
+	private readonly long _historyId;
 	private readonly BitmapSource _sourceImage;
 	private readonly ImagePaintEditorState _state = new();
 	private readonly ScaleTransform _zoomTransform = new(1, 1);
@@ -55,8 +56,9 @@ internal sealed class ImagePaintWindow : Window
 		set => _state.Workspace.CanvasHeight = value;
 	}
 
-	public ImagePaintWindow(byte[] imageBytes)
+	public ImagePaintWindow(long historyId, byte[] imageBytes)
 	{
+		_historyId = historyId;
 		_sourceImage = LoadImage(imageBytes);
 		var placedImage = new PlacedImageLayout(
 			_sourceImage,
@@ -64,8 +66,9 @@ internal sealed class ImagePaintWindow : Window
 		InitializeWindow(_sourceImage.PixelHeight, new[] { placedImage }, PaintMode.RedOutlineRectangle);
 	}
 
-	public ImagePaintWindow(IReadOnlyList<byte[]> imageBytesList)
+	public ImagePaintWindow(long historyId, IReadOnlyList<byte[]> imageBytesList)
 	{
+		_historyId = historyId;
 		if (imageBytesList.Count == 0)
 		{
 			throw new InvalidOperationException("画像データが空です。");
@@ -77,8 +80,9 @@ internal sealed class ImagePaintWindow : Window
 		InitializeWindow(layout.ReferenceHeight, layout.PlacedImages, PaintMode.MoveImage);
 	}
 
-	public ImagePaintWindow(ImagePaintSerializedState savedState)
+	public ImagePaintWindow(long historyId, ImagePaintSerializedState savedState)
 	{
+		_historyId = historyId;
 		_sourceImage = CreateWhiteCanvasImage(savedState.ContentWidth, savedState.ContentHeight);
 		InitializeWindow(savedState.ContentHeight, CreatePlacedImageLayouts(savedState), savedState.PaintMode);
 		RestoreSerializedState(savedState);
@@ -1018,7 +1022,7 @@ internal sealed class ImagePaintWindow : Window
 			_state.History.CompletedElements,
 			_state.Tools,
 			renderBounds);
-		ClipboardManager.CopyPaintedImageToClipboard(paintedImage, paintStateJson);
+		ClipboardManager.CopyPaintedImageToClipboard(_historyId, paintedImage, paintStateJson);
 		return true;
 	}
 

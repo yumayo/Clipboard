@@ -534,7 +534,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 			}
 
 			Hide();
-			ImagePaintWindow paintWindow = CreateImagePaintWindow(content);
+			ImagePaintWindow paintWindow = CreateImagePaintWindow(entry.Id, content);
 			paintWindow.Show();
 			paintWindow.Activate();
 		}
@@ -568,7 +568,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 				}
 
 				Hide();
-				ImagePaintWindow paintWindow = CreateImagePaintWindow(content);
+				ImagePaintWindow paintWindow = CreateImagePaintWindow(imageIds[0], content);
 				paintWindow.Show();
 				paintWindow.Activate();
 				return;
@@ -581,7 +581,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 			}
 
 			Hide();
-			var multiPaintWindow = new ImagePaintWindow(imageBytesList);
+			var multiPaintWindow = new ImagePaintWindow(imageIds[0], imageBytesList);
 			multiPaintWindow.Show();
 			multiPaintWindow.Activate();
 		}
@@ -592,14 +592,14 @@ internal sealed class ClipboardImageGalleryWindow : Window
 		}
 	}
 
-	private static ImagePaintWindow CreateImagePaintWindow(ClipboardStoredContent content)
+	private static ImagePaintWindow CreateImagePaintWindow(long historyId, ClipboardStoredContent content)
 	{
 		if (ImagePaintSerializedState.TryDeserialize(content.PaintStateJson, out ImagePaintSerializedState? savedState) &&
 			savedState != null)
 		{
 			try
 			{
-				return new ImagePaintWindow(savedState);
+				return new ImagePaintWindow(historyId, savedState);
 			}
 			catch (Exception ex)
 			{
@@ -607,7 +607,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 			}
 		}
 
-		return new ImagePaintWindow(content.Bytes);
+		return new ImagePaintWindow(historyId, content.Bytes);
 	}
 
 	private static List<byte[]> LoadImageContents(IReadOnlyList<long> imageIds)

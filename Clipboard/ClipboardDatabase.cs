@@ -209,10 +209,9 @@ internal static class ClipboardDatabase
 		}
 	}
 
-	public static bool InsertPaintImageHistoryUnlessLatestMatches(
+	public static void UpdatePaintImageHistory(
+		long historyId,
 		byte[] content,
-		string contentHash,
-		DateTime createdAt,
 		string paintStateJson)
 	{
 		Initialize();
@@ -221,30 +220,64 @@ internal static class ClipboardDatabase
 		{
 			using var connection = OpenConnection();
 			using var transaction = connection.BeginTransaction();
-			if (TryLoadLatestHistoryIdentity(connection, transaction, out long latestId, out ClipboardHistoryKind latestKind, out string latestContentHash) &&
-				latestKind == ClipboardHistoryKind.Image &&
-				string.Equals(latestContentHash, contentHash, StringComparison.Ordinal))
+			DateTime createdAt;
+			string? sourceFilePath;
+			using (var lookup = connection.CreateCommand())
 			{
-				UpdateHistoryPaintState(connection, transaction, latestId, paintStateJson);
-				transaction.Commit();
-				return false;
+				lookup.Transaction = transaction;
+				lookup.CommandText = "SELECT created_at_utc_ticks, source_file_path FROM clipboard_history WHERE id = $id AND kind = $kind;";
+				AddParameter(lookup, "$id", historyId);
+				AddParameter(lookup, "$kind", (int)ClipboardHistoryKind.Image);
+				using var reader = lookup.ExecuteReader();
+				if (!reader.Read())
+				{
+					throw new InvalidOperationException($"編集元の画像履歴が見つかりません。Id={historyId}");
+				}
+
+				createdAt = new DateTime(reader.GetInt64(0), DateTimeKind.Utc).ToLocalTime();
+				sourceFilePath = reader.IsDBNull(1) ? null : reader.GetString(1);
 			}
 
-			var metadata = ClipboardHistoryMetadata.Create(content, ClipboardHistoryKind.Image, createdAt, null, null);
-			InsertHistory(
-				connection,
-				transaction,
-				ClipboardHistoryKind.Image,
+			var metadata = ClipboardHistoryMetadata.Create(
 				content,
-				contentHash,
+				ClipboardHistoryKind.Image,
 				createdAt,
-				metadata,
-				null,
-				null,
-				paintStateJson,
-				null);
+				sourceFilePath == null ? null : Path.GetFileName(sourceFilePath),
+				sourceFilePath);
+			HashSet<string> previousImageOids = LoadImageOidsForHistoryIds(connection, transaction, new[] { historyId });
+			ClipboardImagePointer pointer = ClipboardImageStore.StoreImage(content);
+			UpsertImageObject(connection, transaction, pointer);
+
+			using var command = connection.CreateCommand();
+			command.Transaction = transaction;
+			command.CommandText =
+				"""
+				UPDATE clipboard_history
+				SET content_hash = $content_hash,
+					content = $content,
+					plain_text = NULL,
+					preview_text = $preview_text,
+					search_text = $search_text,
+					thumbnail = $thumbnail,
+					paint_state = $paint_state
+				WHERE id = $id AND kind = $kind;
+				""";
+			AddParameter(command, "$content_hash", pointer.Oid);
+			AddParameter(command, "$content", pointer.ToBytes());
+			AddParameter(command, "$preview_text", metadata.PreviewText);
+			AddParameter(command, "$search_text", metadata.SearchText);
+			AddParameter(command, "$thumbnail", metadata.ThumbnailBytes);
+			AddParameter(command, "$paint_state", paintStateJson);
+			AddParameter(command, "$id", historyId);
+			AddParameter(command, "$kind", (int)ClipboardHistoryKind.Image);
+			command.ExecuteNonQuery();
+			List<string> unreferencedImageOids = DeleteUnreferencedImageObjects(connection, transaction, previousImageOids);
 			transaction.Commit();
-			return true;
+
+			foreach (string oid in unreferencedImageOids)
+			{
+				ClipboardImageStore.DeleteObjectFile(oid);
+			}
 		}
 	}
 
@@ -636,57 +669,6 @@ internal static class ClipboardDatabase
 			""";
 		AddParameter(command, "$content_hash", pointer.Oid);
 		AddParameter(command, "$content", pointerBytes);
-		AddParameter(command, "$id", id);
-		command.ExecuteNonQuery();
-	}
-
-	private static bool TryLoadLatestHistoryIdentity(
-		SqliteConnection connection,
-		SqliteTransaction transaction,
-		out long id,
-		out ClipboardHistoryKind kind,
-		out string contentHash)
-	{
-		id = 0;
-		kind = ClipboardHistoryKind.Unknown;
-		contentHash = string.Empty;
-
-		using var command = connection.CreateCommand();
-		command.Transaction = transaction;
-		command.CommandText =
-			"""
-			SELECT id, kind, content_hash
-			FROM clipboard_history
-			ORDER BY id DESC
-			LIMIT 1;
-			""";
-		using var reader = command.ExecuteReader();
-		if (!reader.Read())
-		{
-			return false;
-		}
-
-		id = reader.GetInt64(0);
-		kind = (ClipboardHistoryKind)reader.GetInt32(1);
-		contentHash = reader.GetString(2);
-		return true;
-	}
-
-	private static void UpdateHistoryPaintState(
-		SqliteConnection connection,
-		SqliteTransaction transaction,
-		long id,
-		string paintStateJson)
-	{
-		using var command = connection.CreateCommand();
-		command.Transaction = transaction;
-		command.CommandText =
-			"""
-			UPDATE clipboard_history
-			SET paint_state = $paint_state
-			WHERE id = $id;
-			""";
-		AddParameter(command, "$paint_state", paintStateJson);
 		AddParameter(command, "$id", id);
 		command.ExecuteNonQuery();
 	}

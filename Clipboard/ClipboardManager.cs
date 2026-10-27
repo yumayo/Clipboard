@@ -34,6 +34,7 @@ public static class ClipboardManager
 	private const int ClipboardReadRetryDelayMilliseconds = 25;
 	private const string ConsoleWindowClassName = "ConsoleWindowClass";
 	private const string WindowsTerminalClassName = "CASCADIA_HOSTING_WINDOW_CLASS";
+	private const string InternalClipboardFormat = "yumayo.Clipboard.InternalContent";
 	private static ClipboardMonitorWindow? _monitorWindow;
 	private static ClipboardHistoryWindow? _historyWindow;
 	private static ClipboardImageGalleryWindow? _imageGalleryWindow;
@@ -60,7 +61,6 @@ public static class ClipboardManager
 	private static volatile bool _imageGalleryWindowVisible = false;
 
 	private static string _lastSavedContent = string.Empty;
-	private static bool _suppressNextClipboardSave = false;
 
 	public static void Start()
 	{
@@ -178,38 +178,19 @@ public static class ClipboardManager
 
 	internal static void CopyImageToClipboard(BitmapSource image)
 	{
-		SetClipboardWithRetry(() => System.Windows.Clipboard.SetImage(image), "Image", suppressNextClipboardSave: false);
+		var dataObject = new DataObject();
+		dataObject.SetImage(image);
+		SetClipboardWithRetry(dataObject, "Image");
 	}
 
-	internal static void CopyPaintedImageToClipboard(BitmapSource image, string paintStateJson)
+	internal static void CopyPaintedImageToClipboard(long historyId, BitmapSource image, string paintStateJson)
 	{
 		byte[] bytes = ImagePaintImageFactory.EncodePng(image);
-		string contentHash = ClipboardContentHash.CalculateSha256(bytes);
-		string previousSavedContent = _lastSavedContent;
-		_lastSavedContent = contentHash;
-
-		try
-		{
-			SetClipboardWithRetry(() => System.Windows.Clipboard.SetImage(image), "Image", suppressNextClipboardSave: false);
-			bool inserted = ClipboardDatabase.InsertPaintImageHistoryUnlessLatestMatches(
-				bytes,
-				contentHash,
-				DateTime.Now,
-				paintStateJson);
-			if (inserted)
-			{
-				Logger.Info($"ClipboardManager: ペイント画像をDBに保存しました。Size={bytes.Length}");
-			}
-			else
-			{
-				Logger.Info($"ClipboardManager: 最新履歴と同じペイント画像のため、ペイント状態のみ更新しました。Size={bytes.Length}");
-			}
-		}
-		catch
-		{
-			_lastSavedContent = previousSavedContent;
-			throw;
-		}
+		ClipboardDatabase.UpdatePaintImageHistory(historyId, bytes, paintStateJson);
+		// 元の内容を再び外部でコピーした場合は、更新前の内容との重複扱いにしない。
+		_lastSavedContent = string.Empty;
+		CopyImageToClipboard(image);
+		Logger.Info($"ClipboardManager: 元の画像履歴の編集内容を更新しました。Id={historyId} Size={bytes.Length}");
 	}
 
 	private static IntPtr SetHook(NativeMethods.LowLevelKeyboardProc proc)
@@ -476,10 +457,9 @@ public static class ClipboardManager
 	{
 		try
 		{
-			if (_suppressNextClipboardSave)
+			if (System.Windows.Clipboard.ContainsData(InternalClipboardFormat))
 			{
-				_suppressNextClipboardSave = false;
-				Logger.Debug("ClipboardManager: 履歴からの復元のため、保存をスキップしました。");
+				Logger.Debug("ClipboardManager: Clipboardが書き込んだ内容のため、保存をスキップしました。");
 				return;
 			}
 
@@ -847,7 +827,9 @@ public static class ClipboardManager
 	private static void SetClipboardText(string text)
 	{
 		text = NormalizeTextForClipboardPaste(text);
-		SetClipboardWithRetry(() => System.Windows.Clipboard.SetText(text), "Text");
+		var dataObject = new DataObject();
+		dataObject.SetText(text);
+		SetClipboardWithRetry(dataObject, "Text");
 	}
 
 	private static void SetClipboardImage(byte[] bytes, string? plainText)
@@ -865,11 +847,11 @@ public static class ClipboardManager
 			var dataObject = new DataObject();
 			dataObject.SetImage(bitmap);
 			dataObject.SetText(NormalizeTextForClipboardPaste(plainText));
-			SetClipboardWithRetry(() => System.Windows.Clipboard.SetDataObject(dataObject, true), "Image");
+			SetClipboardWithRetry(dataObject, "Image");
 			return;
 		}
 
-		SetClipboardWithRetry(() => System.Windows.Clipboard.SetImage(bitmap), "Image");
+		CopyImageToClipboard(bitmap);
 	}
 
 	private static void SetClipboardHtml(string html, bool pasteAsPlainText, string? plainText)
@@ -889,7 +871,7 @@ public static class ClipboardManager
 			dataObject.SetText(text);
 		}
 
-		SetClipboardWithRetry(() => System.Windows.Clipboard.SetDataObject(dataObject, true), "Html");
+		SetClipboardWithRetry(dataObject, "Html");
 	}
 
 	private static void SetClipboardRtf(string rtf, bool pasteAsPlainText, string? plainText)
@@ -909,30 +891,22 @@ public static class ClipboardManager
 			dataObject.SetText(text);
 		}
 
-		SetClipboardWithRetry(() => System.Windows.Clipboard.SetDataObject(dataObject, true), "Rtf");
+		SetClipboardWithRetry(dataObject, "Rtf");
 	}
 
-	private static void SetClipboardWithRetry(Action setClipboard, string contentType, bool suppressNextClipboardSave = true)
+	private static void SetClipboardWithRetry(DataObject dataObject, string contentType)
 	{
+		// 自分で書き込んだデータを識別し、変更通知が重複しても履歴には追加しない。
+		dataObject.SetData(InternalClipboardFormat, "1", autoConvert: false);
 		for (int attempt = 1; attempt <= ClipboardSetRetryCount; attempt++)
 		{
 			try
 			{
-				if (suppressNextClipboardSave)
-				{
-					_suppressNextClipboardSave = true;
-				}
-
-				setClipboard();
+				System.Windows.Clipboard.SetDataObject(dataObject, true);
 				return;
 			}
 			catch (Exception ex) when (IsClipboardOpenFailure(ex))
 			{
-				if (suppressNextClipboardSave)
-				{
-					_suppressNextClipboardSave = false;
-				}
-
 				if (attempt >= ClipboardSetRetryCount)
 				{
 					throw;
@@ -940,15 +914,6 @@ public static class ClipboardManager
 
 				Logger.Debug($"ClipboardManager: クリップボードへの書き込みを再試行します。Type={contentType} Attempt={attempt}/{ClipboardSetRetryCount} Error={ex.Message}");
 				Thread.Sleep(ClipboardSetRetryDelayMilliseconds);
-			}
-			catch
-			{
-				if (suppressNextClipboardSave)
-				{
-					_suppressNextClipboardSave = false;
-				}
-
-				throw;
 			}
 		}
 	}
