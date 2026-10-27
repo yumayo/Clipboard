@@ -141,11 +141,12 @@ internal sealed class ClipboardHistoryWindow : Window
 		_searchProgressPanel = new StackPanel
 		{
 			Margin = new Thickness(10, 6, 10, 0),
-			Visibility = Visibility.Collapsed
+			Visibility = Visibility.Hidden
 		};
 		_searchProgressText = new TextBlock
 		{
 			FontSize = 12,
+			Height = 18,
 			Margin = new Thickness(0, 0, 0, 4)
 		};
 		_searchProgressText.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.MutedTextBrushKey);
@@ -1068,14 +1069,14 @@ internal sealed class ClipboardHistoryWindow : Window
 			? $"検索完了: {matchedEntryCount:N0} 件"
 			: $"検索中... {matchedEntryCount:N0} 件見つかりました";
 		_searchProgressBar.IsIndeterminate = !isComplete;
-		_searchProgressBar.Visibility = isComplete ? Visibility.Collapsed : Visibility.Visible;
+		_searchProgressBar.Visibility = isComplete ? Visibility.Hidden : Visibility.Visible;
 		_searchProgressPanel.Visibility = Visibility.Visible;
 	}
 
 	private void HideSearchProgress()
 	{
 		_searchProgressBar.IsIndeterminate = false;
-		_searchProgressPanel.Visibility = Visibility.Collapsed;
+		_searchProgressPanel.Visibility = Visibility.Hidden;
 	}
 
 	private void BeginHistoryFilterDisplay(int totalEntryCount)
