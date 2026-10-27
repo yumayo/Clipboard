@@ -51,6 +51,8 @@ public static class ClipboardManager
 	private static bool _swallowWinVKeyUp = false;
 	private static bool _swallowWinBKeyUp = false;
 	private static bool _swallowWinCKeyUp = false;
+	private static string _winPasteDigits = string.Empty;
+	private static readonly HashSet<int> _swallowedWinDigitKeys = new();
 	private static int _suppressedWinKeyCode = 0;
 	private static uint _hookThreadId = 0;
 	private static int _historyConsumedKeyUpCode = 0;
@@ -272,6 +274,7 @@ public static class ClipboardManager
 		_swallowWinVKeyUp = false;
 		_swallowWinBKeyUp = false;
 		_swallowWinCKeyUp = false;
+		_swallowedWinDigitKeys.Clear();
 	}
 
 	private static void KeyboardHookThreadMain()
@@ -313,6 +316,8 @@ public static class ClipboardManager
 			ResetSuppressedWindowsKeyState();
 			_swallowWinVKeyUp = false;
 			_swallowWinBKeyUp = false;
+			_swallowWinCKeyUp = false;
+			_swallowedWinDigitKeys.Clear();
 		}
 	}
 
@@ -331,6 +336,18 @@ public static class ClipboardManager
 			bool isKeyUp = wParam == (IntPtr)NativeMethods.WM_KEYUP || wParam == (IntPtr)NativeMethods.WM_SYSKEYUP;
 			bool isWindowsKey = IsWindowsKey(vkCode);
 
+			if (isKeyUp && _swallowedWinDigitKeys.Remove(vkCode))
+			{
+				return (IntPtr)1;
+			}
+
+			// Winを先に離しても、消費したキーはキーアップまでリピートを背後へ渡さない。
+			if (isKeyDown && (_swallowedWinDigitKeys.Contains(vkCode) ||
+				(vkCode == NativeMethods.VK_V && _swallowWinVKeyUp)))
+			{
+				return (IntPtr)1;
+			}
+
 			if (TryHandleVisibleWindowKey(vkCode, isKeyDown, isKeyUp))
 			{
 				return (IntPtr)1;
@@ -338,6 +355,14 @@ public static class ClipboardManager
 
 			if (isKeyDown)
 			{
+				if (_winKeySuppressed && TryGetDigit(vkCode, out char digit))
+				{
+					_winPasteDigits += digit;
+					_swallowedWinDigitKeys.Add(vkCode);
+					_winComboHandled = true;
+					return (IntPtr)1;
+				}
+
 				if (IsWindowsClipboardComboKey(vkCode) && (_winKeySuppressed || IsPhysicalWindowsKeyDown()))
 				{
 					bool shouldHandleCombo = vkCode switch
@@ -348,6 +373,9 @@ public static class ClipboardManager
 					};
 					if (shouldHandleCombo)
 					{
+						string digits = _winPasteDigits;
+						_winPasteDigits = string.Empty;
+
 						if (vkCode == NativeMethods.VK_B)
 						{
 							_swallowWinBKeyUp = true;
@@ -377,7 +405,14 @@ public static class ClipboardManager
 						}
 						else
 						{
-							ShowHistoryFromHotKey();
+							if (digits.Length == 0)
+							{
+								ShowHistoryFromHotKey();
+							}
+							else if (int.TryParse(digits, out int count) && count > 0)
+							{
+								PasteRecentHistoryFromHotKey(count);
+							}
 						}
 					}
 
@@ -580,6 +615,39 @@ public static class ClipboardManager
 		IntPtr targetWindow = NativeMethods.GetForegroundWindow();
 		Logger.Debug($"ClipboardManager: Win+V 対象ウィンドウを取得しました。TargetWindow={FormatHandle(targetWindow)}");
 		DispatchToUi(() => ShowHistoryWindow(targetWindow));
+	}
+
+	private static void PasteRecentHistoryFromHotKey(int count)
+	{
+		IntPtr targetWindow = NativeMethods.GetForegroundWindow();
+		DispatchToUi(() =>
+		{
+			try
+			{
+				List<ClipboardStoredContent> contents = ClipboardDatabase.LoadRecentTextContents(count);
+				if (contents.Count == 0)
+				{
+					return;
+				}
+
+				string text = string.Join(
+					ClipboardSettings.ConcatenationSeparator,
+					contents.AsEnumerable().Reverse().Select(content => content.PlainText ?? (content.Kind switch
+					{
+						ClipboardHistoryKind.Html => FallbackConvertHtmlToPlainText(Encoding.UTF8.GetString(content.Bytes)),
+						ClipboardHistoryKind.Rtf => FallbackConvertRtfToPlainText(Encoding.UTF8.GetString(content.Bytes)),
+						_ => Encoding.UTF8.GetString(content.Bytes)
+					})));
+				SetClipboardText(text);
+				PasteToTargetWindow(targetWindow, IsConsoleLikeWindow(targetWindow));
+				Logger.Debug($"ClipboardManager: 履歴を結合して貼り付けました。RequestedCount={count} Count={contents.Count}");
+			}
+			catch (Exception ex)
+			{
+				Logger.Error(ex, $"ClipboardManager: 履歴の結合貼り付けに失敗しました。Count={count}");
+				MessageBox.Show("履歴の結合貼り付けに失敗しました。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
+			}
+		});
 	}
 
 	private static void ShowImageGalleryFromHotKey()
@@ -1086,6 +1154,24 @@ public static class ClipboardManager
 		return vkCode == NativeMethods.VK_V || vkCode == NativeMethods.VK_B || vkCode == NativeMethods.VK_C;
 	}
 
+	private static bool TryGetDigit(int vkCode, out char digit)
+	{
+		if (vkCode is >= NativeMethods.VK_0 and <= NativeMethods.VK_9)
+		{
+			digit = (char)('0' + vkCode - NativeMethods.VK_0);
+			return true;
+		}
+
+		if (vkCode is >= NativeMethods.VK_NUMPAD0 and <= NativeMethods.VK_NUMPAD9)
+		{
+			digit = (char)('0' + vkCode - NativeMethods.VK_NUMPAD0);
+			return true;
+		}
+
+		digit = default;
+		return false;
+	}
+
 	private static bool IsHistoryNavigationKey(int vkCode)
 	{
 		return vkCode == NativeMethods.VK_UP || vkCode == NativeMethods.VK_DOWN;
@@ -1124,6 +1210,7 @@ public static class ClipboardManager
 		int vkCode = _suppressedWinKeyCode == 0 ? NativeMethods.VK_LWIN : _suppressedWinKeyCode;
 		_winKeySuppressed = false;
 		_winComboHandled = false;
+		_winPasteDigits = string.Empty;
 		SendKeyDown(vkCode);
 	}
 
@@ -1132,6 +1219,7 @@ public static class ClipboardManager
 		_winKeySuppressed = false;
 		_winComboHandled = false;
 		_suppressedWinKeyCode = 0;
+		_winPasteDigits = string.Empty;
 	}
 
 	private static void SendKeyPress(int vkCode)

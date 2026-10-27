@@ -36,6 +36,10 @@ internal static class NativeMethods
 	public const int VK_RWIN = 0x5C;
 	public const int VK_RETURN = 0x0D;
 	public const int VK_ESCAPE = 0x1B;
+	public const int VK_0 = 0x30;
+	public const int VK_9 = 0x39;
+	public const int VK_NUMPAD0 = 0x60;
+	public const int VK_NUMPAD9 = 0x69;
 	public const int VK_B = 0x42;
 	public const int VK_C = 0x43;
 	public const int VK_V = 0x56;

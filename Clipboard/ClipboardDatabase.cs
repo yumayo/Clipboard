@@ -415,6 +415,46 @@ internal static class ClipboardDatabase
 		}
 	}
 
+	public static List<ClipboardStoredContent> LoadRecentTextContents(int maxEntryCount)
+	{
+		if (maxEntryCount <= 0)
+		{
+			return new List<ClipboardStoredContent>();
+		}
+
+		Initialize();
+		lock (Sync)
+		{
+			using var connection = OpenConnection();
+			using var command = connection.CreateCommand();
+			command.CommandText = """
+				SELECT kind, content, plain_text
+				FROM clipboard_history
+				WHERE kind IN ($text_kind, $html_kind, $rtf_kind)
+				ORDER BY id DESC
+				LIMIT $limit;
+				""";
+			AddParameter(command, "$text_kind", (int)ClipboardHistoryKind.Text);
+			AddParameter(command, "$html_kind", (int)ClipboardHistoryKind.Html);
+			AddParameter(command, "$rtf_kind", (int)ClipboardHistoryKind.Rtf);
+			AddParameter(command, "$limit", maxEntryCount);
+
+			var contents = new List<ClipboardStoredContent>();
+			using var reader = command.ExecuteReader();
+			while (reader.Read())
+			{
+				contents.Add(new ClipboardStoredContent
+				{
+					Kind = (ClipboardHistoryKind)reader.GetInt32(0),
+					Bytes = (byte[])reader.GetValue(1),
+					PlainText = reader.IsDBNull(2) ? null : reader.GetString(2)
+				});
+			}
+
+			return contents;
+		}
+	}
+
 	public static ClipboardStoredContent? LoadContent(long id)
 	{
 		Initialize();
