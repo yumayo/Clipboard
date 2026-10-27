@@ -39,9 +39,6 @@ public static class ClipboardManager
 	private static ClipboardImageGalleryWindow? _imageGalleryWindow;
 	private static ClipboardPreviewWindow? _previewWindow;
 	private static bool _isOpeningClipboardPreview;
-	private static string _concatenatedText = string.Empty;
-	private static int _concatenationCount = 0;
-	private static readonly object _concatenationLock = new();
 
 	private static IntPtr _hookID = IntPtr.Zero;
 	private static NativeMethods.LowLevelKeyboardProc? _proc;
@@ -49,7 +46,6 @@ public static class ClipboardManager
 	private static Dispatcher? _hookDispatcher;
 	private static readonly ManualResetEventSlim _hookThreadReady = new(false);
 	private static readonly object _hookLock = new();
-	private static volatile bool _ctrlPressed = false;
 	private static bool _winKeySuppressed = false;
 	private static bool _winComboHandled = false;
 	private static bool _swallowWinVKeyUp = false;
@@ -388,15 +384,7 @@ public static class ClipboardManager
 					return (IntPtr)1;
 				}
 
-				if (vkCode == NativeMethods.VK_LCONTROL || vkCode == NativeMethods.VK_RCONTROL)
-				{
-					if (!_ctrlPressed)
-					{
-						_ctrlPressed = true;
-						Logger.Debug("ClipboardManager: Ctrlキーが押されました。");
-					}
-				}
-				else if (isWindowsKey)
+				if (isWindowsKey)
 				{
 					if (!_winKeySuppressed)
 					{
@@ -414,25 +402,7 @@ public static class ClipboardManager
 			}
 			else if (isKeyUp)
 			{
-				if (vkCode == NativeMethods.VK_LCONTROL || vkCode == NativeMethods.VK_RCONTROL)
-				{
-					if (_ctrlPressed)
-					{
-						_ctrlPressed = false;
-						Logger.Debug("ClipboardManager: Ctrlキーが離されました。");
-
-						lock (_concatenationLock)
-						{
-							if (!string.IsNullOrEmpty(_concatenatedText))
-							{
-								Logger.Debug("ClipboardManager: Ctrlキーが離されたため、連結テキストをクリアしました。");
-								_concatenatedText = string.Empty;
-								_concatenationCount = 0;
-							}
-						}
-					}
-				}
-				else if (isWindowsKey)
+				if (isWindowsKey)
 				{
 					if (_winKeySuppressed && vkCode == _suppressedWinKeyCode)
 					{
@@ -476,40 +446,6 @@ public static class ClipboardManager
 				_suppressNextClipboardSave = false;
 				Logger.Debug("ClipboardManager: 履歴からの復元のため、保存をスキップしました。");
 				return;
-			}
-
-			if (_ctrlPressed && System.Windows.Clipboard.ContainsText())
-			{
-				string newText = System.Windows.Clipboard.GetText();
-				if (!string.IsNullOrEmpty(newText))
-				{
-					lock (_concatenationLock)
-					{
-						if (_concatenatedText != newText)
-						{
-							if (!string.IsNullOrEmpty(_concatenatedText))
-							{
-								_concatenatedText += ClipboardSettings.ConcatenationSeparator + newText;
-								_concatenationCount++;
-							}
-							else
-							{
-								_concatenatedText = newText;
-								_concatenationCount = 1;
-							}
-
-							if (_concatenationCount >= 2)
-							{
-								System.Windows.Clipboard.SetText(_concatenatedText);
-								Logger.Debug($"ClipboardManager: Ctrl押下中 - テキストを連結してクリップボードに書き戻しました（{_concatenatedText.Length}文字、{_concatenationCount}回目）");
-							}
-							else
-							{
-								Logger.Debug($"ClipboardManager: Ctrl押下中 - テキストを連結しました（{_concatenatedText.Length}文字、1回目のため書き戻しなし）");
-							}
-						}
-					}
-				}
 			}
 
 			var (bytes, kind, plainText) = GetClipboardContent();
