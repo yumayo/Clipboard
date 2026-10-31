@@ -40,6 +40,10 @@ public static class ClipboardManager
 	private static ClipboardImageGalleryWindow? _imageGalleryWindow;
 	private static ClipboardPreviewWindow? _previewWindow;
 	private static bool _isOpeningClipboardPreview;
+	private static ClipboardStackCountWindow? _stackCountWindow;
+	private static readonly List<string> _stackedTexts = new();
+	private static volatile bool _isStacking;
+	private static uint _lastStackClipboardSequence;
 
 	private static IntPtr _hookID = IntPtr.Zero;
 	private static NativeMethods.LowLevelKeyboardProc? _proc;
@@ -50,10 +54,9 @@ public static class ClipboardManager
 	private static bool _winKeySuppressed = false;
 	private static bool _winComboHandled = false;
 	private static bool _swallowWinVKeyUp = false;
+	private static bool _swallowWinCKeyUp = false;
 	private static bool _swallowWinBKeyUp = false;
 	private static bool _swallowWinFKeyUp = false;
-	private static string _winPasteDigits = string.Empty;
-	private static readonly HashSet<int> _swallowedWinDigitKeys = new();
 	private static int _suppressedWinKeyCode = 0;
 	private static uint _hookThreadId = 0;
 	private static int _historyConsumedKeyUpCode = 0;
@@ -99,6 +102,9 @@ public static class ClipboardManager
 
 		_previewWindow?.Close();
 		_previewWindow = null;
+		EndStacking();
+		_stackCountWindow?.Close();
+		_stackCountWindow = null;
 	}
 
 	public static string GetSaveDirectoryPath()
@@ -253,9 +259,9 @@ public static class ClipboardManager
 		_hookThreadReady.Reset();
 		ResetSuppressedWindowsKeyState();
 		_swallowWinVKeyUp = false;
+		_swallowWinCKeyUp = false;
 		_swallowWinBKeyUp = false;
 		_swallowWinFKeyUp = false;
-		_swallowedWinDigitKeys.Clear();
 	}
 
 	private static void KeyboardHookThreadMain()
@@ -296,9 +302,9 @@ public static class ClipboardManager
 			_hookDispatcher = null;
 			ResetSuppressedWindowsKeyState();
 			_swallowWinVKeyUp = false;
+			_swallowWinCKeyUp = false;
 			_swallowWinBKeyUp = false;
 			_swallowWinFKeyUp = false;
-			_swallowedWinDigitKeys.Clear();
 		}
 	}
 
@@ -317,14 +323,11 @@ public static class ClipboardManager
 			bool isKeyUp = wParam == (IntPtr)NativeMethods.WM_KEYUP || wParam == (IntPtr)NativeMethods.WM_SYSKEYUP;
 			bool isWindowsKey = IsWindowsKey(vkCode);
 
-			if (isKeyUp && _swallowedWinDigitKeys.Remove(vkCode))
-			{
-				return (IntPtr)1;
-			}
-
 			// Winを先に離しても、消費したキーはキーアップまでリピートを背後へ渡さない。
-			if (isKeyDown && (_swallowedWinDigitKeys.Contains(vkCode) ||
-				(vkCode == NativeMethods.VK_V && _swallowWinVKeyUp)))
+			if (isKeyDown && ((vkCode == NativeMethods.VK_V && _swallowWinVKeyUp) ||
+				(vkCode == NativeMethods.VK_C && _swallowWinCKeyUp) ||
+				(vkCode == NativeMethods.VK_B && _swallowWinBKeyUp) ||
+				(vkCode == NativeMethods.VK_F && _swallowWinFKeyUp)))
 			{
 				return (IntPtr)1;
 			}
@@ -336,28 +339,23 @@ public static class ClipboardManager
 
 			if (isKeyDown)
 			{
-				if (_winKeySuppressed && TryGetDigit(vkCode, out char digit))
-				{
-					_winPasteDigits += digit;
-					_swallowedWinDigitKeys.Add(vkCode);
-					_winComboHandled = true;
-					return (IntPtr)1;
-				}
-
-				if (IsWindowsClipboardComboKey(vkCode) && (_winKeySuppressed || IsPhysicalWindowsKeyDown()))
+				if (IsWindowsClipboardComboKey(vkCode) && (_winKeySuppressed || IsPhysicalWindowsKeyDown()) &&
+					!IsKeyDown(NativeMethods.VK_CONTROL) && !IsKeyDown(NativeMethods.VK_SHIFT) && !IsKeyDown(NativeMethods.VK_MENU))
 				{
 					bool shouldHandleCombo = vkCode switch
 					{
+						NativeMethods.VK_C => !_swallowWinCKeyUp,
 						NativeMethods.VK_B => !_swallowWinBKeyUp,
 						NativeMethods.VK_F => !_swallowWinFKeyUp,
 						_ => !_swallowWinVKeyUp
 					};
 					if (shouldHandleCombo)
 					{
-						string digits = _winPasteDigits;
-						_winPasteDigits = string.Empty;
-
-						if (vkCode == NativeMethods.VK_B)
+						if (vkCode == NativeMethods.VK_C)
+						{
+							_swallowWinCKeyUp = true;
+						}
+						else if (vkCode == NativeMethods.VK_B)
 						{
 							_swallowWinBKeyUp = true;
 						}
@@ -376,7 +374,11 @@ public static class ClipboardManager
 							NeutralizeWindowsKey();
 						}
 
-						if (vkCode == NativeMethods.VK_B)
+						if (vkCode == NativeMethods.VK_C)
+						{
+							StartStackingFromHotKey();
+						}
+						else if (vkCode == NativeMethods.VK_B)
 						{
 							ShowImageGalleryFromHotKey();
 						}
@@ -386,14 +388,7 @@ public static class ClipboardManager
 						}
 						else
 						{
-							if (digits.Length == 0)
-							{
-								ShowHistoryFromHotKey();
-							}
-							else if (int.TryParse(digits, out int count) && count > 0)
-							{
-								PasteRecentHistoryFromHotKey(count);
-							}
+							HandleWinVFromHotKey();
 						}
 					}
 
@@ -437,6 +432,11 @@ public static class ClipboardManager
 					_swallowWinVKeyUp = false;
 					return (IntPtr)1;
 				}
+				else if (vkCode == NativeMethods.VK_C && _swallowWinCKeyUp)
+				{
+					_swallowWinCKeyUp = false;
+					return (IntPtr)1;
+				}
 				else if (vkCode == NativeMethods.VK_B && _swallowWinBKeyUp)
 				{
 					_swallowWinBKeyUp = false;
@@ -457,31 +457,85 @@ public static class ClipboardManager
 	{
 		try
 		{
-			if (System.Windows.Clipboard.ContainsData(InternalClipboardFormat))
-			{
-				Logger.Debug("ClipboardManager: Clipboardが書き込んだ内容のため、保存をスキップしました。");
-				return;
-			}
-
-			var (bytes, kind, plainText) = GetClipboardContent();
-			string currentContent = CalculateClipboardContentHash(kind, bytes, plainText);
-			if (currentContent == _lastSavedContent)
-			{
-				Logger.Debug("ClipboardManager: 前回保存した内容と同じのため、保存をスキップします。");
-				return;
-			}
-
-			if (bytes.Length > 0 && kind != ClipboardHistoryKind.Unknown)
-			{
-				ClipboardDatabase.InsertHistory(kind, bytes, currentContent, DateTime.Now, plainText: plainText);
-				Logger.Info($"ClipboardManager: クリップボードの内容をDBに保存しました。Kind={kind} Size={bytes.Length} PlainTextLength={plainText?.Length ?? 0}");
-				_lastSavedContent = currentContent;
-			}
+			CaptureAndSaveClipboard();
 		}
 		catch (Exception ex)
 		{
 			Logger.Error(ex, "ClipboardManager: クリップボードの保存中にエラーが発生しました。");
 		}
+	}
+
+	private static void CaptureAndSaveClipboard()
+	{
+		var (sequence, bytes, kind, plainText) = ReadClipboardSnapshot();
+		if (bytes.Length == 0 || kind == ClipboardHistoryKind.Unknown)
+		{
+			return;
+		}
+
+		// スナップ数は履歴の重複除外と独立させ、同じ内容の再コピーも数える。
+		if (_isStacking && sequence != _lastStackClipboardSequence)
+		{
+			_lastStackClipboardSequence = sequence;
+			if (kind is ClipboardHistoryKind.Text or ClipboardHistoryKind.Html or ClipboardHistoryKind.Rtf)
+			{
+				string text = plainText ?? (kind switch
+				{
+					ClipboardHistoryKind.Html => FallbackConvertHtmlToPlainText(Encoding.UTF8.GetString(bytes)),
+					ClipboardHistoryKind.Rtf => FallbackConvertRtfToPlainText(Encoding.UTF8.GetString(bytes)),
+					_ => Encoding.UTF8.GetString(bytes)
+				});
+				if (text.Length > 0)
+				{
+					_stackedTexts.Add(text);
+					UpdateStackCount();
+				}
+			}
+		}
+
+		string currentContent = CalculateClipboardContentHash(kind, bytes, plainText);
+		if (currentContent == _lastSavedContent)
+		{
+			Logger.Debug("ClipboardManager: 前回保存した内容と同じのため、保存をスキップします。");
+			return;
+		}
+
+		ClipboardDatabase.InsertHistory(kind, bytes, currentContent, DateTime.Now, plainText: plainText);
+		Logger.Info($"ClipboardManager: クリップボードの内容をDBに保存しました。Kind={kind} Size={bytes.Length} PlainTextLength={plainText?.Length ?? 0}");
+		_lastSavedContent = currentContent;
+	}
+
+	private static (uint sequence, byte[] bytes, ClipboardHistoryKind kind, string? plainText) ReadClipboardSnapshot()
+	{
+		for (int attempt = 0; attempt < ClipboardReadRetryCount; attempt++)
+		{
+			try
+			{
+				uint sequence = NativeMethods.GetClipboardSequenceNumber();
+				if (System.Windows.Clipboard.ContainsData(InternalClipboardFormat))
+				{
+					Logger.Debug("ClipboardManager: Clipboardが書き込んだ内容のため、保存をスキップしました。");
+					return (sequence, Array.Empty<byte>(), ClipboardHistoryKind.Unknown, null);
+				}
+
+				var (bytes, kind, plainText) = GetClipboardContent();
+				if (sequence == NativeMethods.GetClipboardSequenceNumber())
+				{
+					return (sequence, bytes, kind, plainText);
+				}
+			}
+			catch (ExternalException ex) when (IsClipboardOpenFailure(ex) && attempt < ClipboardReadRetryCount - 1)
+			{
+				// コピー元がクリップボードを使用中の場合は、解放を待って読み直す。
+			}
+
+			if (attempt < ClipboardReadRetryCount - 1)
+			{
+				Thread.Sleep(ClipboardReadRetryDelayMilliseconds);
+			}
+		}
+
+		throw new InvalidOperationException("クリップボードの内容が更新されたため読み取れませんでした。");
 	}
 
 	private static ClipboardDataType GetClipboardDataType()
@@ -597,37 +651,94 @@ public static class ClipboardManager
 		DispatchToUi(() => ShowHistoryWindow(targetWindow));
 	}
 
-	private static void PasteRecentHistoryFromHotKey(int count)
+	private static void StartStackingFromHotKey()
+	{
+		uint sequence = NativeMethods.GetClipboardSequenceNumber();
+		DispatchToUi(() =>
+		{
+			if (_isStacking)
+			{
+				return;
+			}
+
+			_stackedTexts.Clear();
+			_lastStackClipboardSequence = sequence;
+			_isStacking = true;
+			UpdateStackCount();
+			Logger.Debug("ClipboardManager: クリップボードの積み上げを開始しました。");
+		});
+	}
+
+	private static void HandleWinVFromHotKey()
 	{
 		IntPtr targetWindow = NativeMethods.GetForegroundWindow();
 		DispatchToUi(() =>
 		{
+			if (!_isStacking)
+			{
+				ShowHistoryWindow(targetWindow);
+				return;
+			}
+
 			try
 			{
-				List<ClipboardStoredContent> contents = ClipboardDatabase.LoadRecentTextContents(count);
-				if (contents.Count == 0)
+				// 直前のコピーの変更通知より先にWin+Vが届いても、最後の内容を含める。
+				if (NativeMethods.GetClipboardSequenceNumber() != _lastStackClipboardSequence)
 				{
+					CaptureAndSaveClipboard();
+				}
+				int count = _stackedTexts.Count;
+				if (count == 0)
+				{
+					EndStacking();
 					return;
 				}
 
-				string text = string.Join(
-					ClipboardSettings.ConcatenationSeparator,
-					contents.AsEnumerable().Reverse().Select(content => content.PlainText ?? (content.Kind switch
-					{
-						ClipboardHistoryKind.Html => FallbackConvertHtmlToPlainText(Encoding.UTF8.GetString(content.Bytes)),
-						ClipboardHistoryKind.Rtf => FallbackConvertRtfToPlainText(Encoding.UTF8.GetString(content.Bytes)),
-						_ => Encoding.UTF8.GetString(content.Bytes)
-					})));
+				if (targetWindow == IntPtr.Zero || !NativeMethods.IsWindow(targetWindow))
+				{
+					Logger.Warning("ClipboardManager: 積み上げの貼り付け先が見つからないため、積み上げを継続します。");
+					return;
+				}
+
+				string text = string.Join(ClipboardSettings.ConcatenationSeparator, _stackedTexts);
 				SetClipboardText(text);
+				EndStacking();
 				PasteToTargetWindow(targetWindow, IsConsoleLikeWindow(targetWindow));
-				Logger.Debug($"ClipboardManager: 履歴を結合して貼り付けました。RequestedCount={count} Count={contents.Count}");
+				Logger.Debug($"ClipboardManager: 積み上げた内容を結合して貼り付けました。Count={count}");
 			}
 			catch (Exception ex)
 			{
-				Logger.Error(ex, $"ClipboardManager: 履歴の結合貼り付けに失敗しました。Count={count}");
-				MessageBox.Show("履歴の結合貼り付けに失敗しました。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
+				Logger.Error(ex, "ClipboardManager: 積み上げた内容の貼り付けに失敗しました。");
+				MessageBox.Show("積み上げた内容の貼り付けに失敗しました。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
 			}
 		});
+	}
+
+	private static void EndStacking()
+	{
+		_isStacking = false;
+		_stackedTexts.Clear();
+		try
+		{
+			_stackCountWindow?.Hide();
+		}
+		catch (Exception ex)
+		{
+			Logger.Error(ex, "ClipboardManager: 積み上げ件数の表示を終了できませんでした。");
+		}
+	}
+
+	private static void UpdateStackCount()
+	{
+		try
+		{
+			_stackCountWindow ??= new ClipboardStackCountWindow();
+			_stackCountWindow.ShowCount(_stackedTexts.Count);
+		}
+		catch (Exception ex)
+		{
+			Logger.Error(ex, "ClipboardManager: 積み上げ件数を表示できませんでした。");
+		}
 	}
 
 	private static void ShowImageGalleryFromHotKey()
@@ -1071,6 +1182,13 @@ public static class ClipboardManager
 			return false;
 		}
 
+		if (_isStacking && vkCode == NativeMethods.VK_ESCAPE)
+		{
+			_historyConsumedKeyUpCode = vkCode;
+			DispatchToUi(EndStacking);
+			return true;
+		}
+
 		if (_historyWindowVisible)
 		{
 			if (vkCode == NativeMethods.VK_ESCAPE)
@@ -1116,25 +1234,8 @@ public static class ClipboardManager
 
 	private static bool IsWindowsClipboardComboKey(int vkCode)
 	{
-		return vkCode == NativeMethods.VK_V || vkCode == NativeMethods.VK_B || vkCode == NativeMethods.VK_F;
-	}
-
-	private static bool TryGetDigit(int vkCode, out char digit)
-	{
-		if (vkCode is >= NativeMethods.VK_0 and <= NativeMethods.VK_9)
-		{
-			digit = (char)('0' + vkCode - NativeMethods.VK_0);
-			return true;
-		}
-
-		if (vkCode is >= NativeMethods.VK_NUMPAD0 and <= NativeMethods.VK_NUMPAD9)
-		{
-			digit = (char)('0' + vkCode - NativeMethods.VK_NUMPAD0);
-			return true;
-		}
-
-		digit = default;
-		return false;
+		return vkCode == NativeMethods.VK_V || vkCode == NativeMethods.VK_C ||
+			vkCode == NativeMethods.VK_B || vkCode == NativeMethods.VK_F;
 	}
 
 	private static bool IsHistoryNavigationKey(int vkCode)
@@ -1175,7 +1276,6 @@ public static class ClipboardManager
 		int vkCode = _suppressedWinKeyCode == 0 ? NativeMethods.VK_LWIN : _suppressedWinKeyCode;
 		_winKeySuppressed = false;
 		_winComboHandled = false;
-		_winPasteDigits = string.Empty;
 		SendKeyDown(vkCode);
 	}
 
@@ -1184,7 +1284,6 @@ public static class ClipboardManager
 		_winKeySuppressed = false;
 		_winComboHandled = false;
 		_suppressedWinKeyCode = 0;
-		_winPasteDigits = string.Empty;
 	}
 
 	private static void SendKeyPress(int vkCode)
@@ -1252,6 +1351,7 @@ public static class ClipboardManager
 	{
 		private readonly HwndSource _source;
 		private bool _registeredWinVHotkey;
+		private bool _registeredWinCHotkey;
 		private bool _registeredWinBHotkey;
 		private bool _registeredWinFHotkey;
 		private bool _isDisposed;
@@ -1268,6 +1368,21 @@ public static class ClipboardManager
 			_source.AddHook(WndProc);
 
 			NativeMethods.AddClipboardFormatListener(_source.Handle);
+
+			_registeredWinCHotkey = NativeMethods.RegisterHotKey(
+				_source.Handle,
+				NativeMethods.HOTKEY_ID_WIN_C,
+				NativeMethods.MOD_WIN | NativeMethods.MOD_NOREPEAT,
+				NativeMethods.VK_C);
+
+			if (_registeredWinCHotkey)
+			{
+				Logger.Debug("ClipboardManager: Win+C ホットキーを登録しました。");
+			}
+			else
+			{
+				Logger.Warning($"ClipboardManager: Win+C ホットキー登録に失敗しました。低レベルフックで代替します。Win32Error={Marshal.GetLastWin32Error()}");
+			}
 
 			_registeredWinVHotkey = NativeMethods.RegisterHotKey(
 				_source.Handle,
@@ -1323,6 +1438,12 @@ public static class ClipboardManager
 			}
 
 			_isDisposed = true;
+			if (_registeredWinCHotkey)
+			{
+				NativeMethods.UnregisterHotKey(_source.Handle, NativeMethods.HOTKEY_ID_WIN_C);
+				_registeredWinCHotkey = false;
+			}
+
 			if (_registeredWinVHotkey)
 			{
 				NativeMethods.UnregisterHotKey(_source.Handle, NativeMethods.HOTKEY_ID_WIN_V);
@@ -1348,9 +1469,16 @@ public static class ClipboardManager
 
 		private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
 		{
+			if (msg == NativeMethods.WM_HOTKEY && wParam.ToInt32() == NativeMethods.HOTKEY_ID_WIN_C)
+			{
+				StartStackingFromHotKey();
+				handled = true;
+				return IntPtr.Zero;
+			}
+
 			if (msg == NativeMethods.WM_HOTKEY && wParam.ToInt32() == NativeMethods.HOTKEY_ID_WIN_V)
 			{
-				ShowHistoryFromHotKey();
+				HandleWinVFromHotKey();
 				handled = true;
 				return IntPtr.Zero;
 			}

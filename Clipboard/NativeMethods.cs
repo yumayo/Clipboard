@@ -36,11 +36,8 @@ internal static class NativeMethods
 	public const int VK_RWIN = 0x5C;
 	public const int VK_RETURN = 0x0D;
 	public const int VK_ESCAPE = 0x1B;
-	public const int VK_0 = 0x30;
-	public const int VK_9 = 0x39;
-	public const int VK_NUMPAD0 = 0x60;
-	public const int VK_NUMPAD9 = 0x69;
 	public const int VK_B = 0x42;
+	public const int VK_C = 0x43;
 	public const int VK_F = 0x46;
 	public const int VK_V = 0x56;
 	public const int VK_CONTROL = 0x11;
@@ -51,6 +48,7 @@ internal static class NativeMethods
 	public const int VK_DOWN = 0x28;
 
 	public const int HOTKEY_ID_WIN_V = 0x5601;
+	public const int HOTKEY_ID_WIN_C = 0x4301;
 	public const int HOTKEY_ID_WIN_B = 0x4201;
 	public const int HOTKEY_ID_WIN_F = 0x4601;
 	public const uint MOD_WIN = 0x0008;
@@ -80,6 +78,8 @@ internal static class NativeMethods
 	public const int WS_MAXIMIZEBOX = 0x00010000;
 	public const int WS_MINIMIZEBOX = 0x00020000;
 	public const int WS_EX_NOACTIVATE = 0x08000000;
+	public const int WS_EX_TRANSPARENT = 0x00000020;
+	public const int WS_EX_TOOLWINDOW = 0x00000080;
 	public const uint SWP_NOSIZE = 0x0001;
 	public const uint SWP_NOMOVE = 0x0002;
 	public const uint SWP_NOZORDER = 0x0004;
@@ -252,6 +252,9 @@ internal static class NativeMethods
 	[DllImport("user32.dll", SetLastError = true)]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
+
+	[DllImport("user32.dll")]
+	public static extern uint GetClipboardSequenceNumber();
 
 	[DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
 	public static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
