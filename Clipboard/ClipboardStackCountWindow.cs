@@ -3,15 +3,15 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
-using System.Windows.Threading;
 
 namespace Clipboard;
 
 internal sealed class ClipboardStackCountWindow : Window
 {
 	private readonly TextBlock _countText;
-	private readonly DispatcherTimer _positionTimer;
 	private IntPtr _handle;
+	private bool _isTrackingPosition;
+	private NativeMethods.NativePoint? _lastPosition;
 
 	public ClipboardStackCountWindow()
 	{
@@ -47,19 +47,18 @@ internal sealed class ClipboardStackCountWindow : Window
 		border.SetResourceReference(Border.BorderBrushProperty, AppTheme.AccentBorderBrushKey);
 		Content = border;
 
-		_positionTimer = new DispatcherTimer(DispatcherPriority.Background)
-		{
-			Interval = TimeSpan.FromMilliseconds(40)
-		};
-		_positionTimer.Tick += (_, _) => PositionNearCursor();
 		IsVisibleChanged += (_, _) =>
 		{
-			if (!IsVisible)
+			if (IsVisible)
 			{
-				_positionTimer.Stop();
+				StartPositionTracking();
+			}
+			else
+			{
+				StopPositionTracking();
 			}
 		};
-		Closed += (_, _) => _positionTimer.Stop();
+		Closed += (_, _) => StopPositionTracking();
 	}
 
 	public void ShowCount(int count)
@@ -71,7 +70,6 @@ internal sealed class ClipboardStackCountWindow : Window
 		}
 		UpdateLayout();
 		PositionNearCursor();
-		_positionTimer.Start();
 	}
 
 	protected override void OnSourceInitialized(EventArgs e)
@@ -81,6 +79,36 @@ internal sealed class ClipboardStackCountWindow : Window
 		int extendedStyle = NativeMethods.GetWindowLong(_handle, NativeMethods.GWL_EXSTYLE);
 		NativeMethods.SetWindowLong(_handle, NativeMethods.GWL_EXSTYLE,
 			extendedStyle | NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_TRANSPARENT | NativeMethods.WS_EX_TOOLWINDOW);
+	}
+
+	private void StartPositionTracking()
+	{
+		if (_isTrackingPosition)
+		{
+			return;
+		}
+
+		_lastPosition = null;
+		// 固定間隔のタイマーを使わず、WPFの描画タイミングごとに最新の位置を反映する。
+		CompositionTarget.Rendering += OnRendering;
+		_isTrackingPosition = true;
+	}
+
+	private void StopPositionTracking()
+	{
+		if (!_isTrackingPosition)
+		{
+			return;
+		}
+
+		CompositionTarget.Rendering -= OnRendering;
+		_isTrackingPosition = false;
+		_lastPosition = null;
+	}
+
+	private void OnRendering(object? sender, EventArgs e)
+	{
+		PositionNearCursor();
 	}
 
 	private void PositionNearCursor()
@@ -107,7 +135,15 @@ internal sealed class ClipboardStackCountWindow : Window
 			y = Math.Max(info.RcWork.Top, Math.Min(y, info.RcWork.Bottom - height));
 		}
 
-		NativeMethods.SetWindowPos(_handle, new IntPtr(-1), x, y, 0, 0,
-			NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE);
+		if (_lastPosition is { } lastPosition && lastPosition.X == x && lastPosition.Y == y)
+		{
+			return;
+		}
+
+		if (NativeMethods.SetWindowPos(_handle, IntPtr.Zero, x, y, 0, 0,
+			NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE))
+		{
+			_lastPosition = new NativeMethods.NativePoint { X = x, Y = y };
+		}
 	}
 }
