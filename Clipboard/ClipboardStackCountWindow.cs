@@ -8,6 +8,7 @@ namespace Clipboard;
 
 internal sealed class ClipboardStackCountWindow : Window
 {
+	private const double BadgeDiameter = 24;
 	private readonly TextBlock _countText;
 	private readonly NativeMethods.LowLevelMouseProc _mouseProc;
 	private IntPtr _handle;
@@ -35,19 +36,27 @@ internal sealed class ClipboardStackCountWindow : Window
 
 		_countText = new TextBlock
 		{
-			FontSize = 13,
-			FontWeight = FontWeights.SemiBold
+			FontSize = 13
 		};
 		_countText.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
 		var border = new Border
 		{
-			CornerRadius = new CornerRadius(6),
+			Width = BadgeDiameter,
+			Height = BadgeDiameter,
+			CornerRadius = new CornerRadius(BadgeDiameter / 2),
 			BorderThickness = new Thickness(1),
-			Padding = new Thickness(10, 5, 10, 5),
-			Child = _countText
+			Padding = new Thickness(3),
+			Child = new Viewbox
+			{
+				Stretch = Stretch.Uniform,
+				StretchDirection = StretchDirection.DownOnly,
+				HorizontalAlignment = HorizontalAlignment.Center,
+				VerticalAlignment = VerticalAlignment.Center,
+				Child = _countText
+			}
 		};
 		border.SetResourceReference(Border.BackgroundProperty, AppTheme.SurfaceBrushKey);
-		border.SetResourceReference(Border.BorderBrushProperty, AppTheme.AccentBorderBrushKey);
+		border.SetResourceReference(Border.BorderBrushProperty, AppTheme.TextBrushKey);
 		Content = border;
 
 		IsVisibleChanged += (_, _) =>
@@ -66,7 +75,7 @@ internal sealed class ClipboardStackCountWindow : Window
 
 	public void ShowCount(int count)
 	{
-		_countText.Text = $"積み上げ {count} 件";
+		_countText.Text = count.ToString();
 		if (!IsVisible)
 		{
 			Show();
