@@ -40,6 +40,7 @@ public static class ClipboardManager
 	private static ClipboardImageGalleryWindow? _imageGalleryWindow;
 	private static ClipboardPreviewWindow? _previewWindow;
 	private static bool _isOpeningClipboardPreview;
+	// 件数表示とマウスフックは、履歴保存を行うUIスレッドから独立した監視スレッドで操作する。
 	private static ClipboardStackCountWindow? _stackCountWindow;
 	private static readonly List<string> _stackedTexts = new();
 	private static volatile bool _isStacking;
@@ -103,8 +104,6 @@ public static class ClipboardManager
 		_previewWindow?.Close();
 		_previewWindow = null;
 		EndStacking();
-		_stackCountWindow?.Close();
-		_stackCountWindow = null;
 	}
 
 	public static string GetSaveDirectoryPath()
@@ -289,6 +288,16 @@ public static class ClipboardManager
 		}
 		finally
 		{
+			try
+			{
+				_stackCountWindow?.Close();
+			}
+			catch (Exception ex)
+			{
+				Logger.Error(ex, "ClipboardManager: 積み上げ件数の表示を終了できませんでした。");
+			}
+			_stackCountWindow = null;
+
 			lock (_hookLock)
 			{
 				if (_hookID != IntPtr.Zero)
@@ -718,26 +727,44 @@ public static class ClipboardManager
 	{
 		_isStacking = false;
 		_stackedTexts.Clear();
-		try
-		{
-			_stackCountWindow?.Hide();
-		}
-		catch (Exception ex)
-		{
-			Logger.Error(ex, "ClipboardManager: 積み上げ件数の表示を終了できませんでした。");
-		}
+		DispatchStackCountAction(() => _stackCountWindow?.Hide());
 	}
 
 	private static void UpdateStackCount()
 	{
-		try
+		int count = _stackedTexts.Count;
+		DispatchStackCountAction(() =>
 		{
 			_stackCountWindow ??= new ClipboardStackCountWindow();
-			_stackCountWindow.ShowCount(_stackedTexts.Count);
-		}
-		catch (Exception ex)
+			_stackCountWindow.ShowCount(count);
+		});
+	}
+
+	private static void DispatchStackCountAction(Action action)
+	{
+		Dispatcher? dispatcher = _hookDispatcher;
+		if (dispatcher == null || dispatcher.HasShutdownStarted)
 		{
-			Logger.Error(ex, "ClipboardManager: 積み上げ件数を表示できませんでした。");
+			return;
+		}
+
+		try
+		{
+			dispatcher.BeginInvoke(() =>
+			{
+				try
+				{
+					action();
+				}
+				catch (Exception ex)
+				{
+					Logger.Error(ex, "ClipboardManager: 積み上げ件数の表示を更新できませんでした。");
+				}
+			});
+		}
+		catch (InvalidOperationException ex)
+		{
+			Logger.Error(ex, "ClipboardManager: 積み上げ件数の表示スレッドへ通知できませんでした。");
 		}
 	}
 

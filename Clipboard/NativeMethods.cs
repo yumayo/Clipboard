@@ -11,6 +11,7 @@ internal static class NativeMethods
 	public const int WM_APP = 0x8000;
 	public const int WM_USER = 0x0400;
 	public const int WM_CONTEXTMENU = 0x007B;
+	public const int WM_MOUSEMOVE = 0x0200;
 	public const int WM_LBUTTONDOWN = 0x0201;
 	public const int WM_LBUTTONUP = 0x0202;
 	public const int WM_RBUTTONDOWN = 0x0204;

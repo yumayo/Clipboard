@@ -9,12 +9,15 @@ namespace Clipboard;
 internal sealed class ClipboardStackCountWindow : Window
 {
 	private readonly TextBlock _countText;
+	private readonly NativeMethods.LowLevelMouseProc _mouseProc;
 	private IntPtr _handle;
+	private IntPtr _mouseHook;
 	private bool _isTrackingPosition;
 	private NativeMethods.NativePoint? _lastPosition;
 
 	public ClipboardStackCountWindow()
 	{
+		_mouseProc = OnMouseHook;
 		Title = "クリップボードの積み上げ件数";
 		WindowStyle = WindowStyle.None;
 		ResizeMode = ResizeMode.NoResize;
@@ -89,8 +92,13 @@ internal sealed class ClipboardStackCountWindow : Window
 		}
 
 		_lastPosition = null;
-		// 固定間隔のタイマーを使わず、WPFの描画タイミングごとに最新の位置を反映する。
-		CompositionTarget.Rendering += OnRendering;
+		_mouseHook = NativeMethods.SetWindowsHookEx(
+			NativeMethods.WH_MOUSE_LL, _mouseProc, NativeMethods.GetModuleHandle(null), 0);
+		if (_mouseHook == IntPtr.Zero)
+		{
+			Logger.Warning($"ClipboardStackCountWindow: マウス移動の監視を開始できないため、描画時の位置更新を使用します。Win32Error={Marshal.GetLastWin32Error()}");
+			CompositionTarget.Rendering += OnRendering;
+		}
 		_isTrackingPosition = true;
 	}
 
@@ -101,9 +109,36 @@ internal sealed class ClipboardStackCountWindow : Window
 			return;
 		}
 
-		CompositionTarget.Rendering -= OnRendering;
 		_isTrackingPosition = false;
+		CompositionTarget.Rendering -= OnRendering;
+		if (_mouseHook != IntPtr.Zero)
+		{
+			if (!NativeMethods.UnhookWindowsHookEx(_mouseHook))
+			{
+				Logger.Warning($"ClipboardStackCountWindow: マウス移動の監視を解除できませんでした。Win32Error={Marshal.GetLastWin32Error()}");
+			}
+			_mouseHook = IntPtr.Zero;
+		}
 		_lastPosition = null;
+	}
+
+	private IntPtr OnMouseHook(int nCode, IntPtr wParam, IntPtr lParam)
+	{
+		if (nCode >= 0 && wParam == (IntPtr)NativeMethods.WM_MOUSEMOVE && _isTrackingPosition)
+		{
+			try
+			{
+				// 通知された移動先をそのまま使い、描画タイミングやDispatcherへの再通知を待たない。
+				var mouse = Marshal.PtrToStructure<NativeMethods.MouseLlHookStruct>(lParam);
+				PositionNearCursor(mouse.Pt);
+			}
+			catch (Exception ex)
+			{
+				Logger.Error(ex, "ClipboardStackCountWindow: マウスへの追従に失敗しました。");
+			}
+		}
+
+		return NativeMethods.CallNextHookEx(_mouseHook, nCode, wParam, lParam);
 	}
 
 	private void OnRendering(object? sender, EventArgs e)
@@ -113,7 +148,15 @@ internal sealed class ClipboardStackCountWindow : Window
 
 	private void PositionNearCursor()
 	{
-		if (_handle == IntPtr.Zero || !NativeMethods.GetCursorPos(out var cursor))
+		if (NativeMethods.GetCursorPos(out var cursor))
+		{
+			PositionNearCursor(cursor);
+		}
+	}
+
+	private void PositionNearCursor(NativeMethods.NativePoint cursor)
+	{
+		if (_handle == IntPtr.Zero)
 		{
 			return;
 		}
