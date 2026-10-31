@@ -51,7 +51,7 @@ public static class ClipboardManager
 	private static bool _winComboHandled = false;
 	private static bool _swallowWinVKeyUp = false;
 	private static bool _swallowWinBKeyUp = false;
-	private static bool _swallowWinCKeyUp = false;
+	private static bool _swallowWinFKeyUp = false;
 	private static string _winPasteDigits = string.Empty;
 	private static readonly HashSet<int> _swallowedWinDigitKeys = new();
 	private static int _suppressedWinKeyCode = 0;
@@ -254,7 +254,7 @@ public static class ClipboardManager
 		ResetSuppressedWindowsKeyState();
 		_swallowWinVKeyUp = false;
 		_swallowWinBKeyUp = false;
-		_swallowWinCKeyUp = false;
+		_swallowWinFKeyUp = false;
 		_swallowedWinDigitKeys.Clear();
 	}
 
@@ -297,7 +297,7 @@ public static class ClipboardManager
 			ResetSuppressedWindowsKeyState();
 			_swallowWinVKeyUp = false;
 			_swallowWinBKeyUp = false;
-			_swallowWinCKeyUp = false;
+			_swallowWinFKeyUp = false;
 			_swallowedWinDigitKeys.Clear();
 		}
 	}
@@ -349,7 +349,7 @@ public static class ClipboardManager
 					bool shouldHandleCombo = vkCode switch
 					{
 						NativeMethods.VK_B => !_swallowWinBKeyUp,
-						NativeMethods.VK_C => !_swallowWinCKeyUp,
+						NativeMethods.VK_F => !_swallowWinFKeyUp,
 						_ => !_swallowWinVKeyUp
 					};
 					if (shouldHandleCombo)
@@ -361,9 +361,9 @@ public static class ClipboardManager
 						{
 							_swallowWinBKeyUp = true;
 						}
-						else if (vkCode == NativeMethods.VK_C)
+						else if (vkCode == NativeMethods.VK_F)
 						{
-							_swallowWinCKeyUp = true;
+							_swallowWinFKeyUp = true;
 						}
 						else
 						{
@@ -380,7 +380,7 @@ public static class ClipboardManager
 						{
 							ShowImageGalleryFromHotKey();
 						}
-						else if (vkCode == NativeMethods.VK_C)
+						else if (vkCode == NativeMethods.VK_F)
 						{
 							ShowClipboardPreviewFromHotKey();
 						}
@@ -442,9 +442,9 @@ public static class ClipboardManager
 					_swallowWinBKeyUp = false;
 					return (IntPtr)1;
 				}
-				else if (vkCode == NativeMethods.VK_C && _swallowWinCKeyUp)
+				else if (vkCode == NativeMethods.VK_F && _swallowWinFKeyUp)
 				{
-					_swallowWinCKeyUp = false;
+					_swallowWinFKeyUp = false;
 					return (IntPtr)1;
 				}
 			}
@@ -1116,7 +1116,7 @@ public static class ClipboardManager
 
 	private static bool IsWindowsClipboardComboKey(int vkCode)
 	{
-		return vkCode == NativeMethods.VK_V || vkCode == NativeMethods.VK_B || vkCode == NativeMethods.VK_C;
+		return vkCode == NativeMethods.VK_V || vkCode == NativeMethods.VK_B || vkCode == NativeMethods.VK_F;
 	}
 
 	private static bool TryGetDigit(int vkCode, out char digit)
@@ -1253,7 +1253,7 @@ public static class ClipboardManager
 		private readonly HwndSource _source;
 		private bool _registeredWinVHotkey;
 		private bool _registeredWinBHotkey;
-		private bool _registeredWinCHotkey;
+		private bool _registeredWinFHotkey;
 		private bool _isDisposed;
 
 		public ClipboardMonitorWindow()
@@ -1299,19 +1299,19 @@ public static class ClipboardManager
 				Logger.Warning($"ClipboardManager: Win+B ホットキー登録に失敗しました。低レベルフックで代替します。Win32Error={Marshal.GetLastWin32Error()}");
 			}
 
-			_registeredWinCHotkey = NativeMethods.RegisterHotKey(
+			_registeredWinFHotkey = NativeMethods.RegisterHotKey(
 				_source.Handle,
-				NativeMethods.HOTKEY_ID_WIN_C,
+				NativeMethods.HOTKEY_ID_WIN_F,
 				NativeMethods.MOD_WIN | NativeMethods.MOD_NOREPEAT,
-				NativeMethods.VK_C);
+				NativeMethods.VK_F);
 
-			if (_registeredWinCHotkey)
+			if (_registeredWinFHotkey)
 			{
-				Logger.Debug("ClipboardManager: Win+C ホットキーを登録しました。");
+				Logger.Debug("ClipboardManager: Win+F ホットキーを登録しました。");
 			}
 			else
 			{
-				Logger.Warning($"ClipboardManager: Win+C ホットキー登録に失敗しました。低レベルフックで代替します。Win32Error={Marshal.GetLastWin32Error()}");
+				Logger.Warning($"ClipboardManager: Win+F ホットキー登録に失敗しました。低レベルフックで代替します。Win32Error={Marshal.GetLastWin32Error()}");
 			}
 		}
 
@@ -1335,10 +1335,10 @@ public static class ClipboardManager
 				_registeredWinBHotkey = false;
 			}
 
-			if (_registeredWinCHotkey)
+			if (_registeredWinFHotkey)
 			{
-				NativeMethods.UnregisterHotKey(_source.Handle, NativeMethods.HOTKEY_ID_WIN_C);
-				_registeredWinCHotkey = false;
+				NativeMethods.UnregisterHotKey(_source.Handle, NativeMethods.HOTKEY_ID_WIN_F);
+				_registeredWinFHotkey = false;
 			}
 
 			NativeMethods.RemoveClipboardFormatListener(_source.Handle);
@@ -1362,7 +1362,7 @@ public static class ClipboardManager
 				return IntPtr.Zero;
 			}
 
-			if (msg == NativeMethods.WM_HOTKEY && wParam.ToInt32() == NativeMethods.HOTKEY_ID_WIN_C)
+			if (msg == NativeMethods.WM_HOTKEY && wParam.ToInt32() == NativeMethods.HOTKEY_ID_WIN_F)
 			{
 				ShowClipboardPreviewFromHotKey();
 				handled = true;
