@@ -54,6 +54,25 @@ Run("元ファイルがなくても履歴の参照を復元できる", () =>
 	Equal(missing, ClipboardVideoFiles.Decode(ClipboardVideoFiles.Encode(new[] { missing })).Single());
 });
 
+Run("再生エンジンの位置が総時間を超えても表示位置は末尾に収まる", () =>
+{
+	TimeSpan duration = TimeSpan.FromSeconds(1);
+	Equal(duration, ClipboardVideoTimeline.ClampPosition(TimeSpan.FromMilliseconds(1115), duration));
+	Equal(duration, ClipboardVideoTimeline.ClampPosition(TimeSpan.MaxValue, duration));
+});
+
+Run("再生位置の補正は範囲内の時刻を保ち、負の位置や長さ不明にも対応する", () =>
+{
+	TimeSpan duration = TimeSpan.FromSeconds(1);
+	foreach (TimeSpan position in new[] { TimeSpan.Zero, TimeSpan.FromTicks(1234567), duration })
+	{
+		Equal(position, ClipboardVideoTimeline.ClampPosition(position, duration));
+	}
+	Equal(TimeSpan.Zero, ClipboardVideoTimeline.ClampPosition(TimeSpan.FromMilliseconds(-1), duration));
+	Equal(TimeSpan.Zero, ClipboardVideoTimeline.ClampPosition(duration, TimeSpan.Zero));
+	Equal(TimeSpan.Zero, ClipboardVideoTimeline.ClampPosition(duration, TimeSpan.FromSeconds(-1)));
+});
+
 Run("30fpsの隣接コマへ進み、同じコマへ戻る", () =>
 {
 	TimeSpan duration = TimeSpan.FromSeconds(10);

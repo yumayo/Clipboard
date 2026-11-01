@@ -292,7 +292,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 
 	private void SeekTo(TimeSpan position)
 	{
-		_position = TimeSpan.FromTicks(Math.Clamp(position.Ticks, 0, _duration.Ticks));
+		_position = ClipboardVideoTimeline.ClampPosition(position, _duration);
 		_media.Position = _position;
 		UpdatePosition();
 	}
@@ -334,6 +334,8 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 
 	private void UpdatePosition()
 	{
+		// 再生エンジンは終端付近でNaturalDurationを超える位置を返すことがある。
+		_position = ClipboardVideoTimeline.ClampPosition(_position, _duration);
 		_updatingPosition = true;
 		_seek.Value = _position.TotalSeconds;
 		_updatingPosition = false;

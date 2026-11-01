@@ -2,6 +2,11 @@ namespace Clipboard;
 
 internal static class ClipboardVideoTimeline
 {
+	public static TimeSpan ClampPosition(TimeSpan position, TimeSpan duration)
+	{
+		return TimeSpan.FromTicks(Math.Clamp(position.Ticks, 0, Math.Max(0, duration.Ticks)));
+	}
+
 	// シェルが小数第3位までに丸めたNTSCのFPSを、元の比率へ戻す。
 	public static double NormalizeFrameRate(double frameRate)
 	{
