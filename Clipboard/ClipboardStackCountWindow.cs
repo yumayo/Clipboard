@@ -9,7 +9,8 @@ namespace Clipboard;
 internal sealed class ClipboardStackCountWindow : Window
 {
 	private const double BadgeDiameter = 24;
-	private const double CursorGap = 4;
+	private const double CursorHorizontalOffset = -44;
+	private const double CursorVerticalGap = 4;
 	private readonly TextBlock _countText;
 	private readonly NativeMethods.LowLevelMouseProc _mouseProc;
 	private IntPtr _handle;
@@ -32,14 +33,16 @@ internal sealed class ClipboardStackCountWindow : Window
 		ShowActivated = false;
 		Focusable = false;
 		IsHitTestVisible = false;
-		UseLayoutRounding = true;
-		SnapsToDevicePixels = true;
+		UseLayoutRounding = false;
+		SnapsToDevicePixels = false;
 
 		_countText = new TextBlock
 		{
 			FontSize = 13
 		};
 		_countText.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
+		TextOptions.SetTextFormattingMode(_countText, TextFormattingMode.Ideal);
+		TextOptions.SetTextRenderingMode(_countText, TextRenderingMode.Grayscale);
 		var border = new Border
 		{
 			Width = BadgeDiameter,
@@ -47,6 +50,13 @@ internal sealed class ClipboardStackCountWindow : Window
 			CornerRadius = new CornerRadius(BadgeDiameter / 2),
 			BorderThickness = new Thickness(1),
 			Padding = new Thickness(3),
+			// 丸枠と数字を2倍の解像度で描画して縮小し、輪郭を滑らかにする。
+			CacheMode = new BitmapCache
+			{
+				RenderAtScale = 2,
+				EnableClearType = false,
+				SnapsToDevicePixels = false
+			},
 			Child = new Viewbox
 			{
 				Stretch = Stretch.Uniform,
@@ -58,6 +68,7 @@ internal sealed class ClipboardStackCountWindow : Window
 		};
 		border.SetResourceReference(Border.BackgroundProperty, AppTheme.SurfaceBrushKey);
 		border.SetResourceReference(Border.BorderBrushProperty, AppTheme.TextBrushKey);
+		RenderOptions.SetBitmapScalingMode(border, BitmapScalingMode.HighQuality);
 		Content = border;
 
 		IsVisibleChanged += (_, _) =>
@@ -175,8 +186,8 @@ internal sealed class ClipboardStackCountWindow : Window
 		Matrix transform = HwndSource.FromHwnd(_handle)?.CompositionTarget?.TransformToDevice ?? Matrix.Identity;
 		int width = (int)Math.Ceiling(ActualWidth * transform.M11);
 		int height = (int)Math.Ceiling(ActualHeight * transform.M22);
-		int x = cursor.X + (int)Math.Round(CursorGap * transform.M11);
-		int y = cursor.Y - height - (int)Math.Round(CursorGap * transform.M22);
+		int x = cursor.X + (int)Math.Round(CursorHorizontalOffset * transform.M11);
+		int y = cursor.Y - height - (int)Math.Round(CursorVerticalGap * transform.M22);
 		IntPtr monitor = NativeMethods.MonitorFromPoint(cursor, NativeMethods.MONITOR_DEFAULTTONEAREST);
 		var info = new NativeMethods.MonitorInfo
 		{
