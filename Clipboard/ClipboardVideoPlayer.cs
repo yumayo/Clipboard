@@ -18,18 +18,17 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 	private readonly Button _nextButton;
 	private readonly TextBlock _time;
 	private readonly TextBlock _message;
-	private readonly TextBox _frameRateBox;
+	private readonly TextBlock _frameRateText;
 	private readonly string _path;
 	private TimeSpan _duration;
 	private TimeSpan _position;
-	private double _frameRate = 30;
+	private double _frameRate;
 	private bool _opened;
 	private bool _playing;
 	private bool _updatingPosition;
 	private bool _dragging;
 	private bool _resumeAfterSeek;
 	private bool _disposed;
-	private bool _frameRateEdited;
 
 	public ClipboardVideoPlayer(string path)
 	{
@@ -82,22 +81,13 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		buttons.Children.Add(_time);
 		footer.Children.Add(buttons);
 
-		var frameControls = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
-		var fpsLabel = new TextBlock { Text = "コマ送りのFPS", VerticalAlignment = VerticalAlignment.Center };
-		fpsLabel.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.MutedTextBrushKey);
-		frameControls.Children.Add(fpsLabel);
-		_frameRateBox = new TextBox
+		_frameRateText = new TextBlock
 		{
-			Text = "30",
-			Width = 70,
-			Margin = new Thickness(8, 0, 0, 0),
-			ToolTip = "動画のFPSを自動取得します。取得できない場合は30fpsを使用します。必要に応じて変更できます。"
+			Text = "動画のFPSを取得中…",
+			Margin = new Thickness(0, 6, 0, 0)
 		};
-		AppTheme.ApplyTextBox(_frameRateBox);
-		_frameRateBox.TextChanged += (_, _) => _frameRateEdited = true;
-		_frameRateBox.LostKeyboardFocus += (_, _) => CommitFrameRate();
-		frameControls.Children.Add(_frameRateBox);
-		footer.Children.Add(frameControls);
+		_frameRateText.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.MutedTextBrushKey);
+		footer.Children.Add(_frameRateText);
 
 		_media = new MediaElement
 		{
@@ -157,17 +147,6 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 
 	public bool HandleKeyDown(KeyEventArgs e)
 	{
-		if (_frameRateBox.IsKeyboardFocusWithin)
-		{
-			if (e.Key == Key.Enter)
-			{
-				CommitFrameRate();
-				Focus();
-				return true;
-			}
-			return false;
-		}
-
 		if (Keyboard.Modifiers != ModifierKeys.None || !_opened)
 		{
 			return false;
@@ -216,19 +195,24 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 			return;
 		}
 
+		double? frameRate = null;
 		try
 		{
-			double? frameRate = await Task.Run(() => ClipboardVideoMetadata.ReadFrameRate(_path));
-			if (!_disposed && frameRate.HasValue && !_frameRateEdited && !_frameRateBox.IsKeyboardFocusWithin)
-			{
-				_frameRate = ClipboardVideoTimeline.NormalizeFrameRate(frameRate.Value);
-				_frameRateBox.Text = _frameRate.ToString("0.###", CultureInfo.InvariantCulture);
-			}
+			frameRate = await Task.Run(() => ClipboardVideoMetadata.ReadFrameRate(_path));
 		}
 		catch (Exception ex)
 		{
 			Logger.Error(ex, "ClipboardVideoPlayer: 動画の情報を取得できませんでした。");
 		}
+		if (_disposed)
+		{
+			return;
+		}
+		_frameRate = frameRate.GetValueOrDefault();
+		_frameRateText.Text = _frameRate > 0
+			? $"動画のFPS: {_frameRate.ToString("0.###", CultureInfo.InvariantCulture)}"
+			: "動画のFPSを取得できません（コマ送り不可）";
+		SetControlsEnabled(_opened);
 	}
 
 	private void MediaOpened()
@@ -288,12 +272,11 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 
 	private void Step(int direction)
 	{
-		if (!_opened || _disposed)
+		if (!_opened || _disposed || _frameRate <= 0)
 		{
 			return;
 		}
 		Pause();
-		CommitFrameRate();
 		SeekTo(ClipboardVideoTimeline.Step(_position, _duration, _frameRate, direction));
 	}
 
@@ -329,16 +312,6 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		_resumeAfterSeek = false;
 	}
 
-	private void CommitFrameRate()
-	{
-		if (double.TryParse(_frameRateBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out double fps) &&
-			double.IsFinite(fps) && fps > 0 && fps <= 1000)
-		{
-			_frameRate = ClipboardVideoTimeline.NormalizeFrameRate(fps);
-		}
-		_frameRateBox.Text = _frameRate.ToString("0.###", CultureInfo.InvariantCulture);
-	}
-
 	private void UpdatePosition()
 	{
 		// 再生エンジンは終端付近でNaturalDurationを超える位置を返すことがある。
@@ -370,8 +343,8 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 	private void SetControlsEnabled(bool enabled)
 	{
 		_playButton.IsEnabled = enabled;
-		_previousButton.IsEnabled = enabled;
-		_nextButton.IsEnabled = enabled;
+		_previousButton.IsEnabled = enabled && _frameRate > 0;
+		_nextButton.IsEnabled = enabled && _frameRate > 0;
 		_seek.IsEnabled = enabled;
 	}
 

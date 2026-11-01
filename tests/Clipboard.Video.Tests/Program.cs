@@ -104,7 +104,31 @@ Run("29.97fpsで長くコマ送りしても丸め誤差が蓄積しない", () =
 	{
 		position = ClipboardVideoTimeline.Step(position, TimeSpan.FromHours(1), 29.97, 1);
 	}
-	Equal(TimeSpan.FromSeconds(60.06), position);
+	Equal(TimeSpan.FromTicks(600600601), position);
+});
+
+Run("動画の60・29.94・59.94fpsを補正せずにコマ送りする", () =>
+{
+	foreach (var (fps, frames, expectedSeconds) in new[]
+	{
+		(60.0, 600, 10),
+		(29.94, 1497, 50),
+		(59.94, 2997, 50)
+	})
+	{
+		TimeSpan position = TimeSpan.Zero;
+		TimeSpan duration = TimeSpan.FromMinutes(2);
+		for (int index = 0; index < frames; index++)
+		{
+			position = ClipboardVideoTimeline.Step(position, duration, fps, 1);
+		}
+		Equal(TimeSpan.FromSeconds(expectedSeconds), position);
+		for (int index = 0; index < frames; index++)
+		{
+			position = ClipboardVideoTimeline.Step(position, duration, fps, -1);
+		}
+		Equal(TimeSpan.Zero, position);
+	}
 });
 
 Run("コマの途中から前後それぞれのコマへ移動する", () =>

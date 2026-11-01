@@ -62,7 +62,7 @@ internal static class ClipboardVideoMetadata
 			PropertyKey key = FrameRateKey;
 			Marshal.ThrowExceptionForHR(store.GetValue(ref key, out value));
 			double fps = value.Type == 19 ? value.UInt32Value / 1000.0 : 0;
-			return double.IsFinite(fps) && fps > 0 && fps <= 1000 ? fps : null;
+			return double.IsFinite(fps) && fps > 0 ? fps : null;
 		}
 		catch (Exception ex) when (ex is COMException or ArgumentException or IOException)
 		{
