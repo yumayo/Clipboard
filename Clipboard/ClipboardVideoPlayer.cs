@@ -2,6 +2,7 @@ using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -53,7 +54,6 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		{
 			Minimum = 0,
 			Maximum = 1,
-			IsMoveToPointEnabled = true,
 			IsEnabled = false,
 			Focusable = false
 		};
@@ -64,8 +64,17 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 				SeekTo(TimeSpan.FromSeconds(_seek.Value));
 			}
 		};
-		_seek.PreviewMouseLeftButtonDown += (_, _) => BeginSeek();
-		_seek.PreviewMouseLeftButtonUp += (_, _) => EndSeek();
+		_seek.PreviewMouseLeftButtonDown += BeginSeek;
+		_seek.PreviewMouseMove += ContinueSeek;
+		_seek.PreviewMouseLeftButtonUp += (_, e) =>
+		{
+			if (_dragging)
+			{
+				SeekFromMouse(e);
+				EndSeek();
+				e.Handled = true;
+			}
+		};
 		_seek.LostMouseCapture += (_, _) => EndSeek();
 		footer.Children.Add(_seek);
 
@@ -287,15 +296,49 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		UpdatePosition();
 	}
 
-	private void BeginSeek()
+	private void BeginSeek(object sender, MouseButtonEventArgs e)
 	{
-		if (!_opened || _dragging)
+		if (!_opened || _disposed || _dragging || !_seek.CaptureMouse())
 		{
 			return;
 		}
 		_dragging = true;
 		_resumeAfterSeek = _playing;
 		Pause();
+		SeekFromMouse(e);
+		e.Handled = true;
+	}
+
+	private void ContinueSeek(object sender, MouseEventArgs e)
+	{
+		if (!_dragging)
+		{
+			return;
+		}
+		if (e.LeftButton == MouseButtonState.Pressed)
+		{
+			SeekFromMouse(e);
+		}
+		else
+		{
+			EndSeek();
+		}
+		e.Handled = true;
+	}
+
+	private void SeekFromMouse(MouseEventArgs e)
+	{
+		if (_seek.Template?.FindName("PART_Track", _seek) is not Track track)
+		{
+			return;
+		}
+		// 直前のシークで動いたつまみの位置を反映してから計算する。
+		track.UpdateLayout();
+		double value = track.ValueFromPoint(e.GetPosition(track));
+		if (double.IsFinite(value))
+		{
+			_seek.Value = Math.Clamp(value, _seek.Minimum, _seek.Maximum);
+		}
 	}
 
 	private void EndSeek()
@@ -305,7 +348,11 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 			return;
 		}
 		_dragging = false;
-		if (_resumeAfterSeek && _opened && !_disposed)
+		if (_seek.IsMouseCaptured)
+		{
+			_seek.ReleaseMouseCapture();
+		}
+		if (_resumeAfterSeek && _opened && !_disposed && !_playing)
 		{
 			TogglePlayback();
 		}
@@ -332,6 +379,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		}
 		_opened = false;
 		_playing = false;
+		EndSeek();
 		_timer.Stop();
 		_media.Close();
 		SetControlsEnabled(false);
@@ -372,6 +420,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 			return;
 		}
 		_disposed = true;
+		EndSeek();
 		_playing = false;
 		_timer.Stop();
 		_media.Close();
