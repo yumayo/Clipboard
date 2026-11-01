@@ -2,7 +2,6 @@ using System;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using static Clipboard.ImagePaintBounds;
@@ -47,11 +46,11 @@ internal sealed class ImagePaintRenderer
 
 	internal BitmapSource RenderPaintedImage(out Rect renderBounds)
 	{
-		PrepareTextInputsForRender();
-		renderBounds = CalculateRenderBounds();
-		SetPlacedImagesEditingChromeVisible(false);
+		List<Action> restoreTextInputs = PrepareTextInputsForRender();
 		try
 		{
+			renderBounds = CalculateRenderBounds();
+			SetPlacedImagesEditingChromeVisible(false);
 			int renderWidth = Math.Max(1, (int)Math.Round(renderBounds.Width));
 			int renderHeight = Math.Max(1, (int)Math.Round(renderBounds.Height));
 			double canvasWidth = _canvasWidthProvider();
@@ -73,6 +72,7 @@ internal sealed class ImagePaintRenderer
 		finally
 		{
 			SetPlacedImagesEditingChromeVisible(true);
+			foreach (Action restore in restoreTextInputs) restore();
 		}
 	}
 
@@ -214,23 +214,21 @@ internal sealed class ImagePaintRenderer
 		}
 	}
 
-	private void PrepareTextInputsForRender()
+	private List<Action> PrepareTextInputsForRender()
 	{
+		var restoreActions = new List<Action>();
 		foreach (UIElement element in _state.History.CompletedElements)
 		{
 			if (element is ArrowTextRectangle arrowTextRectangle)
 			{
-				arrowTextRectangle.PrepareForRender();
+				restoreActions.Add(arrowTextRectangle.PrepareForRender());
 			}
 		}
 
 		if (_state.Drag.Element is ArrowTextRectangle activeArrowTextRectangle)
 		{
-			activeArrowTextRectangle.PrepareForRender();
+			restoreActions.Add(activeArrowTextRectangle.PrepareForRender());
 		}
-
-		_overlayCanvas.Focusable = true;
-		_overlayCanvas.Focus();
-		Keyboard.ClearFocus();
+		return restoreActions;
 	}
 }

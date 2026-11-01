@@ -340,12 +340,21 @@ internal sealed class ArrowTextRectangle : Canvas
 		}
 	}
 
-	public void PrepareForRender()
+	public Action PrepareForRender()
 	{
-		if (_textBox.SelectionLength > 0)
+		// 自動保存でもフォーカス・選択範囲を維持し、キャレットや選択色だけを描画から除く。
+		Brush caretBrush = _textBox.CaretBrush;
+		double selectionOpacity = _textBox.SelectionOpacity;
+		Brush selectionTextBrush = _textBox.SelectionTextBrush;
+		_textBox.SetCurrentValue(TextBox.CaretBrushProperty, Brushes.Transparent);
+		_textBox.SetCurrentValue(TextBox.SelectionOpacityProperty, 0.0);
+		_textBox.SetCurrentValue(TextBox.SelectionTextBrushProperty, _textBox.Foreground);
+		return () =>
 		{
-			_textBox.Select(_textBox.CaretIndex, 0);
-		}
+			_textBox.SetCurrentValue(TextBox.CaretBrushProperty, caretBrush);
+			_textBox.SetCurrentValue(TextBox.SelectionOpacityProperty, selectionOpacity);
+			_textBox.SetCurrentValue(TextBox.SelectionTextBrushProperty, selectionTextBrush);
+		};
 	}
 
 	private void Rectangle_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)

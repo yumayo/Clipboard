@@ -90,17 +90,19 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		_seek.LostMouseCapture += (_, _) => EndSeek();
 		footer.Children.Add(_seek);
 
-		var buttons = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
-		_playButton = CreateButton("再生", "再生／一時停止 (Space)", TogglePlayback);
+		var controls = new StackPanel { Margin = new Thickness(0, 6, 0, 0) };
+		var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center };
+		_playButton = CreateButton("▶", "再生／一時停止 (Space)", TogglePlayback);
 		_previousButton = CreateButton("◀|", "コマ戻し (← または ,)", () => Step(-1));
 		_nextButton = CreateButton("|▶", "コマ送り (→ または .)", () => Step(1));
-		buttons.Children.Add(_playButton);
 		buttons.Children.Add(_previousButton);
+		buttons.Children.Add(_playButton);
 		buttons.Children.Add(_nextButton);
-		_time = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0) };
+		controls.Children.Add(buttons);
+		_time = new TextBlock { TextAlignment = TextAlignment.Center, Margin = new Thickness(0, 6, 0, 0) };
 		_time.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
-		buttons.Children.Add(_time);
-		footer.Children.Add(buttons);
+		controls.Children.Add(_time);
+		footer.Children.Add(controls);
 
 		_frameRateText = new TextBlock
 		{
@@ -323,7 +325,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 				UpdatePosition();
 			}
 			_media.Play();
-			_playButton.Content = "一時停止";
+			_playButton.Content = "❚❚";
 		}
 	}
 
@@ -335,7 +337,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		}
 		_media.Pause();
 		_playing = false;
-		_playButton.Content = "再生";
+		_playButton.Content = "▶";
 		UpdatePosition();
 	}
 
@@ -483,7 +485,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 			MinWidth = 46,
 			MinHeight = 30,
 			Padding = new Thickness(8, 4, 8, 4),
-			Margin = new Thickness(0, 0, 6, 0),
+			Margin = new Thickness(3, 0, 3, 0),
 			Focusable = false
 		};
 		AppTheme.ApplyButton(button);

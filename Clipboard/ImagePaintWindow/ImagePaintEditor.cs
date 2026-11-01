@@ -49,6 +49,7 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 	private int _paintViewportLockVersion;
 
 	public event EventHandler? Saved;
+	public event EventHandler? Changed;
 
 	public Size PreferredWindowSize { get; private set; }
 
@@ -1028,7 +1029,7 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 		}
 	}
 
-	public bool Save(bool requireChanges = false, bool copyToClipboard = true)
+	public bool Save(bool requireChanges = false, bool copyToClipboard = true, bool focusEditor = true)
 	{
 		CompleteActiveDrag(focusTextInput: false);
 		if (requireChanges && !_state.HasPaintChanges)
@@ -1044,7 +1045,7 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 			renderBounds);
 		_savePaintedImage(paintedImage, paintStateJson, copyToClipboard);
 		_state.HasPaintChanges = false;
-		FocusPaintSurface();
+		if (focusEditor) FocusPaintSurface();
 		return true;
 	}
 
@@ -1206,12 +1207,13 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 	private void MarkPaintChanged()
 	{
 		_state.HasPaintChanges = true;
+		Changed?.Invoke(this, EventArgs.Empty);
 	}
 
 	// 画像の移動やリサイズも編集状態として扱う。
 	private void MarkImagePlacementChanged()
 	{
-		_state.HasPaintChanges = true;
+		MarkPaintChanged();
 	}
 
 	private void PlacedImage_Changed(object? sender, EventArgs e)
