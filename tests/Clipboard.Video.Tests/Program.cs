@@ -366,6 +366,63 @@ Run("小さい保存画像は拡大せずに中央へ表示する", () =>
 	Near(169, 1024 - layout.VerticalOffset);
 });
 
+Run("再生とコマ編集で共有する矩形は余白16pxのフルHD表示に一致する", () =>
+{
+	Equal(true, ClipboardVideoViewportLayout.TryFit(1920, 1080, 992, 572, 1, 1, out var layout));
+	Equal(new ClipboardVideoViewportLayout(16, 16, 960, 540, 0.5), layout);
+});
+
+Run("小さな動画もコマ編集と同じく拡大せず中央に表示する", () =>
+{
+	Equal(true, ClipboardVideoViewportLayout.TryFit(288, 162, 900, 500, 1, 1, out var layout));
+	Equal(new ClipboardVideoViewportLayout(306, 169, 288, 162, 1), layout);
+});
+
+Run("奇数サイズ・縦長・4Kでも表示倍率ごとに同じ物理ピクセルへ配置する", () =>
+{
+	foreach (var (width, height) in new[] { (1920, 1080), (1080, 1920), (3840, 2160), (641, 359) })
+	foreach (var (viewportWidth, viewportHeight) in new[] { (901, 351), (701, 501), (1401, 801) })
+	foreach (double dpi in new[] { 1, 1.25, 1.5, 1.75, 2 })
+	{
+		Equal(true, ClipboardVideoViewportLayout.TryFit(width, height, viewportWidth, viewportHeight, dpi, dpi, out var layout));
+		Near(Math.Round(layout.Left * dpi), layout.Left * dpi);
+		Near(Math.Round(layout.Top * dpi), layout.Top * dpi);
+		Near(width / (double)height, layout.Width / layout.Height);
+		Equal(true, layout.Width <= viewportWidth - 32 + 0.0001);
+		Equal(true, layout.Height <= viewportHeight - 32 + 0.0001);
+		Equal(true, Math.Abs(layout.Left + layout.Width / 2 - viewportWidth / 2.0) <= 0.5 / dpi + 0.0001);
+		Equal(true, Math.Abs(layout.Top + layout.Height / 2 - viewportHeight / 2.0) <= 0.5 / dpi + 0.0001);
+
+		// 編集用の作業領域にある画像も、同じ矩形へ写る（1px未満のずれも許容しない）。
+		double horizontalOffset = 1024 * layout.Zoom - layout.Left;
+		double verticalOffset = 1024 * layout.Zoom - layout.Top;
+		Near(layout.Left, 1024 * layout.Zoom - horizontalOffset);
+		Near(layout.Top, 1024 * layout.Zoom - verticalOffset);
+		Near(layout.Left + layout.Width, (1024 + width) * layout.Zoom - horizontalOffset);
+		Near(layout.Top + layout.Height, (1024 + height) * layout.Zoom - verticalOffset);
+	}
+});
+
+Run("非常に大きなコマも編集用の最小ズームで切り取らず領域内に収める", () =>
+{
+	Equal(true, ClipboardVideoViewportLayout.TryFit(32768, 16384, 900, 500, 1.25, 1.25, out var layout));
+	Equal(true, layout.Zoom < 0.05);
+	Near(868, layout.Width);
+});
+
+Run("未確定・不正な動画表示領域や表示倍率では矩形を確定しない", () =>
+{
+	foreach (double invalid in new[] { 0, -1, double.NaN, double.PositiveInfinity })
+	{
+		Equal(false, ClipboardVideoViewportLayout.TryFit(invalid, 1080, 900, 500, 1, 1, out _));
+		Equal(false, ClipboardVideoViewportLayout.TryFit(1920, invalid, 900, 500, 1, 1, out _));
+		Equal(false, ClipboardVideoViewportLayout.TryFit(1920, 1080, invalid, 500, 1, 1, out _));
+		Equal(false, ClipboardVideoViewportLayout.TryFit(1920, 1080, 900, invalid, 1, 1, out _));
+		Equal(false, ClipboardVideoViewportLayout.TryFit(1920, 1080, 900, 500, invalid, 1, out _));
+		Equal(false, ClipboardVideoViewportLayout.TryFit(1920, 1080, 900, 500, 1, invalid, out _));
+	}
+});
+
 using var database = new SqliteConnection("Data Source=:memory:;Foreign Keys=True");
 database.Open();
 using (var command = database.CreateCommand())

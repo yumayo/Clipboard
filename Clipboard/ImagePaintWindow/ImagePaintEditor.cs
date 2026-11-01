@@ -22,6 +22,7 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 	private bool _disposed;
 	private bool _viewportInitialized;
 	private bool _viewportInitializationPending;
+	private bool _applyingViewportLayout;
 	private bool _videoViewport;
 	private readonly BitmapSource _sourceImage;
 	private readonly ImagePaintEditorState _state = new();
@@ -50,6 +51,12 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 
 	public event EventHandler? Saved;
 	public event EventHandler? Changed;
+	internal event Action<Rect>? VideoImageBoundsChanged;
+	private Rect _lastVideoImageBounds = Rect.Empty;
+	private Rect _videoViewportBounds = Rect.Empty;
+
+	internal Size VideoImageSize => VideoImage.Bounds.Size;
+	private PlacedImage VideoImage => _imageLayerCanvas.Children.OfType<PlacedImage>().First();
 
 	public Size PreferredWindowSize { get; private set; }
 
@@ -389,7 +396,12 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 
 	public FrameworkElement UseVideoViewport(PaintMode mode)
 	{
+		if (!_videoViewport) _scrollViewer.LayoutUpdated += VideoViewport_LayoutUpdated;
 		_videoViewport = true;
+		// 作業領域の拡大縮小やScrollViewerの枠で、再生映像と丸め方・領域を変えない。
+		UseLayoutRounding = false;
+		_scrollViewer.BorderThickness = new Thickness(0);
+		_scrollViewer.Padding = new Thickness(0);
 		_moveImageButton.Visibility = Visibility.Collapsed;
 		_blackFillButton.Visibility = Visibility.Collapsed;
 		_redOutlineButton.Visibility = Visibility.Collapsed;
@@ -398,6 +410,23 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 		// 動画と停止画像で表示領域の大きさが変わらないよう、設定欄もウィンドウ側へ移す。
 		if (_toolbar.Parent is DockPanel root) root.Children.Remove(_toolbar);
 		return _toolbar;
+	}
+
+	private void VideoViewport_LayoutUpdated(object? sender, EventArgs e)
+	{
+		if (_disposed || !_viewportInitialized || _viewportInitializationPending || _applyingViewportLayout ||
+			!IsLoaded || !IsVisible) return;
+		Rect bounds = VideoImage.GetDisplayBounds(this);
+		if (bounds == _lastVideoImageBounds) return;
+		_lastVideoImageBounds = bounds;
+		// 実際に配置された画像の矩形も共有し、スクロール・ズーム後も切り替え時にずらさない。
+		VideoImageBoundsChanged?.Invoke(bounds);
+	}
+
+	internal void SetVideoViewportBounds(Rect bounds)
+	{
+		_videoViewportBounds = bounds;
+		ScheduleViewportLayout();
 	}
 
 	private void ScheduleViewportLayout()
@@ -409,16 +438,34 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 			_viewportInitializationPending = false;
 			if (_disposed || !_scrollViewer.IsLoaded || !_scrollViewer.IsVisible ||
 				_isPaintViewportLocked || _state.MiddleButtonPan.IsPanning) return;
-			_scrollViewer.UpdateLayout();
-			Rect bounds = _renderer.CalculateRenderBounds();
-			if (!ImagePaintViewportLayout.TryFit(bounds.Left, bounds.Top, bounds.Width, bounds.Height,
-				GetScrollViewerViewportWidth(), GetScrollViewerViewportHeight(), MinZoom, out var layout)) return;
+			_applyingViewportLayout = true;
+			try
+			{
+				_scrollViewer.UpdateLayout();
+				ImagePaintViewportLayout layout;
+				if (_videoViewport)
+				{
+					if (_videoViewportBounds.IsEmpty) return;
+					Rect imageBounds = VideoImage.Bounds;
+					double zoom = _videoViewportBounds.Width / imageBounds.Width;
+					layout = new ImagePaintViewportLayout(zoom,
+						imageBounds.Left * zoom - _videoViewportBounds.Left,
+						imageBounds.Top * zoom - _videoViewportBounds.Top);
+				}
+				else
+				{
+					Rect bounds = _renderer.CalculateRenderBounds();
+					if (!ImagePaintViewportLayout.TryFit(bounds.Left, bounds.Top, bounds.Width, bounds.Height,
+						GetScrollViewerViewportWidth(), GetScrollViewerViewportHeight(), MinZoom, out layout)) return;
+				}
 
-			// フォーカスのスクロール要求を先に処理し、最後に画像の中央位置を指定する。
-			if (!_viewportInitialized) FocusPaintSurface();
-			SetZoom(layout.Zoom);
-			ScrollToInitialWorkspacePosition(layout);
-			_viewportInitialized = true;
+				// フォーカスのスクロール要求を先に処理し、最後に画像の中央位置を指定する。
+				if (!_viewportInitialized) FocusPaintSurface();
+				SetZoom(layout.Zoom);
+				ScrollToInitialWorkspacePosition(layout);
+				_viewportInitialized = true;
+			}
+			finally { _applyingViewportLayout = false; }
 		}), DispatcherPriority.Loaded);
 	}
 
@@ -1620,6 +1667,7 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 		if (_disposed) return;
 		_disposed = true;
 		AppTheme.ThemeChanged -= AppTheme_ThemeChanged;
+		_scrollViewer.LayoutUpdated -= VideoViewport_LayoutUpdated;
 		if (_state.MiddleButtonPan.IsPanning)
 		{
 			EndMiddleButtonPan(releaseCapture: true);

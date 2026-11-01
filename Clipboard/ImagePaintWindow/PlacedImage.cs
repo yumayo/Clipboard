@@ -71,6 +71,9 @@ internal sealed class PlacedImage : Canvas
 
 	public BitmapSource Source => (BitmapSource)_image.Source;
 
+	internal Rect GetDisplayBounds(Visual ancestor) =>
+		_image.TransformToAncestor(ancestor).TransformBounds(new Rect(_image.RenderSize));
+
 	public bool IsEditing => _isMoving || _isResizing;
 
 	// レンダリング中や操作できないモードでは、輪郭とリサイズハンドルを隠す。

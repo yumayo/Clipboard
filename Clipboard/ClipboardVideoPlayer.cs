@@ -23,7 +23,11 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 	private readonly TextBlock _message;
 	private readonly TextBlock _frameRateText;
 	private readonly ClipboardVideoFrameStrip _frameStrip;
-	private readonly ContentControl _editorHost;
+	private readonly Grid _editorHost;
+	private readonly Grid _viewport;
+	private ImagePaintEditor? _frameEditor;
+	private Size _videoImageSize;
+	private Rect _videoImageBounds = Rect.Empty;
 	private readonly string _path;
 	private TimeSpan _duration;
 	private TimeSpan _position;
@@ -117,7 +121,10 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 			LoadedBehavior = MediaState.Manual,
 			UnloadedBehavior = MediaState.Manual,
 			ScrubbingEnabled = true,
-			Stretch = Stretch.Uniform,
+			// 表示矩形は編集画像と共有し、MediaElement側で再計算しない。
+			Stretch = Stretch.Fill,
+			UseLayoutRounding = false,
+			SnapsToDevicePixels = true,
 			Focusable = false
 		};
 		_media.MediaOpened += (_, _) => MediaOpened();
@@ -133,11 +140,15 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 			NotifyPausedFrame();
 		};
 		_media.MediaFailed += (_, e) => ShowFailure("動画を再生できません。形式・コーデック、またはファイルの状態を確認してください。", e.ErrorException);
-		var viewport = new Grid { Background = Brushes.Black };
+		var viewport = _viewport = new Grid { Background = Brushes.Black, UseLayoutRounding = false, ClipToBounds = true };
+		viewport.SizeChanged += (_, _) => UpdateVideoLayout();
 		// 編集画面では動画へポインターを戻すだけで停止中のコマを編集できる。
 		viewport.MouseEnter += (_, _) => PauseForEditing();
 		viewport.PreviewMouseLeftButtonDown += (_, _) => PauseForEditing();
-		viewport.Children.Add(_media);
+		// Canvasに置き、映像の自然サイズや表示矩形で表示領域自体を押し広げない。
+		var mediaHost = new Canvas { ClipToBounds = true };
+		mediaHost.Children.Add(_media);
+		viewport.Children.Add(mediaHost);
 		_message = new TextBlock
 		{
 			Text = "動画を読み込み中…",
@@ -149,10 +160,8 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 			IsHitTestVisible = false
 		};
 		viewport.Children.Add(_message);
-		_editorHost = new ContentControl
+		_editorHost = new Grid
 		{
-			HorizontalContentAlignment = HorizontalAlignment.Stretch,
-			VerticalContentAlignment = VerticalAlignment.Stretch,
 			Visibility = Visibility.Collapsed
 		};
 		viewport.Children.Add(_editorHost);
@@ -179,12 +188,50 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 
 	public Func<bool>? BeforeNavigate { get; set; }
 
-	public void ShowFrameEditor(FrameworkElement? editor)
+	public void ShowFrameEditor(ImagePaintEditor? editor)
 	{
+		if (_frameEditor != null) _frameEditor.VideoImageBoundsChanged -= SetVideoImageBounds;
+		_frameEditor = editor;
+		_editorHost.Children.Clear();
+		if (editor != null)
+		{
+			if (_videoImageSize != editor.VideoImageSize || _videoImageBounds.IsEmpty)
+			{
+				_videoImageSize = editor.VideoImageSize;
+				UpdateVideoLayout();
+			}
+			editor.SetVideoViewportBounds(_videoImageBounds);
+			editor.VideoImageBoundsChanged += SetVideoImageBounds;
+			_editorHost.Children.Add(editor);
+		}
 		_editorHost.Visibility = editor == null ? Visibility.Collapsed : Visibility.Visible;
-		_editorHost.Content = editor;
 		_media.Visibility = editor == null ? Visibility.Visible : Visibility.Hidden;
 		SetControlsEnabled(_opened);
+	}
+
+	private void UpdateVideoLayout()
+	{
+		DpiScale dpi = VisualTreeHelper.GetDpi(_viewport);
+		if (!ClipboardVideoViewportLayout.TryFit(_videoImageSize.Width, _videoImageSize.Height,
+			_viewport.ActualWidth, _viewport.ActualHeight, dpi.DpiScaleX, dpi.DpiScaleY, out var layout)) return;
+		SetVideoImageBounds(new Rect(layout.Left, layout.Top, layout.Width, layout.Height));
+		_frameEditor?.SetVideoViewportBounds(_videoImageBounds);
+	}
+
+	private void SetVideoImageBounds(Rect bounds)
+	{
+		if (bounds.IsEmpty || bounds.Width <= 0 || bounds.Height <= 0) return;
+		_videoImageBounds = bounds;
+		_media.Width = bounds.Width;
+		_media.Height = bounds.Height;
+		Canvas.SetLeft(_media, bounds.Left);
+		Canvas.SetTop(_media, bounds.Top);
+	}
+
+	protected override void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi)
+	{
+		base.OnDpiChanged(oldDpi, newDpi);
+		UpdateVideoLayout();
 	}
 
 	public void SetEditedFrames(IReadOnlyDictionary<long, BitmapSource> frames) => _frameStrip.SetEditedFrames(frames);
@@ -293,6 +340,8 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 			return;
 		}
 		_duration = _media.NaturalDuration.TimeSpan;
+		_videoImageSize = new Size(_media.NaturalVideoWidth, _media.NaturalVideoHeight);
+		UpdateVideoLayout();
 		_opened = true;
 		_message.Visibility = Visibility.Collapsed;
 		_seek.Maximum = _duration.TotalSeconds;
@@ -504,6 +553,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		_playing = false;
 		_timer.Stop();
 		_frameStrip.Dispose();
+		if (_frameEditor != null) _frameEditor.VideoImageBoundsChanged -= SetVideoImageBounds;
 		_media.Close();
 		_media.Source = null;
 	}
