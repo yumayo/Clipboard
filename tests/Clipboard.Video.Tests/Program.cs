@@ -317,6 +317,55 @@ Run("不正な行幅では画像バッファを読み込まない", () =>
 	catch (ArgumentException) { }
 });
 
+Run("表示領域が未確定の間は初期ズームと表示位置を確定しない", () =>
+{
+	foreach (double invalid in new[] { 0, -1, double.NaN, double.PositiveInfinity })
+	{
+		Equal(false, ImagePaintViewportLayout.TryFit(1024, 1024, 1920, 1080, invalid, 600, 0.05, out _));
+		Equal(false, ImagePaintViewportLayout.TryFit(1024, 1024, 1920, 1080, 900, invalid, 0.05, out _));
+	}
+});
+
+Run("作業領域の余白があってもフルHDのコマが画面中央に収まる", () =>
+{
+	Equal(true, ImagePaintViewportLayout.TryFit(1024, 1024, 1920, 1080, 992, 572, 0.05, out var layout));
+	Near(0.5, layout.Zoom);
+	Near(16, 1024 * layout.Zoom - layout.HorizontalOffset);
+	Near(16, 1024 * layout.Zoom - layout.VerticalOffset);
+	Near(976, (1024 + 1920) * layout.Zoom - layout.HorizontalOffset);
+	Near(556, (1024 + 1080) * layout.Zoom - layout.VerticalOffset);
+});
+
+Run("縦長・4Kのコマと画面サイズ変更でも画像の中心と表示領域の中心が一致する", () =>
+{
+	foreach (var (width, height) in new[] { (3840, 2160), (1080, 1920), (1280, 720) })
+	foreach (var (viewportWidth, viewportHeight) in new[] { (900, 350), (700, 500), (1400, 800) })
+	{
+		Equal(true, ImagePaintViewportLayout.TryFit(1024, 1024, width, height, viewportWidth, viewportHeight, 0.05, out var layout));
+		Near(viewportWidth / 2.0, (1024 + width / 2.0) * layout.Zoom - layout.HorizontalOffset);
+		Near(viewportHeight / 2.0, (1024 + height / 2.0) * layout.Zoom - layout.VerticalOffset);
+		Equal(true, width * layout.Zoom <= viewportWidth - 32 + 0.0001);
+		Equal(true, height * layout.Zoom <= viewportHeight - 32 + 0.0001);
+	}
+});
+
+Run("画面上のドラッグ座標が余白と縮小率を含む元画像の画素座標に戻る", () =>
+{
+	Equal(true, ImagePaintViewportLayout.TryFit(1024, 1024, 1920, 1080, 992, 572, 0.05, out var layout));
+	Near(200, (116 + layout.HorizontalOffset) / layout.Zoom - 1024);
+	Near(100, (66 + layout.VerticalOffset) / layout.Zoom - 1024);
+	Near(1000, (516 + layout.HorizontalOffset) / layout.Zoom - 1024);
+	Near(600, (316 + layout.VerticalOffset) / layout.Zoom - 1024);
+});
+
+Run("小さい保存画像は拡大せずに中央へ表示する", () =>
+{
+	Equal(true, ImagePaintViewportLayout.TryFit(1024, 1024, 288, 162, 900, 500, 0.05, out var layout));
+	Near(1, layout.Zoom);
+	Near(306, 1024 - layout.HorizontalOffset);
+	Near(169, 1024 - layout.VerticalOffset);
+});
+
 using var database = new SqliteConnection("Data Source=:memory:;Foreign Keys=True");
 database.Open();
 using (var command = database.CreateCommand())
@@ -533,6 +582,12 @@ static byte[] Aperture(short x, short y, int width, int height)
 	BinaryPrimitives.WriteInt32LittleEndian(area.AsSpan(8), width);
 	BinaryPrimitives.WriteInt32LittleEndian(area.AsSpan(12), height);
 	return area;
+}
+
+static void Near(double expected, double actual)
+{
+	if (!double.IsFinite(actual) || Math.Abs(expected - actual) > 0.0001)
+		throw new Exception($"Expected {expected}; got {actual}");
 }
 
 static void Equal<T>(T expected, T actual)

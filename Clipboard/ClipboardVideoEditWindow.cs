@@ -17,11 +17,15 @@ internal sealed class ClipboardVideoEditWindow : Window
 	private readonly StackPanel _savedFramesHost;
 	private readonly WrapPanel _editorToolbar;
 	private readonly TextBlock _editingTime;
-	private readonly CancellationTokenSource _cancellation = new();
+	private readonly Button _saveButton;
+	private readonly ContentControl _toolOptionsHost;
+	private readonly Dictionary<PaintMode, Button> _modeButtons = new();
+	private CancellationTokenSource? _frameCancellation;
 	private ClipboardVideoFrameReader? _reader;
 	private ImagePaintEditor? _frameEditor;
 	private TimeSpan? _editingPosition;
-	private bool _loadingFrame;
+	private TimeSpan? _loadingPosition;
+	private PaintMode _paintMode = PaintMode.RedOutlineRectangle;
 	private bool _closed;
 
 	public ClipboardVideoEditWindow(long historyId, string path)
@@ -41,7 +45,7 @@ internal sealed class ClipboardVideoEditWindow : Window
 		var root = new DockPanel();
 		var guide = new TextBlock
 		{
-			Text = "「このコマを編集」で動画の表示領域に赤枠などを追加できます。Ctrl+S / Ctrl+C で保存して画像をコピーします。コマの切り替え・再生・終了時にも編集内容を保存します。",
+			Text = "動画にポインターを重ねると、そのコマに赤枠などを直接描けます。再生は再生ボタン / Space、保存して画像をコピーは Ctrl+S / Ctrl+C。コマの切り替え・再生・終了時にも変更を保存します。",
 			TextWrapping = TextWrapping.Wrap,
 			Margin = new Thickness(10)
 		};
@@ -49,14 +53,27 @@ internal sealed class ClipboardVideoEditWindow : Window
 		DockPanel.SetDock(guide, Dock.Top);
 		root.Children.Add(guide);
 
-		_editorToolbar = new WrapPanel { Margin = new Thickness(10, 0, 10, 6), Visibility = Visibility.Collapsed };
-		_editingTime = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
+		_editorToolbar = new WrapPanel { Margin = new Thickness(10, 0, 10, 6) };
+		AddModeButton(PaintMode.RedOutlineRectangle, "赤枠", ImagePaintToolbarFactory.CreateOutlineIcon());
+		AddModeButton(PaintMode.BlackFillRectangle, "塗りつぶし", ImagePaintToolbarFactory.CreateFillIcon());
+		AddModeButton(PaintMode.ArrowTextRectangle, "矢印矩形", ImagePaintToolbarFactory.CreateArrowTextRectangleIcon());
+		AddModeButton(PaintMode.MoveImage, "画像の移動", ImagePaintToolbarFactory.CreateMoveImageIcon());
+		_editingTime = new TextBlock { Text = "動画を読み込み中…", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
 		_editingTime.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
 		_editorToolbar.Children.Add(_editingTime);
-		_editorToolbar.Children.Add(CreateButton("保存して画像をコピー", () => TrySaveCurrentFrame()));
-		_editorToolbar.Children.Add(CreateButton("再生に戻る", () => TryEndFrameEditing()));
+		_saveButton = CreateButton("保存して画像をコピー", () => TrySaveCurrentFrame());
+		_saveButton.IsEnabled = false;
+		_editorToolbar.Children.Add(_saveButton);
 		DockPanel.SetDock(_editorToolbar, Dock.Top);
 		root.Children.Add(_editorToolbar);
+		_toolOptionsHost = new ContentControl
+		{
+			MinHeight = 48,
+			HorizontalContentAlignment = HorizontalAlignment.Center,
+			IsEnabled = false
+		};
+		DockPanel.SetDock(_toolOptionsHost, Dock.Top);
+		root.Children.Add(_toolOptionsHost);
 
 		_savedFramesHost = new StackPanel { Margin = new Thickness(10, 0, 10, 6) };
 		var label = new TextBlock
@@ -76,19 +93,19 @@ internal sealed class ClipboardVideoEditWindow : Window
 		DockPanel.SetDock(_savedFramesHost, Dock.Top);
 		root.Children.Add(_savedFramesHost);
 
-		_player = new ClipboardVideoPlayer(path, autoPlay: false, editFrame: OpenFrameEditor);
+		_player = new ClipboardVideoPlayer(path, autoPlay: false);
 		_player.BeforeNavigate = TryEndFrameEditing;
+		_player.PausedFrameChanged += OpenFrameEditor;
 		root.Children.Add(_player);
 		Content = root;
 		RefreshSavedFrames();
 		Closed += (_, _) =>
 		{
 			_closed = true;
-			_cancellation.Cancel();
+			_frameCancellation?.Cancel();
 			_reader?.Dispose();
 			_frameEditor?.Dispose();
 			_player.Dispose();
-			_cancellation.Dispose();
 		};
 	}
 
@@ -100,13 +117,12 @@ internal sealed class ClipboardVideoEditWindow : Window
 			TrySaveCurrentFrame();
 			e.Handled = true;
 		}
-		else if (_frameEditor?.IsTextInputFocused != true && !_loadingFrame)
+		else if (Keyboard.FocusedElement is not TextBox)
 		{
 			if (_player.HandleKeyDown(e)) e.Handled = true;
 			else if (e.Key == Key.Escape)
 			{
-				if (_frameEditor != null) TryEndFrameEditing();
-				else Close();
+				Close();
 				e.Handled = true;
 			}
 		}
@@ -115,7 +131,7 @@ internal sealed class ClipboardVideoEditWindow : Window
 
 	protected override void OnClosing(CancelEventArgs e)
 	{
-		if (!_loadingFrame && !TryEndFrameEditing()) e.Cancel = true;
+		if (!TryEndFrameEditing()) e.Cancel = true;
 		base.OnClosing(e);
 	}
 
@@ -150,7 +166,7 @@ internal sealed class ClipboardVideoEditWindow : Window
 				Cursor = Cursors.Hand
 			};
 			AppTheme.ApplyButton(button);
-			button.Click += (_, _) => OpenFrameEditor(frame.Position);
+			button.Click += (_, _) => _player.SelectFrame(frame.Position);
 			_savedFrames.Children.Add(button);
 		}
 		_savedFramesHost.Visibility = frames.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -159,14 +175,13 @@ internal sealed class ClipboardVideoEditWindow : Window
 
 	private async void OpenFrameEditor(TimeSpan position)
 	{
-		if (_loadingFrame || _closed || _editingPosition == position) return;
+		if (_closed || _editingPosition == position || _loadingPosition == position) return;
 		if (!TryEndFrameEditing()) return;
-		_player.SelectFrame(position);
-		_loadingFrame = true;
-		_player.PausePlayback();
-		_player.IsEnabled = false;
-		_savedFrames.IsEnabled = false;
-		CancellationToken token = _cancellation.Token;
+		using var cancellation = new CancellationTokenSource();
+		_frameCancellation = cancellation;
+		_loadingPosition = position;
+		_editingTime.Text = $"読み込み中: {FormatTime(position)}";
+		CancellationToken token = cancellation.Token;
 		try
 		{
 			ClipboardVideoFrameEdit? saved = await Task.Run(() => ClipboardDatabase.LoadVideoFrameEdit(_historyId, position), token);
@@ -202,26 +217,27 @@ internal sealed class ClipboardVideoEditWindow : Window
 				}
 			}
 			editor ??= new ImagePaintEditor(imageBytes, Save);
+			_toolOptionsHost.Content = editor.UseVideoViewport(_paintMode);
+			_toolOptionsHost.IsEnabled = true;
 			_frameEditor = editor;
 			_editingPosition = position;
 			_editingTime.Text = $"編集中: {FormatTime(position)}";
-			_editorToolbar.Visibility = Visibility.Visible;
+			_saveButton.IsEnabled = true;
 			_player.ShowFrameEditor(editor);
 		}
 		catch (OperationCanceledException) { }
 		catch (Exception ex)
 		{
+			if (token.IsCancellationRequested) return;
 			Logger.Error(ex, $"ClipboardVideoEditWindow: コマを開けませんでした。Id={_historyId} Position={position}");
-			if (!_closed)
-				MessageBox.Show(this, "コマを開けませんでした。元動画の状態や対応形式を確認してください。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
+			if (!_closed) _editingTime.Text = "コマ画像を取得できません（再生・シークは使用できます）";
 		}
 		finally
 		{
-			_loadingFrame = false;
-			if (!_closed)
+			if (ReferenceEquals(_frameCancellation, cancellation))
 			{
-				_player.IsEnabled = true;
-				_savedFrames.IsEnabled = true;
+				_frameCancellation = null;
+				_loadingPosition = null;
 			}
 		}
 	}
@@ -243,15 +259,35 @@ internal sealed class ClipboardVideoEditWindow : Window
 
 	private bool TryEndFrameEditing()
 	{
-		if (_loadingFrame) return false;
-		if (_frameEditor == null) return true;
 		if (!TrySaveCurrentFrame(requireChanges: true, copyToClipboard: false)) return false;
+		_frameCancellation?.Cancel();
+		_frameCancellation = null;
+		_loadingPosition = null;
 		_player.ShowFrameEditor(null);
-		_frameEditor.Dispose();
+		_frameEditor?.Dispose();
 		_frameEditor = null;
 		_editingPosition = null;
-		_editorToolbar.Visibility = Visibility.Collapsed;
+		_saveButton.IsEnabled = false;
+		_toolOptionsHost.IsEnabled = false;
+		_editingTime.Text = "動画にポインターを重ねると編集できます";
 		return true;
+	}
+
+	private void AddModeButton(PaintMode mode, string text, UIElement icon)
+	{
+		Button button = ImagePaintToolbarFactory.CreateModeButton(text, icon);
+		button.Margin = new Thickness(0, 0, 6, 4);
+		button.Click += (_, _) =>
+		{
+			_paintMode = mode;
+			foreach (var (buttonMode, modeButton) in _modeButtons)
+				ImagePaintToolbarFactory.UpdateModeButton(modeButton, buttonMode == mode);
+			_frameEditor?.UseVideoViewport(mode);
+			_player.PausePlayback();
+		};
+		ImagePaintToolbarFactory.UpdateModeButton(button, mode == _paintMode);
+		_modeButtons.Add(mode, button);
+		_editorToolbar.Children.Add(button);
 	}
 
 	private static Button CreateButton(string text, Action action)

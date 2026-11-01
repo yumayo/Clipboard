@@ -18,7 +18,6 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 	private readonly Button _playButton;
 	private readonly Button _previousButton;
 	private readonly Button _nextButton;
-	private readonly Button? _editButton;
 	private readonly bool _autoPlay;
 	private readonly TextBlock _time;
 	private readonly TextBlock _message;
@@ -36,7 +35,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 	private bool _resumeAfterSeek;
 	private bool _disposed;
 
-	public ClipboardVideoPlayer(string path, bool autoPlay = true, Action<TimeSpan>? editFrame = null)
+	public ClipboardVideoPlayer(string path, bool autoPlay = true)
 	{
 		_path = path;
 		_autoPlay = autoPlay;
@@ -98,20 +97,6 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		buttons.Children.Add(_playButton);
 		buttons.Children.Add(_previousButton);
 		buttons.Children.Add(_nextButton);
-		if (editFrame != null)
-		{
-			_editButton = CreateButton("このコマを編集", "表示中のコマを画像として編集します", () =>
-			{
-				if (!_opened || _disposed || _frameRate <= 0) return;
-				Pause();
-				TimeSpan? position = ClipboardVideoTimeline.PreviewPositions(_position, _duration, _frameRate, 1).FirstOrDefault();
-				if (position.HasValue)
-				{
-					if (SeekTo(position.Value)) editFrame(position.Value);
-				}
-			});
-			buttons.Children.Add(_editButton);
-		}
 		_time = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0) };
 		_time.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
 		buttons.Children.Add(_time);
@@ -143,15 +128,13 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 			Pause();
 			_position = _duration;
 			UpdatePosition();
+			NotifyPausedFrame();
 		};
 		_media.MediaFailed += (_, e) => ShowFailure("動画を再生できません。形式・コーデック、またはファイルの状態を確認してください。", e.ErrorException);
-		_media.MouseLeftButtonDown += (_, e) =>
-		{
-			TogglePlayback();
-			Focus();
-			e.Handled = true;
-		};
 		var viewport = new Grid { Background = Brushes.Black };
+		// 編集画面では動画へポインターを戻すだけで停止中のコマを編集できる。
+		viewport.MouseEnter += (_, _) => PauseForEditing();
+		viewport.PreviewMouseLeftButtonDown += (_, _) => PauseForEditing();
 		viewport.Children.Add(_media);
 		_message = new TextBlock
 		{
@@ -190,13 +173,14 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 
 	public double FrameRate => _frameRate;
 
+	public event Action<TimeSpan>? PausedFrameChanged;
+
 	public Func<bool>? BeforeNavigate { get; set; }
 
 	public void ShowFrameEditor(FrameworkElement? editor)
 	{
-		if (editor != null) PausePlayback();
-		_editorHost.Content = editor;
 		_editorHost.Visibility = editor == null ? Visibility.Collapsed : Visibility.Visible;
+		_editorHost.Content = editor;
 		_media.Visibility = editor == null ? Visibility.Visible : Visibility.Hidden;
 		SetControlsEnabled(_opened);
 	}
@@ -205,14 +189,22 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 
 	public void PausePlayback()
 	{
-		if (_opened && !_disposed) Pause();
+		if (!_opened || _disposed) return;
+		Pause();
+		NotifyPausedFrame();
 	}
 
 	public void SelectFrame(TimeSpan position)
 	{
-		if (!_opened || _disposed) return;
+		if (_disposed) return;
+		if (!_opened)
+		{
+			// 元動画がなくても保存済みのコマは開ける。
+			PausedFrameChanged?.Invoke(position);
+			return;
+		}
 		Pause();
-		SeekTo(position);
+		if (SeekTo(position) && _frameRate <= 0) PausedFrameChanged?.Invoke(position);
 	}
 
 	public bool HandleKeyDown(KeyEventArgs e)
@@ -284,6 +276,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 			: "動画のFPSを取得できません（コマ送り不可）";
 		SetControlsEnabled(_opened);
 		UpdatePosition();
+		NotifyPausedFrame();
 	}
 
 	private void MediaOpened()
@@ -305,6 +298,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		_timer.Start();
 		UpdatePosition();
 		if (_autoPlay) TogglePlayback();
+		else NotifyPausedFrame();
 	}
 
 	private void TogglePlayback()
@@ -316,16 +310,19 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		if (_playing)
 		{
 			Pause();
+			NotifyPausedFrame();
 		}
 		else
 		{
 			if (BeforeNavigate?.Invoke() == false) return;
+			_playing = true;
 			if (_position >= _duration)
 			{
-				SeekTo(TimeSpan.Zero);
+				_position = TimeSpan.Zero;
+				_media.Position = _position;
+				UpdatePosition();
 			}
 			_media.Play();
-			_playing = true;
 			_playButton.Content = "一時停止";
 		}
 	}
@@ -358,6 +355,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		_position = ClipboardVideoTimeline.ClampPosition(position, _duration);
 		_media.Position = _position;
 		UpdatePosition();
+		NotifyPausedFrame();
 		return true;
 	}
 
@@ -422,6 +420,19 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 			TogglePlayback();
 		}
 		_resumeAfterSeek = false;
+		NotifyPausedFrame();
+	}
+
+	private void PauseForEditing()
+	{
+		if (_playing && PausedFrameChanged != null) PausePlayback();
+	}
+
+	private void NotifyPausedFrame()
+	{
+		if (!_opened || _disposed || _playing || _dragging || _frameRate <= 0) return;
+		TimeSpan? position = ClipboardVideoTimeline.PreviewPositions(_position, _duration, _frameRate, 1).FirstOrDefault();
+		if (position.HasValue) PausedFrameChanged?.Invoke(position.Value);
 	}
 
 	private void UpdatePosition()
@@ -460,7 +471,6 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		_playButton.IsEnabled = enabled;
 		_previousButton.IsEnabled = enabled && _frameRate > 0;
 		_nextButton.IsEnabled = enabled && _frameRate > 0;
-		if (_editButton != null) _editButton.IsEnabled = enabled && _frameRate > 0 && _editorHost.Content == null;
 		_seek.IsEnabled = enabled;
 	}
 

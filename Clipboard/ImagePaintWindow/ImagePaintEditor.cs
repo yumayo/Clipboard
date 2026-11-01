@@ -20,10 +20,14 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 {
 	private readonly Action<BitmapSource, string, bool> _savePaintedImage;
 	private bool _disposed;
+	private bool _viewportInitialized;
+	private bool _viewportInitializationPending;
+	private bool _videoViewport;
 	private readonly BitmapSource _sourceImage;
 	private readonly ImagePaintEditorState _state = new();
 	private readonly ScaleTransform _zoomTransform = new(1, 1);
 	private Grid _zoomContainer = null!;
+	private WrapPanel _toolbar = null!;
 	private Rectangle _workspaceGridBackground = null!;
 	private Grid _paintSurface = null!;
 	private Canvas _imageLayerCanvas = null!;
@@ -230,7 +234,7 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 		var root = new DockPanel();
 		root.SetResourceReference(Panel.BackgroundProperty, AppTheme.WindowBackgroundBrushKey);
 
-		var toolbar = new WrapPanel
+		var toolbar = _toolbar = new WrapPanel
 		{
 			Orientation = Orientation.Horizontal,
 			HorizontalAlignment = HorizontalAlignment.Center,
@@ -366,12 +370,9 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 		_scrollViewer.PreviewMouseUp += ScrollViewer_PreviewMouseUp;
 		_scrollViewer.LostMouseCapture += ScrollViewer_LostMouseCapture;
 		_scrollViewer.ScrollChanged += ScrollViewer_ScrollChanged;
-		_scrollViewer.Loaded += (_, _) =>
-		{
-			FitToViewport();
-			ScrollToInitialWorkspacePosition();
-			FocusPaintSurface();
-		};
+		_scrollViewer.Loaded += (_, _) => ScheduleViewportLayout();
+		_scrollViewer.SizeChanged += (_, _) => ScheduleViewportLayout();
+		_scrollViewer.IsVisibleChanged += (_, _) => ScheduleViewportLayout();
 		_scrollViewer.AddHandler(
 			FrameworkElement.RequestBringIntoViewEvent,
 			new RequestBringIntoViewEventHandler(ScrollViewer_RequestBringIntoView),
@@ -383,6 +384,41 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 		AppTheme.ThemeChanged += AppTheme_ThemeChanged;
 		AddHandler(Keyboard.PreviewKeyDownEvent, new KeyEventHandler(ImagePaintEditor_PreviewKeyDown), true);
 		SetPaintMode(_state.Tools.PaintMode);
+	}
+
+	public FrameworkElement UseVideoViewport(PaintMode mode)
+	{
+		_videoViewport = true;
+		_moveImageButton.Visibility = Visibility.Collapsed;
+		_blackFillButton.Visibility = Visibility.Collapsed;
+		_redOutlineButton.Visibility = Visibility.Collapsed;
+		_arrowTextButton.Visibility = Visibility.Collapsed;
+		SetPaintMode(mode);
+		// 動画と停止画像で表示領域の大きさが変わらないよう、設定欄もウィンドウ側へ移す。
+		if (_toolbar.Parent is DockPanel root) root.Children.Remove(_toolbar);
+		return _toolbar;
+	}
+
+	private void ScheduleViewportLayout()
+	{
+		if (_disposed || _viewportInitializationPending || (_viewportInitialized && !_videoViewport)) return;
+		_viewportInitializationPending = true;
+		Dispatcher.BeginInvoke(new Action(() =>
+		{
+			_viewportInitializationPending = false;
+			if (_disposed || !_scrollViewer.IsLoaded || !_scrollViewer.IsVisible ||
+				_isPaintViewportLocked || _state.MiddleButtonPan.IsPanning) return;
+			_scrollViewer.UpdateLayout();
+			Rect bounds = _renderer.CalculateRenderBounds();
+			if (!ImagePaintViewportLayout.TryFit(bounds.Left, bounds.Top, bounds.Width, bounds.Height,
+				GetScrollViewerViewportWidth(), GetScrollViewerViewportHeight(), MinZoom, out var layout)) return;
+
+			// フォーカスのスクロール要求を先に処理し、最後に画像の中央位置を指定する。
+			if (!_viewportInitialized) FocusPaintSurface();
+			SetZoom(layout.Zoom);
+			ScrollToInitialWorkspacePosition(layout);
+			_viewportInitialized = true;
+		}), DispatcherPriority.Loaded);
 	}
 
 	private void AppTheme_ThemeChanged(object? sender, EventArgs e)
@@ -841,15 +877,14 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 		_zoomTransform.ScaleY = zoom;
 	}
 
-	private void ScrollToInitialWorkspacePosition()
+	private void ScrollToInitialWorkspacePosition(ImagePaintViewportLayout layout)
 	{
 		_scrollViewer.UpdateLayout();
 		double zoom = _zoomTransform.ScaleX;
 		double viewportWidth = GetScrollViewerViewportWidth();
 		double viewportHeight = GetScrollViewerViewportHeight();
-		Rect contentBounds = _renderer.CalculateRenderBounds();
-		double horizontalOffset = CalculateCenteredScrollOffset(contentBounds.Left, contentBounds.Width, zoom, viewportWidth);
-		double verticalOffset = CalculateCenteredScrollOffset(contentBounds.Top, contentBounds.Height, zoom, viewportHeight);
+		double horizontalOffset = layout.HorizontalOffset;
+		double verticalOffset = layout.VerticalOffset;
 		EnsureWorkspaceForZoom(
 			ref horizontalOffset,
 			ref verticalOffset,
@@ -862,26 +897,6 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 		_scrollViewer.ScrollToVerticalOffset(ClampScrollOffset(verticalOffset, _scrollViewer.ScrollableHeight));
 	}
 
-	private static double CalculateCenteredScrollOffset(
-		double contentStart,
-		double contentLength,
-		double zoom,
-		double viewportLength)
-	{
-		if (!double.IsFinite(contentStart) ||
-			!double.IsFinite(contentLength) ||
-			!double.IsFinite(zoom) ||
-			!double.IsFinite(viewportLength) ||
-			contentLength <= 0 ||
-			zoom <= 0 ||
-			viewportLength <= 0)
-		{
-			return 0;
-		}
-
-		return (contentStart + contentLength / 2) * zoom - viewportLength / 2;
-	}
-
 	private static double ClampScrollOffset(double offset, double scrollableLength)
 	{
 		if (!double.IsFinite(offset) || offset <= 0 ||
@@ -891,16 +906,6 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 		}
 
 		return Math.Min(offset, scrollableLength);
-	}
-
-	private void FitToViewport()
-	{
-		_scrollViewer.UpdateLayout();
-		Rect bounds = _renderer.CalculateRenderBounds();
-		double fitZoom = Math.Min(
-			Math.Max(1, GetScrollViewerViewportWidth() - 32) / bounds.Width,
-			Math.Max(1, GetScrollViewerViewportHeight() - 32) / bounds.Height);
-		if (double.IsFinite(fitZoom)) SetZoom(Math.Clamp(fitZoom, MinZoom, 1));
 	}
 
 	private double CalculateInitialZoom(double windowWidth, double windowHeight)
