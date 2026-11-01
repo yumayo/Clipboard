@@ -9,6 +9,7 @@ namespace Clipboard;
 internal sealed class ClipboardStackCountWindow : Window
 {
 	private const double BadgeDiameter = 24;
+	private const double CursorGap = 4;
 	private readonly TextBlock _countText;
 	private readonly NativeMethods.LowLevelMouseProc _mouseProc;
 	private IntPtr _handle;
@@ -174,8 +175,8 @@ internal sealed class ClipboardStackCountWindow : Window
 		Matrix transform = HwndSource.FromHwnd(_handle)?.CompositionTarget?.TransformToDevice ?? Matrix.Identity;
 		int width = (int)Math.Ceiling(ActualWidth * transform.M11);
 		int height = (int)Math.Ceiling(ActualHeight * transform.M22);
-		int x = cursor.X + (int)Math.Round(16 * transform.M11);
-		int y = cursor.Y - height - (int)Math.Round(12 * transform.M22);
+		int x = cursor.X + (int)Math.Round(CursorGap * transform.M11);
+		int y = cursor.Y - height - (int)Math.Round(CursorGap * transform.M22);
 		IntPtr monitor = NativeMethods.MonitorFromPoint(cursor, NativeMethods.MONITOR_DEFAULTTONEAREST);
 		var info = new NativeMethods.MonitorInfo
 		{
