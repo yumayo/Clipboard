@@ -113,6 +113,11 @@ internal sealed class ClipboardPreviewWindow : Window
 		{
 			return CreateMessageContent("表示できる動画ファイルがありません。");
 		}
+		if (!IsLoaded)
+		{
+			// 中央と左右2コマずつのサムネイルが収まる初期幅にする。
+			Width = 900;
+		}
 		_videoPlayer = new ClipboardVideoPlayer(path);
 		return _videoPlayer;
 	}
