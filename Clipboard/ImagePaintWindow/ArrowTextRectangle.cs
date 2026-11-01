@@ -40,6 +40,7 @@ internal sealed class ArrowTextRectangle : Canvas
 	private bool _isDraggingRectangle;
 	private bool _isResizingRectangle;
 	private bool _isApplyingTextHistory;
+	private bool _isResizeEnabled = true;
 	private bool _isEditingChromeVisible = true;
 
 	public ArrowTextRectangle(double canvasWidth, double canvasHeight, double strokeThickness, double textFontSize)
@@ -160,6 +161,12 @@ internal sealed class ArrowTextRectangle : Canvas
 		_textRectangleBounds.Width >= MinArrowTextRectangleWidth &&
 		_textRectangleBounds.Height >= MinArrowTextRectangleHeight;
 
+	public void SetResizeEnabled(bool enabled)
+	{
+		_isResizeEnabled = enabled;
+		UpdateEditingChromeVisibility();
+	}
+
 	public void SetEditingChromeVisible(bool visible)
 	{
 		_isEditingChromeVisible = visible;
@@ -168,11 +175,12 @@ internal sealed class ArrowTextRectangle : Canvas
 
 	private void UpdateEditingChromeVisibility()
 	{
-		Visibility visibility = _isEditingChromeVisible && IsHitTestVisible && IsEnabled
+		Visibility visibility = _isEditingChromeVisible && _isResizeEnabled && IsHitTestVisible && IsEnabled
 			? Visibility.Visible
 			: Visibility.Collapsed;
 		foreach (Rectangle resizeHandle in _resizeHandles.Values)
 		{
+			resizeHandle.IsHitTestVisible = _isResizeEnabled;
 			resizeHandle.Visibility = visibility;
 		}
 	}

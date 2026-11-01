@@ -22,6 +22,7 @@ internal sealed class PaintRectangle : Canvas
 	private ResizeHandleKind _activeResizeHandle;
 	private bool _isMoving;
 	private bool _isResizing;
+	private bool _isResizeEnabled = true;
 	private bool _isEditingChromeVisible = true;
 
 	public PaintRectangle(double canvasWidth, double canvasHeight, bool isOutline, double strokeThickness)
@@ -91,6 +92,12 @@ internal sealed class PaintRectangle : Canvas
 		_bounds.Width >= MinPaintRectangleWidth &&
 		_bounds.Height >= MinPaintRectangleHeight;
 
+	public void SetResizeEnabled(bool enabled)
+	{
+		_isResizeEnabled = enabled;
+		UpdateEditingChromeVisibility();
+	}
+
 	public void SetEditingChromeVisible(bool visible)
 	{
 		_isEditingChromeVisible = visible;
@@ -99,11 +106,12 @@ internal sealed class PaintRectangle : Canvas
 
 	private void UpdateEditingChromeVisibility()
 	{
-		Visibility visibility = _isEditingChromeVisible && IsHitTestVisible && IsEnabled
+		Visibility visibility = _isEditingChromeVisible && _isResizeEnabled && IsHitTestVisible && IsEnabled
 			? Visibility.Visible
 			: Visibility.Collapsed;
 		foreach (Rectangle resizeHandle in _resizeHandles.Values)
 		{
+			resizeHandle.IsHitTestVisible = _isResizeEnabled;
 			resizeHandle.Visibility = visibility;
 		}
 	}

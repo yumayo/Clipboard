@@ -1097,6 +1097,7 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 
 		UIElement element = _state.History.RedoElements[^1];
 		_state.History.RedoElements.RemoveAt(_state.History.RedoElements.Count - 1);
+		UpdateElementResizeAvailability(element);
 		_overlayCanvas.Children.Add(element);
 		_state.History.CompletedElements.Add(element);
 		PreserveScrollOffsetIfChanged(() => EnsureCanvasContainsElement(element));
@@ -1634,6 +1635,24 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 		_imageLayerCanvas.IsHitTestVisible = isMoveImageMode;
 		_overlayCanvas.IsHitTestVisible = !isMoveImageMode;
 		_overlayCanvas.Cursor = isMoveImageMode ? Cursors.Arrow : Cursors.Cross;
+		foreach (UIElement element in _overlayCanvas.Children)
+		{
+			UpdateElementResizeAvailability(element);
+		}
+	}
+
+	private void UpdateElementResizeAvailability(UIElement element)
+	{
+		switch (element)
+		{
+			case PaintRectangle paintRectangle:
+				PaintMode resizeMode = paintRectangle.IsOutline ? PaintMode.RedOutlineRectangle : PaintMode.BlackFillRectangle;
+				paintRectangle.SetResizeEnabled(_state.Tools.PaintMode == resizeMode);
+				break;
+			case ArrowTextRectangle arrowTextRectangle:
+				arrowTextRectangle.SetResizeEnabled(_state.Tools.PaintMode == PaintMode.ArrowTextRectangle);
+				break;
+		}
 	}
 
 	private void SetShowOutlineNumbers(bool showOutlineNumbers)
@@ -1846,12 +1865,14 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 
 	private void AttachPaintRectangleHandlers(PaintRectangle paintRectangle)
 	{
+		UpdateElementResizeAvailability(paintRectangle);
 		paintRectangle.Focused += PaintRectangle_Focused;
 		paintRectangle.BoundsChanged += PaintRectangle_BoundsChanged;
 	}
 
 	private void AttachArrowTextRectangleHandlers(ArrowTextRectangle arrowTextRectangle)
 	{
+		UpdateElementResizeAvailability(arrowTextRectangle);
 		arrowTextRectangle.TextInputFocused += ArrowTextRectangle_TextInputFocused;
 		arrowTextRectangle.Changed += ArrowTextRectangle_Changed;
 	}
