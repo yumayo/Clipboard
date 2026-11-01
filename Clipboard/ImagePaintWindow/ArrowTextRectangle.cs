@@ -18,6 +18,7 @@ internal sealed class ArrowTextRectangle : Canvas
 	private readonly Rectangle _rectangle;
 	private readonly Polyline _arrowLine;
 	private readonly Polygon _arrowHead;
+	private readonly Rectangle _arrowTipHandle;
 	private readonly TextBox _textBox;
 	private readonly Dictionary<ResizeHandleKind, Rectangle> _resizeHandles = new();
 	private readonly Stack<string> _redoTextSnapshots = new();
@@ -40,7 +41,6 @@ internal sealed class ArrowTextRectangle : Canvas
 	private bool _isDraggingRectangle;
 	private bool _isResizingRectangle;
 	private bool _isApplyingTextHistory;
-	private bool _isResizeEnabled = true;
 	private bool _isEditingChromeVisible = true;
 
 	public ArrowTextRectangle(double canvasWidth, double canvasHeight, double strokeThickness, double textFontSize)
@@ -72,6 +72,10 @@ internal sealed class ArrowTextRectangle : Canvas
 		_arrowHead.MouseLeftButtonDown += ArrowHead_MouseLeftButtonDown;
 		_arrowHead.MouseMove += ArrowHead_MouseMove;
 		_arrowHead.MouseLeftButtonUp += ArrowHead_MouseLeftButtonUp;
+		_arrowTipHandle = CreateEditingHandle(Cursors.SizeAll);
+		_arrowTipHandle.MouseLeftButtonDown += ArrowHead_MouseLeftButtonDown;
+		_arrowTipHandle.MouseMove += ArrowHead_MouseMove;
+		_arrowTipHandle.MouseLeftButtonUp += ArrowHead_MouseLeftButtonUp;
 		_rectangle = new Rectangle
 		{
 			Fill = Brushes.White,
@@ -115,9 +119,10 @@ internal sealed class ArrowTextRectangle : Canvas
 		{
 			Children.Add(resizeHandle);
 		}
+		Children.Add(_arrowTipHandle);
 
-		IsHitTestVisibleChanged += (_, _) => UpdateEditingChromeVisibility();
-		IsEnabledChanged += (_, _) => UpdateEditingChromeVisibility();
+		IsHitTestVisibleChanged += (_, _) => UpdateEditingAvailability();
+		IsEnabledChanged += (_, _) => UpdateEditingAvailability();
 	}
 
 	public event EventHandler? TextInputFocused;
@@ -161,26 +166,37 @@ internal sealed class ArrowTextRectangle : Canvas
 		_textRectangleBounds.Width >= MinArrowTextRectangleWidth &&
 		_textRectangleBounds.Height >= MinArrowTextRectangleHeight;
 
-	public void SetResizeEnabled(bool enabled)
-	{
-		_isResizeEnabled = enabled;
-		UpdateEditingChromeVisibility();
-	}
-
 	public void SetEditingChromeVisible(bool visible)
 	{
 		_isEditingChromeVisible = visible;
 		UpdateEditingChromeVisibility();
 	}
 
+	private void UpdateEditingAvailability()
+	{
+		bool canEdit = IsHitTestVisible && IsEnabled;
+		_textBox.IsReadOnly = !canEdit;
+		_textBox.Focusable = canEdit;
+		_textBox.IsTabStop = canEdit;
+		if (!canEdit)
+		{
+			_isDraggingRectangle = false;
+			_isResizingRectangle = false;
+			_isDraggingArrowTip = false;
+			if (IsMouseCaptureWithin) Mouse.Capture(null);
+		}
+
+		UpdateEditingChromeVisibility();
+	}
+
 	private void UpdateEditingChromeVisibility()
 	{
-		Visibility visibility = _isEditingChromeVisible && _isResizeEnabled && IsHitTestVisible && IsEnabled
+		Visibility visibility = _isEditingChromeVisible && IsHitTestVisible && IsEnabled
 			? Visibility.Visible
 			: Visibility.Collapsed;
+		_arrowTipHandle.Visibility = visibility;
 		foreach (Rectangle resizeHandle in _resizeHandles.Values)
 		{
-			resizeHandle.IsHitTestVisible = _isResizeEnabled;
 			resizeHandle.Visibility = visibility;
 		}
 	}
@@ -244,6 +260,7 @@ internal sealed class ArrowTextRectangle : Canvas
 
 	public void FocusTextInput()
 	{
+		if (!IsHitTestVisible || !IsEnabled) return;
 		_textBox.Focus();
 		_textBox.CaretIndex = _textBox.Text.Length;
 	}
@@ -429,9 +446,9 @@ internal sealed class ArrowTextRectangle : Canvas
 		Changed?.Invoke(this, EventArgs.Empty);
 	}
 
-	private Rectangle CreateResizeHandle(ResizeHandleKind resizeHandleKind)
+	private static Rectangle CreateEditingHandle(Cursor cursor)
 	{
-		var resizeHandle = new Rectangle
+		return new Rectangle
 		{
 			Width = ArrowResizeHandleSize,
 			Height = ArrowResizeHandleSize,
@@ -440,9 +457,14 @@ internal sealed class ArrowTextRectangle : Canvas
 			Fill = Brushes.White,
 			Stroke = Brushes.Gray,
 			StrokeThickness = 1.5,
-			Cursor = GetResizeHandleCursor(resizeHandleKind),
-			Tag = resizeHandleKind
+			Cursor = cursor
 		};
+	}
+
+	private Rectangle CreateResizeHandle(ResizeHandleKind resizeHandleKind)
+	{
+		Rectangle resizeHandle = CreateEditingHandle(GetResizeHandleCursor(resizeHandleKind));
+		resizeHandle.Tag = resizeHandleKind;
 		resizeHandle.MouseLeftButtonDown += ResizeHandle_MouseLeftButtonDown;
 		resizeHandle.MouseMove += ResizeHandle_MouseMove;
 		resizeHandle.MouseLeftButtonUp += ResizeHandle_MouseLeftButtonUp;
@@ -568,7 +590,7 @@ internal sealed class ArrowTextRectangle : Canvas
 		Vector grabOffset = _arrowDragStartPoint - _arrowTip;
 		_arrowDragGrabAlongDirection = Vector.Multiply(grabOffset, arrowDirection);
 		_arrowDragGrabAlongNormal = Vector.Multiply(grabOffset, arrowNormal);
-		_arrowHead.CaptureMouse();
+		if (sender is UIElement handle) handle.CaptureMouse();
 		e.Handled = true;
 	}
 
@@ -592,7 +614,7 @@ internal sealed class ArrowTextRectangle : Canvas
 
 		MoveArrowTipFromDragPoint(e.GetPosition(this));
 		_isDraggingArrowTip = false;
-		_arrowHead.ReleaseMouseCapture();
+		if (sender is UIElement handle) handle.ReleaseMouseCapture();
 		e.Handled = true;
 	}
 
@@ -655,6 +677,8 @@ internal sealed class ArrowTextRectangle : Canvas
 		};
 
 		UpdateArrowHead(tipPoint, arrowDirection);
+		Canvas.SetLeft(_arrowTipHandle, tipPoint.X - ArrowResizeHandleSize / 2);
+		Canvas.SetTop(_arrowTipHandle, tipPoint.Y - ArrowResizeHandleSize / 2);
 	}
 
 	private Vector GetArrowDirection(Rect rectangleBounds, Point tipPoint, out Point attachPoint, out Point bendPoint)

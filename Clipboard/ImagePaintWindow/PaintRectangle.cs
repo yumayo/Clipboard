@@ -22,7 +22,6 @@ internal sealed class PaintRectangle : Canvas
 	private ResizeHandleKind _activeResizeHandle;
 	private bool _isMoving;
 	private bool _isResizing;
-	private bool _isResizeEnabled = true;
 	private bool _isEditingChromeVisible = true;
 
 	public PaintRectangle(double canvasWidth, double canvasHeight, bool isOutline, double strokeThickness)
@@ -55,8 +54,8 @@ internal sealed class PaintRectangle : Canvas
 			Children.Add(resizeHandle);
 		}
 
-		IsHitTestVisibleChanged += (_, _) => UpdateEditingChromeVisibility();
-		IsEnabledChanged += (_, _) => UpdateEditingChromeVisibility();
+		IsHitTestVisibleChanged += (_, _) => UpdateEditingAvailability();
+		IsEnabledChanged += (_, _) => UpdateEditingAvailability();
 	}
 
 	public event EventHandler? Focused;
@@ -92,26 +91,31 @@ internal sealed class PaintRectangle : Canvas
 		_bounds.Width >= MinPaintRectangleWidth &&
 		_bounds.Height >= MinPaintRectangleHeight;
 
-	public void SetResizeEnabled(bool enabled)
-	{
-		_isResizeEnabled = enabled;
-		UpdateEditingChromeVisibility();
-	}
-
 	public void SetEditingChromeVisible(bool visible)
 	{
 		_isEditingChromeVisible = visible;
 		UpdateEditingChromeVisibility();
 	}
 
+	private void UpdateEditingAvailability()
+	{
+		if (!IsHitTestVisible || !IsEnabled)
+		{
+			_isMoving = false;
+			_isResizing = false;
+			if (IsMouseCaptureWithin) Mouse.Capture(null);
+		}
+
+		UpdateEditingChromeVisibility();
+	}
+
 	private void UpdateEditingChromeVisibility()
 	{
-		Visibility visibility = _isEditingChromeVisible && _isResizeEnabled && IsHitTestVisible && IsEnabled
+		Visibility visibility = _isEditingChromeVisible && IsHitTestVisible && IsEnabled
 			? Visibility.Visible
 			: Visibility.Collapsed;
 		foreach (Rectangle resizeHandle in _resizeHandles.Values)
 		{
-			resizeHandle.IsHitTestVisible = _isResizeEnabled;
 			resizeHandle.Visibility = visibility;
 		}
 	}

@@ -543,7 +543,8 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 
 	private bool TryUndoArrowTextInput(ArrowTextRectangle? arrowTextRectangle)
 	{
-		if (arrowTextRectangle == null || !IsCompletedArrowTextRectangle(arrowTextRectangle))
+		if (arrowTextRectangle is not { IsHitTestVisible: true, IsEnabled: true } ||
+			!IsCompletedArrowTextRectangle(arrowTextRectangle))
 		{
 			return false;
 		}
@@ -565,7 +566,7 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 
 	private bool TryRedoArrowTextInput(ArrowTextRectangle? arrowTextRectangle)
 	{
-		if (arrowTextRectangle == null ||
+		if (arrowTextRectangle is not { IsHitTestVisible: true, IsEnabled: true } ||
 			!IsCompletedArrowTextRectangle(arrowTextRectangle) ||
 			!arrowTextRectangle.CanRedoTextInput)
 		{
@@ -1097,7 +1098,7 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 
 		UIElement element = _state.History.RedoElements[^1];
 		_state.History.RedoElements.RemoveAt(_state.History.RedoElements.Count - 1);
-		UpdateElementResizeAvailability(element);
+		UpdateElementEditingAvailability(element);
 		_overlayCanvas.Children.Add(element);
 		_state.History.CompletedElements.Add(element);
 		PreserveScrollOffsetIfChanged(() => EnsureCanvasContainsElement(element));
@@ -1202,6 +1203,12 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 
 	private void FocusArrowTextInput(ArrowTextRectangle arrowTextRectangle)
 	{
+		if (!arrowTextRectangle.IsHitTestVisible || !arrowTextRectangle.IsEnabled)
+		{
+			FocusPaintSurface();
+			return;
+		}
+
 		PreserveScrollOffset(arrowTextRectangle.FocusTextInput);
 	}
 
@@ -1623,6 +1630,8 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 
 	private void SetPaintMode(PaintMode mode)
 	{
+		if (_state.Tools.PaintMode != mode) CompleteActiveDrag(focusTextInput: false);
+		bool moveFocusToSurface = mode != PaintMode.ArrowTextRectangle && _overlayCanvas.IsKeyboardFocusWithin;
 		_state.Tools.PaintMode = mode;
 		UpdateModeButton(_moveImageButton, mode == PaintMode.MoveImage);
 		UpdateModeButton(_blackFillButton, mode == PaintMode.BlackFillRectangle);
@@ -1637,20 +1646,25 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 		_overlayCanvas.Cursor = isMoveImageMode ? Cursors.Arrow : Cursors.Cross;
 		foreach (UIElement element in _overlayCanvas.Children)
 		{
-			UpdateElementResizeAvailability(element);
+			UpdateElementEditingAvailability(element);
 		}
+
+		// 前のモードの選択を残して、設定欄やショートカットから編集できないようにする。
+		SetActivePaintRectangle(_state.Tools.ActivePaintRectangle);
+		SetActiveArrowTextRectangle(_state.Tools.ActiveArrowTextRectangle);
+		if (moveFocusToSurface) FocusPaintSurface();
 	}
 
-	private void UpdateElementResizeAvailability(UIElement element)
+	private void UpdateElementEditingAvailability(UIElement element)
 	{
 		switch (element)
 		{
 			case PaintRectangle paintRectangle:
-				PaintMode resizeMode = paintRectangle.IsOutline ? PaintMode.RedOutlineRectangle : PaintMode.BlackFillRectangle;
-				paintRectangle.SetResizeEnabled(_state.Tools.PaintMode == resizeMode);
+				PaintMode editMode = paintRectangle.IsOutline ? PaintMode.RedOutlineRectangle : PaintMode.BlackFillRectangle;
+				paintRectangle.IsHitTestVisible = _state.Tools.PaintMode == editMode;
 				break;
 			case ArrowTextRectangle arrowTextRectangle:
-				arrowTextRectangle.SetResizeEnabled(_state.Tools.PaintMode == PaintMode.ArrowTextRectangle);
+				arrowTextRectangle.IsHitTestVisible = _state.Tools.PaintMode == PaintMode.ArrowTextRectangle;
 				break;
 		}
 	}
@@ -1802,6 +1816,7 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 
 	private void SetActivePaintRectangle(PaintRectangle? paintRectangle)
 	{
+		if (paintRectangle is not { IsHitTestVisible: true, IsEnabled: true }) paintRectangle = null;
 		_state.Tools.ActivePaintRectangle = paintRectangle;
 		if (paintRectangle != null)
 		{
@@ -1818,6 +1833,7 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 
 	private void SetActiveArrowTextRectangle(ArrowTextRectangle? arrowTextRectangle)
 	{
+		if (arrowTextRectangle is not { IsHitTestVisible: true, IsEnabled: true }) arrowTextRectangle = null;
 		_state.Tools.ActiveArrowTextRectangle = arrowTextRectangle;
 		if (arrowTextRectangle != null)
 		{
@@ -1865,14 +1881,14 @@ internal sealed class ImagePaintEditor : UserControl, IDisposable
 
 	private void AttachPaintRectangleHandlers(PaintRectangle paintRectangle)
 	{
-		UpdateElementResizeAvailability(paintRectangle);
+		UpdateElementEditingAvailability(paintRectangle);
 		paintRectangle.Focused += PaintRectangle_Focused;
 		paintRectangle.BoundsChanged += PaintRectangle_BoundsChanged;
 	}
 
 	private void AttachArrowTextRectangleHandlers(ArrowTextRectangle arrowTextRectangle)
 	{
-		UpdateElementResizeAvailability(arrowTextRectangle);
+		UpdateElementEditingAvailability(arrowTextRectangle);
 		arrowTextRectangle.TextInputFocused += ArrowTextRectangle_TextInputFocused;
 		arrowTextRectangle.Changed += ArrowTextRectangle_Changed;
 	}
