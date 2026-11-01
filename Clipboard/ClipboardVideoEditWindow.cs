@@ -178,7 +178,7 @@ internal sealed class ClipboardVideoEditWindow : Window
 			}
 			else
 			{
-				_reader ??= new ClipboardVideoFrameReader(_path);
+				_reader ??= new ClipboardVideoFrameReader(_path, fullResolution: true);
 				IReadOnlyDictionary<long, BitmapSource> images = await _reader.ReadAsync([position], _player.FrameRate, token);
 				token.ThrowIfCancellationRequested();
 				if (!images.TryGetValue(position.Ticks, out BitmapSource? image))

@@ -14,12 +14,14 @@ internal sealed class ClipboardVideoFrameReader : IDisposable
 	private readonly Dictionary<long, BitmapSource> _cache = new();
 	private readonly Queue<long> _cacheOrder = new();
 	private readonly string _path;
+	private readonly bool _fullResolution;
 	private readonly Task _worker;
 	private int _disposed;
 
-	public ClipboardVideoFrameReader(string path)
+	public ClipboardVideoFrameReader(string path, bool fullResolution = false)
 	{
 		_path = path;
+		_fullResolution = fullResolution;
 		_worker = Task.Factory.StartNew(Run, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 	}
 
@@ -133,7 +135,7 @@ internal sealed class ClipboardVideoFrameReader : IDisposable
 					if ((flags & 1) != 0) throw new COMException("動画のコマを読み込めませんでした。");
 					if (sample != null && timestamp + tolerance >= missing[index])
 					{
-						BitmapSource image = ReadBitmap(reader, sample);
+						BitmapSource image = ReadBitmap(reader, sample, _fullResolution);
 						do
 						{
 							long ticks = missing[index++];
@@ -159,14 +161,16 @@ internal sealed class ClipboardVideoFrameReader : IDisposable
 				result[position.Ticks] = image;
 			}
 		}
-		while (_cacheOrder.Count > 192)
+		// 編集用の元解像度画像はキャッシュに残さない。
+		int cacheCapacity = _fullResolution ? 0 : 192;
+		while (_cacheOrder.Count > cacheCapacity)
 		{
 			_cache.Remove(_cacheOrder.Dequeue());
 		}
 		return result;
 	}
 
-	private static BitmapSource ReadBitmap(IMFSourceReader reader, IMFSample sample)
+	private static BitmapSource ReadBitmap(IMFSourceReader reader, IMFSample sample, bool fullResolution)
 	{
 		IMFMediaType? type = null;
 		IMFMediaBuffer? buffer = null;
@@ -211,6 +215,11 @@ internal sealed class ClipboardVideoFrameReader : IDisposable
 				finally { buffer.Unlock(); }
 			}
 			var source = BitmapSource.Create(layout.Width, layout.Height, 96, 96, PixelFormats.Bgr32, null, pixels, rowSize);
+			if (fullResolution)
+			{
+				source.Freeze();
+				return source;
+			}
 			double scale = Math.Min(1, Math.Min(288.0 / layout.Width, 164.0 / layout.Height));
 			// 小さくした画素だけを保持し、元解像度のバッファをキャッシュに残さない。
 			var thumbnail = new WriteableBitmap(new TransformedBitmap(source, new ScaleTransform(scale, scale)));
