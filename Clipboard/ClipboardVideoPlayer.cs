@@ -50,7 +50,14 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		name.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
 		footer.Children.Add(name);
 
-		_seek = new Slider { Minimum = 0, Maximum = 1, IsEnabled = false, Focusable = false };
+		_seek = new Slider
+		{
+			Minimum = 0,
+			Maximum = 1,
+			IsMoveToPointEnabled = true,
+			IsEnabled = false,
+			Focusable = false
+		};
 		_seek.ValueChanged += (_, _) =>
 		{
 			if (!_updatingPosition && _opened)
