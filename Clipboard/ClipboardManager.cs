@@ -509,7 +509,19 @@ public static class ClipboardManager
 			return;
 		}
 
-		ClipboardDatabase.InsertHistory(kind, bytes, currentContent, DateTime.Now, plainText: plainText);
+		if (kind == ClipboardHistoryKind.Video)
+		{
+			foreach (string path in ClipboardVideoFiles.Decode(bytes))
+			{
+				byte[] videoReference = ClipboardVideoFiles.Encode(new[] { path });
+				ClipboardDatabase.InsertHistory(kind, videoReference,
+					CalculateClipboardContentHash(kind, videoReference, null), DateTime.Now);
+			}
+		}
+		else
+		{
+			ClipboardDatabase.InsertHistory(kind, bytes, currentContent, DateTime.Now, plainText: plainText);
+		}
 		Logger.Info($"ClipboardManager: クリップボードの内容をDBに保存しました。Kind={kind} Size={bytes.Length} PlainTextLength={plainText?.Length ?? 0}");
 		_lastSavedContent = currentContent;
 	}
@@ -571,6 +583,15 @@ public static class ClipboardManager
 
 	private static (byte[] bytes, ClipboardHistoryKind kind, string? plainText) GetClipboardContent()
 	{
+		if (System.Windows.Clipboard.ContainsFileDropList())
+		{
+			string[] videoPaths = ClipboardVideoFiles.Filter(System.Windows.Clipboard.GetFileDropList().Cast<string>());
+			if (videoPaths.Length > 0)
+			{
+				return (ClipboardVideoFiles.Encode(videoPaths), ClipboardHistoryKind.Video, null);
+			}
+		}
+
 		ClipboardDataType dataType = GetClipboardDataType();
 		string? plainText = GetClipboardPlainText();
 
@@ -796,15 +817,7 @@ public static class ClipboardManager
 				return;
 			}
 
-			_historyWindow?.HideFromKeyboard();
-			_imageGalleryWindow?.HideFromKeyboard();
-			if (_previewWindow == null)
-			{
-				_previewWindow = new ClipboardPreviewWindow();
-				_previewWindow.Closed += (_, _) => _previewWindow = null;
-			}
-
-			_previewWindow.ShowContent(bytes, kind, plainText);
+			ShowClipboardPreviewContent(bytes, kind, plainText);
 		}
 		catch (Exception ex)
 		{
@@ -837,6 +850,24 @@ public static class ClipboardManager
 				await Task.Delay(ClipboardReadRetryDelayMilliseconds);
 			}
 		}
+	}
+
+	internal static void ShowVideoPreview(byte[] content)
+	{
+		ShowClipboardPreviewContent(content, ClipboardHistoryKind.Video, null);
+	}
+
+	private static void ShowClipboardPreviewContent(byte[] bytes, ClipboardHistoryKind kind, string? plainText)
+	{
+		_historyWindow?.HideFromKeyboard();
+		_imageGalleryWindow?.HideFromKeyboard();
+		if (_previewWindow == null)
+		{
+			_previewWindow = new ClipboardPreviewWindow();
+			_previewWindow.Closed += (_, _) => _previewWindow = null;
+		}
+		_previewWindow.ShowContent(bytes, kind, plainText);
+		UpdatePreviewWindowTopmost();
 	}
 
 	private static void DispatchToUi(Action action)
@@ -954,6 +985,27 @@ public static class ClipboardManager
 
 			case ClipboardHistoryKind.Rtf:
 				SetClipboardRtf(Encoding.UTF8.GetString(content.Bytes), pasteAsPlainText, content.PlainText);
+				break;
+
+			case ClipboardHistoryKind.Video:
+				string[] paths = ClipboardVideoFiles.Decode(content.Bytes);
+				if (paths.Length == 0 || paths.Any(path => !File.Exists(path)))
+				{
+					throw new FileNotFoundException("動画の元ファイルが見つかりません。移動・削除されていないか確認してください。");
+				}
+
+				var videoData = new DataObject();
+				if (pasteAsPlainText)
+				{
+					videoData.SetText(string.Join(Environment.NewLine, paths));
+				}
+				else
+				{
+					var files = new System.Collections.Specialized.StringCollection();
+					files.AddRange(paths);
+					videoData.SetFileDropList(files);
+				}
+				SetClipboardWithRetry(videoData, "Video");
 				break;
 
 			default:

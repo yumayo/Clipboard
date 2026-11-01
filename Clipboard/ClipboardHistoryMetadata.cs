@@ -28,6 +28,7 @@ internal sealed class ClipboardHistoryMetadata
 			".html" => ClipboardHistoryKind.Html,
 			".rtf" => ClipboardHistoryKind.Rtf,
 			".txt" => ClipboardHistoryKind.Text,
+			".video" => ClipboardHistoryKind.Video,
 			_ => ClipboardHistoryKind.Unknown
 		};
 	}
@@ -40,6 +41,7 @@ internal sealed class ClipboardHistoryMetadata
 			ClipboardHistoryKind.Html => ".html",
 			ClipboardHistoryKind.Rtf => ".rtf",
 			ClipboardHistoryKind.Text => ".txt",
+			ClipboardHistoryKind.Video => ".video",
 			_ => string.Empty
 		};
 	}
@@ -58,7 +60,13 @@ internal sealed class ClipboardHistoryMetadata
 			: CreateSearchableText(content, kind, plainText);
 		byte[]? thumbnailBytes = null;
 
-		if (kind == ClipboardHistoryKind.Image)
+		if (kind == ClipboardHistoryKind.Video)
+		{
+			string[] paths = ClipboardVideoFiles.Decode(content);
+			searchableContent = string.Join("\n", paths);
+			previewText = "動画 / " + string.Join(", ", paths.Select(Path.GetFileName));
+		}
+		else if (kind == ClipboardHistoryKind.Image)
 		{
 			(previewText, thumbnailBytes) = CreateImageMetadata(content, displayName);
 		}
@@ -97,6 +105,11 @@ internal sealed class ClipboardHistoryMetadata
 
 	public static string CreateDisplayText(byte[] content, ClipboardHistoryKind kind, string? plainText = null)
 	{
+		if (kind == ClipboardHistoryKind.Video)
+		{
+			return string.Join(Environment.NewLine, ClipboardVideoFiles.Decode(content));
+		}
+
 		string text = plainText ?? Encoding.UTF8.GetString(content);
 		if (plainText != null)
 		{

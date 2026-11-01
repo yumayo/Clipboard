@@ -20,6 +20,7 @@ internal sealed class ClipboardPreviewWindow : Window
 	private TextBox? _textBox;
 	private Image? _image;
 	private ScrollViewer? _imageScrollViewer;
+	private ClipboardVideoPlayer? _videoPlayer;
 	private double _zoom = 1;
 	private bool _fitImageToWindow;
 
@@ -45,6 +46,8 @@ internal sealed class ClipboardPreviewWindow : Window
 
 	public void ShowContent(byte[] bytes, ClipboardHistoryKind kind, string? plainText)
 	{
+		_videoPlayer?.Dispose();
+		_videoPlayer = null;
 		_textBox = null;
 		_image = null;
 		_imageScrollViewer = null;
@@ -53,6 +56,7 @@ internal sealed class ClipboardPreviewWindow : Window
 		FrameworkElement content = kind switch
 		{
 			ClipboardHistoryKind.Image => CreateImageContent(bytes),
+			ClipboardHistoryKind.Video => CreateVideoContent(bytes),
 			ClipboardHistoryKind.Text or ClipboardHistoryKind.Html or ClipboardHistoryKind.Rtf =>
 				CreateTextContent(GetDisplayText(bytes, kind, plainText)),
 			_ => CreateMessageContent("クリップボードが空か、表示できない形式です。")
@@ -73,6 +77,12 @@ internal sealed class ClipboardPreviewWindow : Window
 
 	protected override void OnPreviewKeyDown(KeyEventArgs e)
 	{
+		if (_videoPlayer?.HandleKeyDown(e) == true)
+		{
+			e.Handled = true;
+			return;
+		}
+
 		if ((Keyboard.Modifiers & ModifierKeys.Control) != 0 && (e.Key == Key.D0 || e.Key == Key.NumPad0))
 		{
 			SetZoom(1);
@@ -88,6 +98,23 @@ internal sealed class ClipboardPreviewWindow : Window
 		}
 
 		base.OnPreviewKeyDown(e);
+	}
+
+	protected override void OnClosed(EventArgs e)
+	{
+		_videoPlayer?.Dispose();
+		base.OnClosed(e);
+	}
+
+	private FrameworkElement CreateVideoContent(byte[] bytes)
+	{
+		string? path = ClipboardVideoFiles.Decode(bytes).FirstOrDefault();
+		if (path == null)
+		{
+			return CreateMessageContent("表示できる動画ファイルがありません。");
+		}
+		_videoPlayer = new ClipboardVideoPlayer(path);
+		return _videoPlayer;
 	}
 
 	protected override void OnPreviewMouseWheel(MouseWheelEventArgs e)

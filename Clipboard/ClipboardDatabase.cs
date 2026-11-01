@@ -332,7 +332,7 @@ internal static class ClipboardDatabase
 		return LoadHistorySummariesCore(searchText, beforeId, maxEntryCount, cancellationToken);
 	}
 
-	public static List<ClipboardHistorySummary> LoadImageHistorySummaries(
+	public static List<ClipboardHistorySummary> LoadGalleryHistorySummaries(
 		long? beforeId,
 		int maxEntryCount,
 		CancellationToken cancellationToken)
@@ -347,8 +347,9 @@ internal static class ClipboardDatabase
 		{
 			using var connection = OpenConnection();
 			using var command = connection.CreateCommand();
-			command.CommandText = CreateImageHistorySummariesSql(beforeId.HasValue);
-			AddParameter(command, "$kind", (int)ClipboardHistoryKind.Image);
+			command.CommandText = ClipboardGalleryHistoryQuery.Create(beforeId.HasValue);
+			AddParameter(command, "$image_kind", (int)ClipboardHistoryKind.Image);
+			AddParameter(command, "$video_kind", (int)ClipboardHistoryKind.Video);
 			if (beforeId.HasValue)
 			{
 				AddParameter(command, "$before_id", beforeId.Value);
@@ -927,23 +928,6 @@ internal static class ClipboardDatabase
 		}
 
 		return sql + ";";
-	}
-
-	private static string CreateImageHistorySummariesSql(bool hasBeforeId)
-	{
-		string sql =
-			"""
-			SELECT id, kind, created_at_utc_ticks, preview_text, thumbnail,
-				paint_state IS NOT NULL AS has_paint_state
-			FROM clipboard_history
-			WHERE kind = $kind
-			""";
-		if (hasBeforeId)
-		{
-			sql += " AND id < $before_id";
-		}
-
-		return sql + " ORDER BY id DESC LIMIT $limit;";
 	}
 
 	private static string[] SplitSearchTerms(string? searchText)

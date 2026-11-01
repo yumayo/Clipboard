@@ -34,6 +34,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 	private readonly Border _selectionFooter;
 	private readonly TextBlock _selectionCountLabel;
 	private readonly List<ImageGalleryEntry> _imageEntries = new();
+	private Button _paintSelectedButton = null!;
 	private readonly NativeMethods.LowLevelMouseProc _outsideClickProc;
 	private Slider _imageSizeSlider = null!;
 	private CancellationTokenSource? _loadImagesCancellation;
@@ -53,7 +54,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 	public ClipboardImageGalleryWindow()
 	{
 		_outsideClickProc = OnOutsideClickMouseHook;
-		Title = "画像履歴";
+		Title = "画像・動画履歴";
 		WindowStartupLocation = WindowStartupLocation.Manual;
 		Width = 1240;
 		Height = 760;
@@ -228,6 +229,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 			ToolTip = "選択した画像をペイントで開きます"
 		};
 		AppTheme.ApplyButton(paintButton);
+		_paintSelectedButton = paintButton;
 		paintButton.Click += (_, _) => OpenSelectedPaintWindow();
 		buttonPanel.Children.Add(paintButton);
 
@@ -286,7 +288,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 			IsSnapToTickEnabled = true,
 			VerticalAlignment = VerticalAlignment.Center,
 			Margin = new Thickness(0, 0, 10, 0),
-			ToolTip = "画像サイズ"
+			ToolTip = "サムネイルのサイズ"
 		};
 		_imageSizeSlider.ValueChanged += (_, _) => SetImageSize(_imageSizeSlider.Value, updateSlider: false);
 		panel.Children.Add(_imageSizeSlider);
@@ -324,7 +326,10 @@ internal sealed class ClipboardImageGalleryWindow : Window
 
 	private void UpdateSelectionFooter()
 	{
-		int checkedCount = GetGalleryItems().Count(item => item.IsChecked);
+		List<ImageGalleryItemControl> checkedItems = GetGalleryItems().Where(item => item.IsChecked).ToList();
+		int checkedCount = checkedItems.Count;
+		_paintSelectedButton.Visibility = checkedItems.Any(item => item.Kind == ClipboardHistoryKind.Image)
+			? Visibility.Visible : Visibility.Collapsed;
 		if (checkedCount == 0)
 		{
 			_selectionFooter.Visibility = Visibility.Collapsed;
@@ -375,14 +380,14 @@ internal sealed class ClipboardImageGalleryWindow : Window
 		}
 		catch (Exception ex)
 		{
-			Logger.Error(ex, "ClipboardImageGalleryWindow: 画像履歴の読み込みに失敗しました。");
+			Logger.Error(ex, "ClipboardImageGalleryWindow: 画像・動画履歴の読み込みに失敗しました。");
 			if (_loadImagesCancellation == cancellationTokenSource)
 			{
 				_isLoadingImages = false;
 				if (!preserveExistingItems)
 				{
 					ClearGalleryControls();
-					AddMessage("画像履歴を読み込めませんでした");
+					AddMessage("画像・動画履歴を読み込めませんでした");
 				}
 			}
 
@@ -412,7 +417,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 		ClearGalleryControls();
 		if (entries.Count == 0)
 		{
-			AddMessage("画像履歴がありません");
+			AddMessage("画像・動画履歴がありません");
 			return;
 		}
 
@@ -474,7 +479,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 		}
 		catch (Exception ex)
 		{
-			Logger.Error(ex, "ClipboardImageGalleryWindow: 追加画像履歴の読み込みに失敗しました。");
+			Logger.Error(ex, "ClipboardImageGalleryWindow: 追加画像・動画履歴の読み込みに失敗しました。");
 			if (_loadMoreImagesCancellation == cancellationTokenSource)
 			{
 				_isLoadingMoreImages = false;
@@ -512,6 +517,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 			var item = new ImageGalleryItemControl(entry, _imageSize, IsSelectionModeActive);
 			item.Activated += (_, _) => PasteEntry(entry);
 			item.PaintRequested += (_, _) => OpenImagePaintWindow(entry);
+			item.PlayRequested += (_, _) => OpenVideoPreview(entry);
 			item.CheckedChanged += (_, _) => UpdateSelectionFooter();
 			_galleryPanel.Children.Add(item);
 		}
@@ -521,6 +527,24 @@ internal sealed class ClipboardImageGalleryWindow : Window
 	{
 		Hide();
 		ClipboardManager.PasteHistoryEntry(entry.Id, _targetWindow);
+	}
+
+	private async void OpenVideoPreview(ImageGalleryEntry entry)
+	{
+		try
+		{
+			ClipboardStoredContent? content = await Task.Run(() => ClipboardDatabase.LoadContent(entry.Id));
+			if (content == null || content.Kind != ClipboardHistoryKind.Video)
+			{
+				throw new InvalidOperationException("動画履歴を読み込めませんでした。");
+			}
+			ClipboardManager.ShowVideoPreview(content.Bytes);
+		}
+		catch (Exception ex)
+		{
+			Logger.Error(ex, $"ClipboardImageGalleryWindow: 動画を開けませんでした。Id={entry.Id}");
+			MessageBox.Show("動画を開けませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
+		}
 	}
 
 	private async void OpenImagePaintWindow(ImageGalleryEntry entry)
@@ -548,7 +572,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 	private async void OpenSelectedPaintWindow()
 	{
 		var imageIds = GetGalleryItems()
-			.Where(item => item.IsChecked)
+			.Where(item => item.IsChecked && item.Kind == ClipboardHistoryKind.Image)
 			.Select(item => item.EntryId)
 			.ToList();
 		if (imageIds.Count == 0)
@@ -641,8 +665,8 @@ internal sealed class ClipboardImageGalleryWindow : Window
 		}
 		catch (Exception ex)
 		{
-			Logger.Error(ex, "ClipboardImageGalleryWindow: 選択した画像履歴の削除に失敗しました。");
-			MessageBox.Show(this, "選択した画像を削除できませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
+			Logger.Error(ex, "ClipboardImageGalleryWindow: 選択した履歴の削除に失敗しました。");
+			MessageBox.Show(this, "選択した履歴を削除できませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
 			return;
 		}
 
@@ -662,7 +686,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 			}
 			else
 			{
-				AddMessage("画像履歴がありません");
+				AddMessage("画像・動画履歴がありません");
 			}
 		}
 	}
@@ -1057,8 +1081,12 @@ internal sealed class ClipboardImageGalleryWindow : Window
 	{
 		try
 		{
-			return ClipboardDatabase.LoadImageHistorySummaries(beforeId, maxEntryCount, cancellationToken)
-				.Select(CreateImageEntry)
+			return ClipboardDatabase.LoadGalleryHistorySummaries(beforeId, maxEntryCount, cancellationToken)
+				.Select(summary =>
+				{
+					cancellationToken.ThrowIfCancellationRequested();
+					return CreateImageEntry(summary);
+				})
 				.ToList();
 		}
 		catch (OperationCanceledException)
@@ -1067,19 +1095,26 @@ internal sealed class ClipboardImageGalleryWindow : Window
 		}
 		catch (Exception ex)
 		{
-			Logger.Error(ex, "ClipboardImageGalleryWindow: 画像履歴の読み込みに失敗しました。");
+			Logger.Error(ex, "ClipboardImageGalleryWindow: 画像・動画履歴の読み込みに失敗しました。");
 			return new List<ImageGalleryEntry>();
 		}
 	}
 
 	private static ImageGalleryEntry CreateImageEntry(ClipboardHistorySummary summary)
 	{
+		string? videoPath = summary.Kind == ClipboardHistoryKind.Video
+			? ClipboardVideoFiles.Decode(ClipboardDatabase.LoadContent(summary.Id)?.Bytes ?? Array.Empty<byte>()).FirstOrDefault()
+			: null;
+		bool missingVideo = summary.Kind == ClipboardHistoryKind.Video && (videoPath == null || !File.Exists(videoPath));
 		return new ImageGalleryEntry
 		{
 			Id = summary.Id,
+			Kind = summary.Kind,
 			CreatedAt = summary.CreatedAt,
-			PreviewText = summary.PreviewText,
-			Thumbnail = CreateGalleryThumbnail(summary),
+			PreviewText = missingVideo ? summary.PreviewText + "\n元ファイルが見つかりません" : summary.PreviewText,
+			Thumbnail = summary.Kind == ClipboardHistoryKind.Video
+				? (videoPath == null ? null : ClipboardVideoMetadata.ReadThumbnail(videoPath))
+				: CreateGalleryThumbnail(summary),
 			IsEdited = summary.HasPaintState
 		};
 	}
@@ -1236,6 +1271,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 	private sealed class ImageGalleryEntry
 	{
 		public required long Id { get; init; }
+		public required ClipboardHistoryKind Kind { get; init; }
 		public required DateTime CreatedAt { get; init; }
 		public required string PreviewText { get; init; }
 		public ImageSource? Thumbnail { get; init; }
@@ -1285,9 +1321,11 @@ internal sealed class ClipboardImageGalleryWindow : Window
 
 		public event EventHandler? Activated;
 		public event EventHandler? PaintRequested;
+		public event EventHandler? PlayRequested;
 		public event EventHandler? CheckedChanged;
 
 		public long EntryId => _entry.Id;
+		public ClipboardHistoryKind Kind => _entry.Kind;
 
 		public bool IsChecked => _selectionCheckBox.IsChecked == true;
 
@@ -1336,9 +1374,30 @@ internal sealed class ClipboardImageGalleryWindow : Window
 				grid.Children.Add(editBadge);
 			}
 
-			var paintButton = CreatePaintButton();
-			Grid.SetZIndex(paintButton, 1);
-			grid.Children.Add(paintButton);
+			if (entry.Kind == ClipboardHistoryKind.Video)
+			{
+				var caption = new TextBlock
+				{
+					Text = entry.PreviewText,
+					TextTrimming = TextTrimming.CharacterEllipsis,
+					Foreground = Brushes.White,
+					FontSize = 11,
+					Margin = new Thickness(5, 3, 5, 3),
+					IsHitTestVisible = false
+				};
+				var captionHost = new Border
+				{
+					Child = caption,
+					Background = Brushes.Black,
+					VerticalAlignment = VerticalAlignment.Bottom,
+					IsHitTestVisible = false
+				};
+				grid.Children.Add(captionHost);
+			}
+
+			Button actionButton = entry.Kind == ClipboardHistoryKind.Video ? CreatePlayButton() : CreatePaintButton();
+			Grid.SetZIndex(actionButton, 1);
+			grid.Children.Add(actionButton);
 
 			return grid;
 		}
@@ -1404,6 +1463,29 @@ internal sealed class ClipboardImageGalleryWindow : Window
 			{
 				e.Handled = true;
 				PaintRequested?.Invoke(this, EventArgs.Empty);
+			};
+			return button;
+		}
+
+		private Button CreatePlayButton()
+		{
+			var button = new Button
+			{
+				Content = "▶",
+				Width = 34,
+				Height = 30,
+				HorizontalAlignment = HorizontalAlignment.Right,
+				VerticalAlignment = VerticalAlignment.Top,
+				Margin = new Thickness(6),
+				Focusable = false,
+				Cursor = Cursors.Hand,
+				ToolTip = "動画を再生（コマ送り・コマ戻し）"
+			};
+			AppTheme.ApplyButton(button);
+			button.Click += (_, e) =>
+			{
+				e.Handled = true;
+				PlayRequested?.Invoke(this, EventArgs.Empty);
 			};
 			return button;
 		}
