@@ -13,7 +13,9 @@ namespace Clipboard;
 internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 {
 	private readonly MediaElement _media;
+	private readonly Image _playbackImage;
 	private readonly DispatcherTimer _timer;
+	private readonly DispatcherTimer _frameTimer;
 	private readonly Slider _seek;
 	private readonly Button _playButton;
 	private readonly Button _previousButton;
@@ -26,6 +28,11 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 	private readonly Grid _editorHost;
 	private readonly Grid _viewport;
 	private ImagePaintEditor? _frameEditor;
+	private ClipboardVideoFrameReader? _playbackReader;
+	private CancellationTokenSource? _playbackCancellation;
+	private TimeSpan? _displayedPlaybackPosition;
+	private bool _playbackFramePending;
+	private bool _playbackImageFailed;
 	private Size _videoImageSize;
 	private Rect _videoImageBounds = Rect.Empty;
 	private readonly string _path;
@@ -148,6 +155,17 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		// Canvasに置き、映像の自然サイズや表示矩形で表示領域自体を押し広げない。
 		var mediaHost = new Canvas { ClipToBounds = true };
 		mediaHost.Children.Add(_media);
+		// 再生も編集用コマと同じRGB変換・Image描画を通し、色の差をなくす。
+		// MediaElementは音声と再生時計、およびコマ取得に失敗した場合の映像を担当する。
+		_playbackImage = new Image
+		{
+			Stretch = Stretch.Fill,
+			UseLayoutRounding = false,
+			SnapsToDevicePixels = true,
+			IsHitTestVisible = false
+		};
+		RenderOptions.SetBitmapScalingMode(_playbackImage, BitmapScalingMode.HighQuality);
+		mediaHost.Children.Add(_playbackImage);
 		viewport.Children.Add(mediaHost);
 		_message = new TextBlock
 		{
@@ -178,6 +196,11 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 			}
 		}, Dispatcher);
 		_timer.Stop();
+		_frameTimer = new DispatcherTimer(DispatcherPriority.Render, Dispatcher)
+		{
+			Interval = TimeSpan.FromSeconds(1.0 / 60)
+		};
+		_frameTimer.Tick += (_, _) => RefreshPlaybackFrame();
 		Loaded += OnLoaded;
 		Unloaded += (_, _) => Dispose();
 	}
@@ -190,6 +213,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 
 	public void ShowFrameEditor(ImagePaintEditor? editor)
 	{
+		InvalidatePlaybackFrame();
 		if (_frameEditor != null) _frameEditor.VideoImageBoundsChanged -= SetVideoImageBounds;
 		_frameEditor = editor;
 		_editorHost.Children.Clear();
@@ -206,6 +230,9 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		}
 		_editorHost.Visibility = editor == null ? Visibility.Collapsed : Visibility.Visible;
 		_media.Visibility = editor == null ? Visibility.Visible : Visibility.Hidden;
+		_playbackImage.Visibility = editor == null ? Visibility.Visible : Visibility.Hidden;
+		if (editor == null && _opened && !_playbackImageFailed) _frameTimer.Start();
+		else _frameTimer.Stop();
 		SetControlsEnabled(_opened);
 	}
 
@@ -226,6 +253,63 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		_media.Height = bounds.Height;
 		Canvas.SetLeft(_media, bounds.Left);
 		Canvas.SetTop(_media, bounds.Top);
+		_playbackImage.Width = bounds.Width;
+		_playbackImage.Height = bounds.Height;
+		Canvas.SetLeft(_playbackImage, bounds.Left);
+		Canvas.SetTop(_playbackImage, bounds.Top);
+	}
+
+	private async void RefreshPlaybackFrame()
+	{
+		if (!_opened || _disposed || _playbackImageFailed || _frameEditor != null || _playbackFramePending) return;
+		double frameRate = _frameRate > 0 ? _frameRate : 30;
+		TimeSpan position = ClipboardVideoTimeline.ClampPosition(_playing ? _media.Position : _position, _duration);
+		position = ClipboardVideoTimeline.PreviewPositions(position, _duration, frameRate, 1)[0]!.Value;
+		if (_displayedPlaybackPosition == position) return;
+		_playbackFramePending = true;
+		using var cancellation = new CancellationTokenSource();
+		_playbackCancellation = cancellation;
+		try
+		{
+			_playbackReader ??= new ClipboardVideoFrameReader(_path, fullResolution: true, continuous: true);
+			IReadOnlyDictionary<long, BitmapSource> images = await _playbackReader.ReadAsync([position], frameRate, cancellation.Token);
+			cancellation.Token.ThrowIfCancellationRequested();
+			if (_disposed || _frameEditor != null) return;
+			if (images.TryGetValue(position.Ticks, out BitmapSource? image))
+			{
+				_playbackImage.Source = image;
+				// 編集画像と同じ有効画素領域を基準に表示する。
+				var size = new Size(image.PixelWidth, image.PixelHeight);
+				if (_videoImageSize != size)
+				{
+					_videoImageSize = size;
+					UpdateVideoLayout();
+				}
+			}
+			_displayedPlaybackPosition = position;
+		}
+		catch (OperationCanceledException) { }
+		catch (Exception ex)
+		{
+			if (cancellation.IsCancellationRequested || _disposed) return;
+			_playbackImageFailed = true;
+			_playbackImage.Source = null;
+			_frameTimer.Stop();
+			_playbackReader?.Dispose();
+			_playbackReader = null;
+			Logger.Error(ex, $"ClipboardVideoPlayer: RGB映像を取得できないため標準の動画表示を使用します。Path={_path}");
+		}
+		finally
+		{
+			if (ReferenceEquals(_playbackCancellation, cancellation)) _playbackCancellation = null;
+			_playbackFramePending = false;
+		}
+	}
+
+	private void InvalidatePlaybackFrame()
+	{
+		_playbackCancellation?.Cancel();
+		_displayedPlaybackPosition = null;
 	}
 
 	protected override void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi)
@@ -320,6 +404,8 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 			return;
 		}
 		_frameRate = frameRate.GetValueOrDefault();
+		if (_frameRate > 0) _frameTimer.Interval = TimeSpan.FromSeconds(1 / Math.Clamp(_frameRate, 30, 120));
+		InvalidatePlaybackFrame();
 		_frameRateText.Text = _frameRate > 0
 			? $"動画のFPS: {_frameRate.ToString("0.###", CultureInfo.InvariantCulture)}"
 			: "動画のFPSを取得できません（コマ送り不可）";
@@ -347,6 +433,8 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		_seek.Maximum = _duration.TotalSeconds;
 		SetControlsEnabled(true);
 		_timer.Start();
+		_frameTimer.Start();
+		RefreshPlaybackFrame();
 		UpdatePosition();
 		if (_autoPlay) TogglePlayback();
 		else NotifyPausedFrame();
@@ -369,6 +457,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 			_playing = true;
 			if (_position >= _duration)
 			{
+				InvalidatePlaybackFrame();
 				_position = TimeSpan.Zero;
 				_media.Position = _position;
 				UpdatePosition();
@@ -386,6 +475,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		}
 		_media.Pause();
 		_playing = false;
+		InvalidatePlaybackFrame();
 		_playButton.Content = "▶";
 		UpdatePosition();
 	}
@@ -404,8 +494,10 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 	{
 		if (BeforeNavigate?.Invoke() == false) return false;
 		_position = ClipboardVideoTimeline.ClampPosition(position, _duration);
+		InvalidatePlaybackFrame();
 		_media.Position = _position;
 		UpdatePosition();
+		RefreshPlaybackFrame();
 		NotifyPausedFrame();
 		return true;
 	}
@@ -509,6 +601,9 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		_playing = false;
 		EndSeek();
 		_timer.Stop();
+		_frameTimer.Stop();
+		InvalidatePlaybackFrame();
+		_playbackImage.Source = null;
 		_media.Close();
 		SetControlsEnabled(false);
 		_frameStrip.UpdatePosition(TimeSpan.Zero, TimeSpan.Zero, 0);
@@ -552,6 +647,10 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		EndSeek();
 		_playing = false;
 		_timer.Stop();
+		_frameTimer.Stop();
+		InvalidatePlaybackFrame();
+		_playbackReader?.Dispose();
+		_playbackImage.Source = null;
 		_frameStrip.Dispose();
 		if (_frameEditor != null) _frameEditor.VideoImageBoundsChanged -= SetVideoImageBounds;
 		_media.Close();

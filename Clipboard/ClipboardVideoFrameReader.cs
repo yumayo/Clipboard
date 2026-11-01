@@ -15,13 +15,17 @@ internal sealed class ClipboardVideoFrameReader : IDisposable
 	private readonly Queue<long> _cacheOrder = new();
 	private readonly string _path;
 	private readonly bool _fullResolution;
+	private readonly bool _continuous;
 	private readonly Task _worker;
+	private long? _lastTimestamp;
+	private BitmapSource? _lastImage;
 	private int _disposed;
 
-	public ClipboardVideoFrameReader(string path, bool fullResolution = false)
+	public ClipboardVideoFrameReader(string path, bool fullResolution = false, bool continuous = false)
 	{
 		_path = path;
 		_fullResolution = fullResolution;
+		_continuous = continuous;
 		_worker = Task.Factory.StartNew(Run, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 	}
 
@@ -75,6 +79,7 @@ internal sealed class ClipboardVideoFrameReader : IDisposable
 			if (apartment >= 0) CoUninitialize();
 			_cache.Clear();
 			_cacheOrder.Clear();
+			_lastImage = null;
 			_requests.Dispose();
 		}
 	}
@@ -120,11 +125,27 @@ internal sealed class ClipboardVideoFrameReader : IDisposable
 			.Where(ticks => !_cache.ContainsKey(ticks)).Order().ToArray();
 		if (missing.Length > 0)
 		{
-			Guid timeFormat = Guid.Empty;
-			var start = new PropVariant { Type = 20, Int64Value = missing[0] }; // VT_I8, 100ns
-			Marshal.ThrowExceptionForHR(reader.SetCurrentPosition(ref timeFormat, ref start));
 			int index = 0;
 			long tolerance = Math.Max(1, (long)Math.Round(TimeSpan.TicksPerSecond / request.FrameRate / 2));
+			// 再生中は直前のコマを再利用し、前進はシークせず順にデコードする。
+			while (_continuous && _lastImage != null && index < missing.Length &&
+				Math.Abs(missing[index] - _lastTimestamp!.Value) <= tolerance)
+			{
+				long ticks = missing[index++];
+				_cache[ticks] = _lastImage;
+				_cacheOrder.Enqueue(ticks);
+			}
+			if (index < missing.Length && (!_continuous || !_lastTimestamp.HasValue ||
+				missing[index] <= _lastTimestamp.Value + tolerance ||
+				missing[index] - _lastTimestamp.Value > TimeSpan.TicksPerSecond))
+			{
+				Guid timeFormat = Guid.Empty;
+				var start = new PropVariant { Type = 20, Int64Value = missing[index] }; // VT_I8, 100ns
+				// シーク後に要求が取り消されても、古いコマを再利用しない。
+				_lastTimestamp = null;
+				_lastImage = null;
+				Marshal.ThrowExceptionForHR(reader.SetCurrentPosition(ref timeFormat, ref start));
+			}
 			while (index < missing.Length)
 			{
 				request.CancellationToken.ThrowIfCancellationRequested();
@@ -133,9 +154,15 @@ internal sealed class ClipboardVideoFrameReader : IDisposable
 				{
 					Marshal.ThrowExceptionForHR(reader.ReadSample(VideoStream, 0, out _, out int flags, out long timestamp, out sample));
 					if ((flags & 1) != 0) throw new COMException("動画のコマを読み込めませんでした。");
+					if (_continuous && sample != null)
+					{
+						_lastTimestamp = timestamp;
+						_lastImage = null;
+					}
 					if (sample != null && timestamp + tolerance >= missing[index])
 					{
 						BitmapSource image = ReadBitmap(reader, sample, _fullResolution);
+						if (_continuous) _lastImage = image;
 						do
 						{
 							long ticks = missing[index++];
