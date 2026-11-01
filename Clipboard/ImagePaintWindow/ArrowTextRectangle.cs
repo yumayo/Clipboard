@@ -40,6 +40,7 @@ internal sealed class ArrowTextRectangle : Canvas
 	private bool _isDraggingRectangle;
 	private bool _isResizingRectangle;
 	private bool _isApplyingTextHistory;
+	private bool _isEditingChromeVisible = true;
 
 	public ArrowTextRectangle(double canvasWidth, double canvasHeight, double strokeThickness, double textFontSize)
 	{
@@ -113,6 +114,9 @@ internal sealed class ArrowTextRectangle : Canvas
 		{
 			Children.Add(resizeHandle);
 		}
+
+		IsHitTestVisibleChanged += (_, _) => UpdateEditingChromeVisibility();
+		IsEnabledChanged += (_, _) => UpdateEditingChromeVisibility();
 	}
 
 	public event EventHandler? TextInputFocused;
@@ -155,6 +159,23 @@ internal sealed class ArrowTextRectangle : Canvas
 	public bool IsDrawable =>
 		_textRectangleBounds.Width >= MinArrowTextRectangleWidth &&
 		_textRectangleBounds.Height >= MinArrowTextRectangleHeight;
+
+	public void SetEditingChromeVisible(bool visible)
+	{
+		_isEditingChromeVisible = visible;
+		UpdateEditingChromeVisibility();
+	}
+
+	private void UpdateEditingChromeVisibility()
+	{
+		Visibility visibility = _isEditingChromeVisible && IsHitTestVisible && IsEnabled
+			? Visibility.Visible
+			: Visibility.Collapsed;
+		foreach (Rectangle resizeHandle in _resizeHandles.Values)
+		{
+			resizeHandle.Visibility = visibility;
+		}
+	}
 
 	public void Update(Point startPoint, Point currentPoint)
 	{
@@ -406,8 +427,11 @@ internal sealed class ArrowTextRectangle : Canvas
 		{
 			Width = ArrowResizeHandleSize,
 			Height = ArrowResizeHandleSize,
-			Fill = Brushes.Transparent,
-			Stroke = Brushes.Transparent,
+			RadiusX = ArrowResizeHandleSize / 2,
+			RadiusY = ArrowResizeHandleSize / 2,
+			Fill = Brushes.White,
+			Stroke = Brushes.Gray,
+			StrokeThickness = 1.5,
 			Cursor = GetResizeHandleCursor(resizeHandleKind),
 			Tag = resizeHandleKind
 		};

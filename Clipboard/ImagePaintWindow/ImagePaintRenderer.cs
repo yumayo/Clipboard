@@ -50,7 +50,7 @@ internal sealed class ImagePaintRenderer
 		try
 		{
 			renderBounds = CalculateRenderBounds();
-			SetPlacedImagesEditingChromeVisible(false);
+			SetEditingChromeVisible(false);
 			int renderWidth = Math.Max(1, (int)Math.Round(renderBounds.Width));
 			int renderHeight = Math.Max(1, (int)Math.Round(renderBounds.Height));
 			double canvasWidth = _canvasWidthProvider();
@@ -71,7 +71,7 @@ internal sealed class ImagePaintRenderer
 		}
 		finally
 		{
-			SetPlacedImagesEditingChromeVisible(true);
+			SetEditingChromeVisible(true);
 			foreach (Action restore in restoreTextInputs) restore();
 		}
 	}
@@ -206,11 +206,24 @@ internal sealed class ImagePaintRenderer
 		drawingContext.DrawRectangle(overlayBrush, null, new Rect(0, 0, width, height));
 	}
 
-	private void SetPlacedImagesEditingChromeVisible(bool visible)
+	private void SetEditingChromeVisible(bool visible)
 	{
 		foreach (PlacedImage placedImage in _imageLayerCanvas.Children.OfType<PlacedImage>())
 		{
 			placedImage.SetEditingChromeVisible(visible);
+		}
+
+		foreach (UIElement element in _overlayCanvas.Children)
+		{
+			switch (element)
+			{
+				case PaintRectangle paintRectangle:
+					paintRectangle.SetEditingChromeVisible(visible);
+					break;
+				case ArrowTextRectangle arrowTextRectangle:
+					arrowTextRectangle.SetEditingChromeVisible(visible);
+					break;
+			}
 		}
 	}
 

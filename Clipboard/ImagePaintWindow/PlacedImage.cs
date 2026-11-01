@@ -23,6 +23,7 @@ internal sealed class PlacedImage : Canvas
 	private ResizeHandleKind _activeResizeHandle;
 	private bool _isMoving;
 	private bool _isResizing;
+	private bool _isEditingChromeVisible = true;
 
 	public PlacedImage(BitmapSource source, double canvasWidth, double canvasHeight, Rect bounds)
 	{
@@ -60,6 +61,8 @@ internal sealed class PlacedImage : Canvas
 		}
 
 		SetBounds(bounds);
+		IsHitTestVisibleChanged += (_, _) => UpdateEditingChromeVisibility();
+		IsEnabledChanged += (_, _) => UpdateEditingChromeVisibility();
 	}
 
 	public event EventHandler? Changed;
@@ -70,10 +73,18 @@ internal sealed class PlacedImage : Canvas
 
 	public bool IsEditing => _isMoving || _isResizing;
 
-	// レンダリング時に輪郭やリサイズ用ヒット領域を画像へ焼き込まないよう、一時的に隠す。
+	// レンダリング中や操作できないモードでは、輪郭とリサイズハンドルを隠す。
 	public void SetEditingChromeVisible(bool visible)
 	{
-		Visibility chromeVisibility = visible ? Visibility.Visible : Visibility.Collapsed;
+		_isEditingChromeVisible = visible;
+		UpdateEditingChromeVisibility();
+	}
+
+	private void UpdateEditingChromeVisibility()
+	{
+		Visibility chromeVisibility = _isEditingChromeVisible && IsHitTestVisible && IsEnabled
+			? Visibility.Visible
+			: Visibility.Collapsed;
 		_outlineBorder.Visibility = chromeVisibility;
 		foreach (Rectangle resizeHandle in _resizeHandles.Values)
 		{

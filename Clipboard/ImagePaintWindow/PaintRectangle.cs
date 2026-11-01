@@ -22,6 +22,7 @@ internal sealed class PaintRectangle : Canvas
 	private ResizeHandleKind _activeResizeHandle;
 	private bool _isMoving;
 	private bool _isResizing;
+	private bool _isEditingChromeVisible = true;
 
 	public PaintRectangle(double canvasWidth, double canvasHeight, bool isOutline, double strokeThickness)
 	{
@@ -52,6 +53,9 @@ internal sealed class PaintRectangle : Canvas
 		{
 			Children.Add(resizeHandle);
 		}
+
+		IsHitTestVisibleChanged += (_, _) => UpdateEditingChromeVisibility();
+		IsEnabledChanged += (_, _) => UpdateEditingChromeVisibility();
 	}
 
 	public event EventHandler? Focused;
@@ -86,6 +90,23 @@ internal sealed class PaintRectangle : Canvas
 	public bool IsDrawable =>
 		_bounds.Width >= MinPaintRectangleWidth &&
 		_bounds.Height >= MinPaintRectangleHeight;
+
+	public void SetEditingChromeVisible(bool visible)
+	{
+		_isEditingChromeVisible = visible;
+		UpdateEditingChromeVisibility();
+	}
+
+	private void UpdateEditingChromeVisibility()
+	{
+		Visibility visibility = _isEditingChromeVisible && IsHitTestVisible && IsEnabled
+			? Visibility.Visible
+			: Visibility.Collapsed;
+		foreach (Rectangle resizeHandle in _resizeHandles.Values)
+		{
+			resizeHandle.Visibility = visibility;
+		}
+	}
 
 	public void RestoreBounds(Rect bounds)
 	{
@@ -189,8 +210,11 @@ internal sealed class PaintRectangle : Canvas
 		{
 			Width = PaintRectangleResizeHandleSize,
 			Height = PaintRectangleResizeHandleSize,
-			Fill = Brushes.Transparent,
-			Stroke = Brushes.Transparent,
+			RadiusX = PaintRectangleResizeHandleSize / 2,
+			RadiusY = PaintRectangleResizeHandleSize / 2,
+			Fill = Brushes.White,
+			Stroke = Brushes.Gray,
+			StrokeThickness = 1.5,
 			Cursor = GetResizeHandleCursor(resizeHandleKind),
 			Tag = resizeHandleKind
 		};
