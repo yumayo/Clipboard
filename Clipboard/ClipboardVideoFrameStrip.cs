@@ -16,6 +16,7 @@ internal sealed class ClipboardVideoFrameStrip : Grid, IDisposable
 	private readonly List<FrameTile> _tiles = new();
 	private readonly Dictionary<long, BitmapSource> _cache = new();
 	private readonly Queue<long> _cacheOrder = new();
+	private IReadOnlyDictionary<long, BitmapSource> _editedFrames = new Dictionary<long, BitmapSource>();
 	private ClipboardVideoFrameReader? _reader;
 	private CancellationTokenSource? _cancellation;
 	private TimeSpan?[] _positions = [];
@@ -53,6 +54,13 @@ internal sealed class ClipboardVideoFrameStrip : Grid, IDisposable
 		SizeChanged += (_, _) => UpdatePosition(_position, _duration, _frameRate);
 	}
 
+	public void SetEditedFrames(IReadOnlyDictionary<long, BitmapSource> frames)
+	{
+		if (_disposed) return;
+		_editedFrames = frames;
+		PaintFrames();
+	}
+
 	public void UpdatePosition(TimeSpan position, TimeSpan duration, double frameRate)
 	{
 		if (_disposed) return;
@@ -81,10 +89,14 @@ internal sealed class ClipboardVideoFrameStrip : Grid, IDisposable
 			for (int index = 0; index < _positions.Length; index++)
 			{
 				var image = new Image { Height = 76, Stretch = Stretch.Uniform };
+				var imageHost = new Grid { Height = 76, Width = ClipboardVideoTimeline.PreviewFrameWidth - 24 };
+				imageHost.Children.Add(image);
+				var badge = ImageEditBadgeFactory.Create(VerticalAlignment.Top);
+				imageHost.Children.Add(badge);
 				var time = new TextBlock { FontSize = 12, TextAlignment = TextAlignment.Center };
 				time.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.MutedTextBrushKey);
 				var content = new StackPanel();
-				content.Children.Add(image);
+				content.Children.Add(imageHost);
 				content.Children.Add(time);
 				var button = new Button
 				{
@@ -104,7 +116,7 @@ internal sealed class ClipboardVideoFrameStrip : Grid, IDisposable
 				{
 					if (button.Tag is TimeSpan target) _seek(target);
 				};
-				_tiles.Add(new FrameTile(button, image, time));
+				_tiles.Add(new FrameTile(button, image, time, badge));
 				_frames.Children.Add(button);
 			}
 		}
@@ -115,7 +127,11 @@ internal sealed class ClipboardVideoFrameStrip : Grid, IDisposable
 			tile.Button.Tag = position;
 			tile.Button.IsEnabled = position.HasValue;
 			tile.Button.Opacity = position.HasValue ? 1 : 0;
-			tile.Image.Source = position.HasValue && _cache.TryGetValue(position.Value.Ticks, out BitmapSource? image) ? image : null;
+			BitmapSource? edited = null;
+			bool isEdited = position.HasValue && _editedFrames.TryGetValue(position.Value.Ticks, out edited);
+			tile.Image.Source = isEdited ? edited
+				: position.HasValue && _cache.TryGetValue(position.Value.Ticks, out BitmapSource? image) ? image : null;
+			tile.EditBadge.Visibility = isEdited ? Visibility.Visible : Visibility.Collapsed;
 			tile.Time.Text = position.HasValue ? FormatTime(position.Value) : "";
 			tile.Button.ToolTip = position.HasValue ? $"{FormatTime(position.Value)}（クリックして移動）" : null;
 		}
@@ -184,5 +200,5 @@ internal sealed class ClipboardVideoFrameStrip : Grid, IDisposable
 		foreach (FrameTile tile in _tiles) tile.Image.Source = null;
 	}
 
-	private sealed record FrameTile(Button Button, Image Image, TextBlock Time);
+	private sealed record FrameTile(Button Button, Image Image, TextBlock Time, Border EditBadge);
 }

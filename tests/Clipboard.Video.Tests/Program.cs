@@ -317,7 +317,7 @@ Run("不正な行幅では画像バッファを読み込まない", () =>
 	catch (ArgumentException) { }
 });
 
-using var database = new SqliteConnection("Data Source=:memory:");
+using var database = new SqliteConnection("Data Source=:memory:;Foreign Keys=True");
 database.Open();
 using (var command = database.CreateCommand())
 {
@@ -336,6 +336,17 @@ using (var command = database.CreateCommand())
 	command.ExecuteNonQuery();
 }
 
+Run("既存の履歴を保持してコマ編集用DBを追加できる", () =>
+{
+	using var transaction = database.BeginTransaction();
+	ClipboardVideoFrameStore.Initialize(database, transaction);
+	ClipboardVideoFrameStore.Initialize(database, transaction);
+	transaction.Commit();
+	using var command = database.CreateCommand();
+	command.CommandText = "SELECT COUNT(*) FROM clipboard_history;";
+	Equal(10L, (long)command.ExecuteScalar()!);
+});
+
 Run("ギャラリーは画像と動画を新しい順に取得する", () =>
 {
 	Equal("10,9,7,6,4,2", string.Join(',', LoadPage(null, 100)));
@@ -349,6 +360,131 @@ Run("画像と動画が混在してもページ間の欠落や重複がない", 
 	Equal("6,4,2", string.Join(',', page2));
 	Equal(0, LoadPage(page2.Last(), 3).Length);
 	Equal(0, LoadPage(null, 0).Length);
+});
+
+byte[] frameImage = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=");
+byte[] thumbnail = frameImage.ToArray();
+string paintState = "{\"Images\":[{\"ImageBytes\":\"" + Convert.ToBase64String(frameImage) + "\"}],\"Elements\":[{\"Kind\":\"outlineRectangle\"}]}";
+TimeSpan frame1 = TimeSpan.FromTicks(333333);
+TimeSpan frame2 = TimeSpan.FromTicks(666667);
+
+Run("複数コマの編集画像・サムネイル・編集状態を独立して保存する", () =>
+{
+	using (var transaction = database.BeginTransaction())
+	{
+		ClipboardVideoFrameStore.Save(database, transaction, 9, frame2, frameImage, thumbnail, paintState);
+		ClipboardVideoFrameStore.Save(database, transaction, 9, frame1, frameImage, thumbnail, "first state");
+		ClipboardVideoFrameStore.Save(database, transaction, 7, frame1, frameImage, thumbnail, "another video");
+		transaction.Commit();
+	}
+	List<ClipboardVideoFrameSummary> frames = ClipboardVideoFrameStore.LoadSummaries(database, 9);
+	Equal("333333,666667", string.Join(',', frames.Select(frame => frame.Position.Ticks)));
+	Equal(true, frames.All(frame => frame.ThumbnailBytes.SequenceEqual(thumbnail)));
+	ClipboardVideoFrameEdit saved = ClipboardVideoFrameStore.Load(database, 9, frame2)!;
+	Equal(true, saved.ImageBytes.SequenceEqual(frameImage));
+	Equal(paintState, saved.PaintStateJson);
+	Equal("another video", ClipboardVideoFrameStore.Load(database, 7, frame1)!.PaintStateJson);
+	Equal<ClipboardVideoFrameEdit?>(null, ClipboardVideoFrameStore.Load(database, 9, TimeSpan.Zero));
+});
+
+Run("同じコマの再編集では上書きし、他のコマを変更しない", () =>
+{
+	using (var transaction = database.BeginTransaction())
+	{
+		ClipboardVideoFrameStore.Save(database, transaction, 9, frame1, frameImage, thumbnail, "re-edited state");
+		transaction.Commit();
+	}
+	Equal(2, ClipboardVideoFrameStore.LoadSummaries(database, 9).Count);
+	Equal("re-edited state", ClipboardVideoFrameStore.Load(database, 9, frame1)!.PaintStateJson);
+	Equal(paintState, ClipboardVideoFrameStore.Load(database, 9, frame2)!.PaintStateJson);
+});
+
+Run("ギャラリーの編集済みフラグと保存サムネイルを復元する", () =>
+{
+	using var command = database.CreateCommand();
+	command.CommandText = ClipboardGalleryHistoryQuery.Create(false);
+	command.Parameters.AddWithValue("$image_kind", (int)ClipboardHistoryKind.Image);
+	command.Parameters.AddWithValue("$video_kind", (int)ClipboardHistoryKind.Video);
+	command.Parameters.AddWithValue("$limit", 100);
+	var edited = new List<long>();
+	using var reader = command.ExecuteReader();
+	while (reader.Read())
+	{
+		if (reader.GetInt64(5) != 0) edited.Add(reader.GetInt64(0));
+		if (reader.GetInt64(0) == 9) Equal(true, ((byte[])reader.GetValue(4)).SequenceEqual(thumbnail));
+	}
+	Equal("9,7,6", string.Join(',', edited));
+});
+
+Run("保存をロールバックするとコマとギャラリーのサムネイルを両方戻す", () =>
+{
+	using (var transaction = database.BeginTransaction())
+	{
+		ClipboardVideoFrameStore.Save(database, transaction, 4, frame1, frameImage, thumbnail, paintState);
+		transaction.Rollback();
+	}
+	Equal(0, ClipboardVideoFrameStore.LoadSummaries(database, 4).Count);
+	using var command = database.CreateCommand();
+	command.CommandText = "SELECT thumbnail FROM clipboard_history WHERE id = 4;";
+	Equal(DBNull.Value, command.ExecuteScalar());
+});
+
+Run("削除済みの履歴や画像履歴には動画のコマを保存しない", () =>
+{
+	foreach (long id in new long[] { 999, 6 })
+	{
+		using var transaction = database.BeginTransaction();
+		bool rejected = false;
+		try { ClipboardVideoFrameStore.Save(database, transaction, id, frame1, frameImage, thumbnail, paintState); }
+		catch (InvalidOperationException) { rejected = true; }
+		Equal(true, rejected);
+		transaction.Rollback();
+		Equal(0, ClipboardVideoFrameStore.LoadSummaries(database, id).Count);
+	}
+});
+
+Run("動画履歴の削除で編集コマも消え、他の動画の編集は残る", () =>
+{
+	using var command = database.CreateCommand();
+	command.CommandText = "DELETE FROM clipboard_history WHERE id = 9;";
+	command.ExecuteNonQuery();
+	Equal(0, ClipboardVideoFrameStore.LoadSummaries(database, 9).Count);
+	Equal("another video", ClipboardVideoFrameStore.Load(database, 7, frame1)!.PaintStateJson);
+});
+
+Run("DBを開き直し元動画を削除しても編集画像と再編集用データが残る", () =>
+{
+	string directory = Path.Combine(Path.GetTempPath(), "clipboard-frame-test-" + Guid.NewGuid());
+	Directory.CreateDirectory(directory);
+	string videoPath = Path.Combine(directory, "source.mp4");
+	string connectionString = $"Data Source={Path.Combine(directory, "history.db")};Foreign Keys=True;Pooling=False";
+	try
+	{
+		File.WriteAllBytes(videoPath, [1, 2, 3]);
+		using (var persistent = new SqliteConnection(connectionString))
+		{
+			persistent.Open();
+			using var command = persistent.CreateCommand();
+			command.CommandText = "CREATE TABLE clipboard_history (id INTEGER PRIMARY KEY, kind INTEGER, content BLOB, thumbnail BLOB); INSERT INTO clipboard_history (id, kind, content) VALUES (1, 5, $content);";
+			command.Parameters.AddWithValue("$content", ClipboardVideoFiles.Encode([videoPath]));
+			command.ExecuteNonQuery();
+			using var transaction = persistent.BeginTransaction();
+			ClipboardVideoFrameStore.Initialize(persistent, transaction);
+			ClipboardVideoFrameStore.Save(persistent, transaction, 1, frame1, frameImage, thumbnail, paintState);
+			transaction.Commit();
+		}
+		File.Delete(videoPath);
+		using var reopened = new SqliteConnection(connectionString);
+		reopened.Open();
+		ClipboardVideoFrameEdit saved = ClipboardVideoFrameStore.Load(reopened, 1, frame1)!;
+		Equal(true, saved.ImageBytes.SequenceEqual(frameImage));
+		Equal(paintState, saved.PaintStateJson);
+		Equal(true, ClipboardVideoFrameStore.LoadSummaries(reopened, 1).Single().ThumbnailBytes.SequenceEqual(thumbnail));
+		using var lookup = reopened.CreateCommand();
+		lookup.CommandText = "SELECT content FROM clipboard_history WHERE id = 1;";
+		Equal(videoPath, ClipboardVideoFiles.Decode((byte[])lookup.ExecuteScalar()!).Single());
+	}
+	finally { Directory.Delete(directory, recursive: true); }
 });
 
 Console.WriteLine($"{passed} checks passed; {failed} failed.");

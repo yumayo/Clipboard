@@ -516,8 +516,11 @@ internal sealed class ClipboardImageGalleryWindow : Window
 		{
 			var item = new ImageGalleryItemControl(entry, _imageSize, IsSelectionModeActive);
 			item.Activated += (_, _) => PasteEntry(entry);
-			item.PaintRequested += (_, _) => OpenImagePaintWindow(entry);
-			item.PlayRequested += (_, _) => OpenVideoPreview(entry);
+			item.PaintRequested += (_, _) =>
+			{
+				if (entry.Kind == ClipboardHistoryKind.Video) OpenVideoEditWindow(entry);
+				else OpenImagePaintWindow(entry);
+			};
 			item.CheckedChanged += (_, _) => UpdateSelectionFooter();
 			_galleryPanel.Children.Add(item);
 		}
@@ -529,7 +532,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 		ClipboardManager.PasteHistoryEntry(entry.Id, _targetWindow);
 	}
 
-	private async void OpenVideoPreview(ImageGalleryEntry entry)
+	private async void OpenVideoEditWindow(ImageGalleryEntry entry)
 	{
 		try
 		{
@@ -538,7 +541,12 @@ internal sealed class ClipboardImageGalleryWindow : Window
 			{
 				throw new InvalidOperationException("動画履歴を読み込めませんでした。");
 			}
-			ClipboardManager.ShowVideoPreview(content.Bytes);
+			string? path = ClipboardVideoFiles.Decode(content.Bytes).FirstOrDefault();
+			if (path == null) throw new InvalidOperationException("動画のパスを読み込めませんでした。");
+			var editor = new ClipboardVideoEditWindow(entry.Id, path);
+			Hide();
+			editor.Show();
+			editor.Activate();
 		}
 		catch (Exception ex)
 		{
@@ -1113,7 +1121,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 			CreatedAt = summary.CreatedAt,
 			PreviewText = missingVideo ? summary.PreviewText + "\n元ファイルが見つかりません" : summary.PreviewText,
 			Thumbnail = summary.Kind == ClipboardHistoryKind.Video
-				? (videoPath == null ? null : ClipboardVideoMetadata.ReadThumbnail(videoPath))
+				? CreateThumbnail(summary.ThumbnailBytes) ?? (videoPath == null ? null : ClipboardVideoMetadata.ReadThumbnail(videoPath))
 				: CreateGalleryThumbnail(summary),
 			IsEdited = summary.HasPaintState
 		};
@@ -1321,7 +1329,6 @@ internal sealed class ClipboardImageGalleryWindow : Window
 
 		public event EventHandler? Activated;
 		public event EventHandler? PaintRequested;
-		public event EventHandler? PlayRequested;
 		public event EventHandler? CheckedChanged;
 
 		public long EntryId => _entry.Id;
@@ -1395,7 +1402,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 				grid.Children.Add(captionHost);
 			}
 
-			Button actionButton = entry.Kind == ClipboardHistoryKind.Video ? CreatePlayButton() : CreatePaintButton();
+			Button actionButton = CreatePaintButton();
 			Grid.SetZIndex(actionButton, 1);
 			grid.Children.Add(actionButton);
 
@@ -1456,36 +1463,13 @@ internal sealed class ClipboardImageGalleryWindow : Window
 				Margin = new Thickness(6),
 				Focusable = false,
 				Cursor = Cursors.Hand,
-				ToolTip = "ペイント"
+				ToolTip = _entry.Kind == ClipboardHistoryKind.Video ? "動画のコマを編集" : "ペイント"
 			};
 			AppTheme.ApplyButton(button);
 			button.Click += (_, e) =>
 			{
 				e.Handled = true;
 				PaintRequested?.Invoke(this, EventArgs.Empty);
-			};
-			return button;
-		}
-
-		private Button CreatePlayButton()
-		{
-			var button = new Button
-			{
-				Content = "▶",
-				Width = 34,
-				Height = 30,
-				HorizontalAlignment = HorizontalAlignment.Right,
-				VerticalAlignment = VerticalAlignment.Top,
-				Margin = new Thickness(6),
-				Focusable = false,
-				Cursor = Cursors.Hand,
-				ToolTip = "動画を再生（コマ送り・コマ戻し）"
-			};
-			AppTheme.ApplyButton(button);
-			button.Click += (_, e) =>
-			{
-				e.Handled = true;
-				PlayRequested?.Invoke(this, EventArgs.Empty);
 			};
 			return button;
 		}

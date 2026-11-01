@@ -20,6 +20,7 @@ namespace Clipboard;
 internal sealed class ImagePaintWindow : Window
 {
 	private readonly long _historyId;
+	private readonly Action<BitmapSource, string>? _savePaintedImage;
 	private readonly BitmapSource _sourceImage;
 	private readonly ImagePaintEditorState _state = new();
 	private readonly ScaleTransform _zoomTransform = new(1, 1);
@@ -56,9 +57,10 @@ internal sealed class ImagePaintWindow : Window
 		set => _state.Workspace.CanvasHeight = value;
 	}
 
-	public ImagePaintWindow(long historyId, byte[] imageBytes)
+	public ImagePaintWindow(long historyId, byte[] imageBytes, Action<BitmapSource, string>? savePaintedImage = null)
 	{
 		_historyId = historyId;
+		_savePaintedImage = savePaintedImage;
 		_sourceImage = LoadImage(imageBytes);
 		var placedImage = new PlacedImageLayout(
 			_sourceImage,
@@ -80,9 +82,10 @@ internal sealed class ImagePaintWindow : Window
 		InitializeWindow(layout.ReferenceHeight, layout.PlacedImages, PaintMode.MoveImage);
 	}
 
-	public ImagePaintWindow(long historyId, ImagePaintSerializedState savedState)
+	public ImagePaintWindow(long historyId, ImagePaintSerializedState savedState, Action<BitmapSource, string>? savePaintedImage = null)
 	{
 		_historyId = historyId;
+		_savePaintedImage = savePaintedImage;
 		_sourceImage = CreateWhiteCanvasImage(savedState.ContentWidth, savedState.ContentHeight);
 		InitializeWindow(savedState.ContentHeight, CreatePlacedImageLayouts(savedState), savedState.PaintMode);
 		RestoreSerializedState(savedState);
@@ -1022,7 +1025,10 @@ internal sealed class ImagePaintWindow : Window
 			_state.History.CompletedElements,
 			_state.Tools,
 			renderBounds);
-		ClipboardManager.CopyPaintedImageToClipboard(_historyId, paintedImage, paintStateJson);
+		if (_savePaintedImage != null)
+			_savePaintedImage(paintedImage, paintStateJson);
+		else
+			ClipboardManager.CopyPaintedImageToClipboard(_historyId, paintedImage, paintStateJson);
 		return true;
 	}
 

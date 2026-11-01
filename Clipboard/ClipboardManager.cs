@@ -198,6 +198,13 @@ public static class ClipboardManager
 		Logger.Info($"ClipboardManager: 元の画像履歴の編集内容を更新しました。Id={historyId} Size={bytes.Length}");
 	}
 
+	internal static void CopyPaintedVideoFrameToClipboard(long historyId, TimeSpan position, BitmapSource image, string paintStateJson)
+	{
+		ClipboardDatabase.SaveVideoFrameEdit(historyId, position, ImagePaintImageFactory.EncodePng(image), paintStateJson);
+		CopyImageToClipboard(image);
+		Logger.Info($"ClipboardManager: 動画のコマを画像として保存しました。Id={historyId} Position={position}");
+	}
+
 	private static IntPtr SetHook(NativeMethods.LowLevelKeyboardProc proc)
 	{
 		using var curProcess = Process.GetCurrentProcess();

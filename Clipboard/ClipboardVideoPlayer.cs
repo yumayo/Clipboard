@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
 namespace Clipboard;
@@ -17,6 +18,8 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 	private readonly Button _playButton;
 	private readonly Button _previousButton;
 	private readonly Button _nextButton;
+	private readonly Button? _editButton;
+	private readonly bool _autoPlay;
 	private readonly TextBlock _time;
 	private readonly TextBlock _message;
 	private readonly TextBlock _frameRateText;
@@ -32,9 +35,10 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 	private bool _resumeAfterSeek;
 	private bool _disposed;
 
-	public ClipboardVideoPlayer(string path)
+	public ClipboardVideoPlayer(string path, bool autoPlay = true, Action<TimeSpan>? editFrame = null)
 	{
 		_path = path;
+		_autoPlay = autoPlay;
 		Focusable = true;
 		var panel = new DockPanel();
 		var footer = new StackPanel { Margin = new Thickness(10) };
@@ -93,6 +97,21 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		buttons.Children.Add(_playButton);
 		buttons.Children.Add(_previousButton);
 		buttons.Children.Add(_nextButton);
+		if (editFrame != null)
+		{
+			_editButton = CreateButton("このコマを編集", "表示中のコマを画像として編集します", () =>
+			{
+				if (!_opened || _disposed || _frameRate <= 0) return;
+				Pause();
+				TimeSpan? position = ClipboardVideoTimeline.PreviewPositions(_position, _duration, _frameRate, 1).FirstOrDefault();
+				if (position.HasValue)
+				{
+					SeekTo(position.Value);
+					editFrame(position.Value);
+				}
+			});
+			buttons.Children.Add(_editButton);
+		}
 		_time = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0) };
 		_time.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
 		buttons.Children.Add(_time);
@@ -160,6 +179,15 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		_timer.Stop();
 		Loaded += OnLoaded;
 		Unloaded += (_, _) => Dispose();
+	}
+
+	public double FrameRate => _frameRate;
+
+	public void SetEditedFrames(IReadOnlyDictionary<long, BitmapSource> frames) => _frameStrip.SetEditedFrames(frames);
+
+	public void PausePlayback()
+	{
+		if (_opened && !_disposed) Pause();
 	}
 
 	public bool HandleKeyDown(KeyEventArgs e)
@@ -251,7 +279,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		SetControlsEnabled(true);
 		_timer.Start();
 		UpdatePosition();
-		TogglePlayback();
+		if (_autoPlay) TogglePlayback();
 	}
 
 	private void TogglePlayback()
@@ -404,6 +432,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		_playButton.IsEnabled = enabled;
 		_previousButton.IsEnabled = enabled && _frameRate > 0;
 		_nextButton.IsEnabled = enabled && _frameRate > 0;
+		if (_editButton != null) _editButton.IsEnabled = enabled && _frameRate > 0;
 		_seek.IsEnabled = enabled;
 	}
 

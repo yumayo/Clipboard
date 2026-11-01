@@ -5,7 +5,7 @@ namespace Clipboard;
 
 internal static class ImageEditBadgeFactory
 {
-	internal static Border Create()
+	internal static Border Create(VerticalAlignment verticalAlignment = VerticalAlignment.Bottom)
 	{
 		var label = new TextBlock
 		{
@@ -21,7 +21,7 @@ internal static class ImageEditBadgeFactory
 			Padding = new Thickness(5, 2, 5, 2),
 			Margin = new Thickness(5),
 			HorizontalAlignment = HorizontalAlignment.Right,
-			VerticalAlignment = VerticalAlignment.Bottom,
+			VerticalAlignment = verticalAlignment,
 			BorderThickness = new Thickness(1),
 			CornerRadius = new CornerRadius(3),
 			IsHitTestVisible = false

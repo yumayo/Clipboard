@@ -24,7 +24,7 @@ internal sealed class ClipboardStoredContent
 
 internal static class ClipboardDatabase
 {
-	private const int SchemaVersion = 4;
+	private const int SchemaVersion = 5;
 	private const string ConcatenationSeparatorKey = "ConcatenationSeparator";
 	private static readonly object Sync = new();
 	private static bool _initialized;
@@ -107,6 +107,7 @@ internal static class ClipboardDatabase
 			}
 			EnsureHistoryPaintStateColumn(connection, transaction);
 			EnsureHistoryPlainTextColumn(connection, transaction);
+			ClipboardVideoFrameStore.Initialize(connection, transaction);
 
 			SetStateValue(connection, transaction, "schema_version", SchemaVersion.ToString());
 			transaction.Commit();
@@ -278,6 +279,40 @@ internal static class ClipboardDatabase
 			{
 				ClipboardImageStore.DeleteObjectFile(oid);
 			}
+		}
+	}
+
+	public static void SaveVideoFrameEdit(long historyId, TimeSpan position, byte[] imageBytes, string paintStateJson)
+	{
+		Initialize();
+		var metadata = ClipboardHistoryMetadata.Create(imageBytes, ClipboardHistoryKind.Image, DateTime.Now, null, null);
+		byte[] thumbnail = metadata.ThumbnailBytes ?? throw new InvalidOperationException("コマのサムネイルを作成できませんでした。");
+		lock (Sync)
+		{
+			using var connection = OpenConnection();
+			using var transaction = connection.BeginTransaction();
+			ClipboardVideoFrameStore.Save(connection, transaction, historyId, position, imageBytes, thumbnail, paintStateJson);
+			transaction.Commit();
+		}
+	}
+
+	public static List<ClipboardVideoFrameSummary> LoadVideoFrameSummaries(long historyId)
+	{
+		Initialize();
+		lock (Sync)
+		{
+			using var connection = OpenConnection();
+			return ClipboardVideoFrameStore.LoadSummaries(connection, historyId);
+		}
+	}
+
+	public static ClipboardVideoFrameEdit? LoadVideoFrameEdit(long historyId, TimeSpan position)
+	{
+		Initialize();
+		lock (Sync)
+		{
+			using var connection = OpenConnection();
+			return ClipboardVideoFrameStore.Load(connection, historyId, position);
 		}
 	}
 
@@ -777,6 +812,7 @@ internal static class ClipboardDatabase
 		{
 			DataSource = ClipboardSettings.DatabaseFilePath,
 			Mode = SqliteOpenMode.ReadWriteCreate,
+			ForeignKeys = true,
 			Cache = SqliteCacheMode.Shared
 		}.ToString();
 		var connection = new SqliteConnection(connectionString);
@@ -904,7 +940,9 @@ internal static class ClipboardDatabase
 		string sql =
 			"""
 			SELECT id, kind, created_at_utc_ticks, preview_text, thumbnail,
-				paint_state IS NOT NULL AS has_paint_state
+				(paint_state IS NOT NULL OR EXISTS (
+					SELECT 1 FROM clipboard_video_frame_edits WHERE history_id = clipboard_history.id
+				)) AS has_paint_state
 			FROM clipboard_history
 			""";
 		var whereClauses = new List<string>();
