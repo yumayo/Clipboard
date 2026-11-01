@@ -32,7 +32,7 @@ internal sealed class ClipboardVideoFrameStrip : Grid, IDisposable
 	{
 		_path = path;
 		_seek = seek;
-		Height = 62;
+		Height = 124;
 		Margin = new Thickness(0, 0, 0, 6);
 		ClipToBounds = true;
 		Visibility = Visibility.Collapsed;
@@ -80,24 +80,24 @@ internal sealed class ClipboardVideoFrameStrip : Grid, IDisposable
 			_frames.Children.Clear();
 			for (int index = 0; index < _positions.Length; index++)
 			{
-				var image = new Image { Height = 38, Stretch = Stretch.Uniform };
-				var time = new TextBlock { FontSize = 9, TextAlignment = TextAlignment.Center };
+				var image = new Image { Height = 76, Stretch = Stretch.Uniform };
+				var time = new TextBlock { FontSize = 12, TextAlignment = TextAlignment.Center };
 				time.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.MutedTextBrushKey);
 				var content = new StackPanel();
 				content.Children.Add(image);
 				content.Children.Add(time);
 				var button = new Button
 				{
-					Width = ClipboardVideoTimeline.PreviewFrameWidth - 4,
-					Height = 60,
-					Margin = new Thickness(2, 0, 2, 0),
-					Padding = new Thickness(1),
+					Width = ClipboardVideoTimeline.PreviewFrameWidth - 8,
+					Height = 120,
+					Margin = new Thickness(4, 0, 4, 0),
+					Padding = new Thickness(2),
 					Focusable = false,
 					Content = content
 				};
 				AppTheme.ApplyButton(button);
 				bool center = index == _positions.Length / 2;
-				button.BorderThickness = new Thickness(center ? 2 : 1);
+				button.BorderThickness = new Thickness(center ? 4 : 2);
 				button.SetResourceReference(Control.BorderBrushProperty, center ? AppTheme.AccentBorderBrushKey : AppTheme.BorderBrushKey);
 				button.SetResourceReference(Control.BackgroundProperty, center ? AppTheme.SurfaceSelectedBrushKey : AppTheme.ThumbnailBackgroundBrushKey);
 				button.Click += (_, _) =>

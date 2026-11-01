@@ -173,22 +173,26 @@ internal sealed class ClipboardVideoFrameReader : IDisposable
 		try
 		{
 			Marshal.ThrowExceptionForHR(reader.GetCurrentMediaType(VideoStream, out type));
+			Guid subtypeKey = new("f7e34c9a-42e8-4714-b74b-cb29d72c35e5");
+			Marshal.ThrowExceptionForHR(type.GetGUID(ref subtypeKey, out Guid subtype));
+			if (subtype != new Guid("00000016-0000-0010-8000-00aa00389b71"))
+				throw new InvalidOperationException("動画のデコード結果がRGB32ではありません。");
 			Guid sizeKey = new("1652c33d-d6b2-4012-b834-72030849a37d");
 			Marshal.ThrowExceptionForHR(type.GetUINT64(ref sizeKey, out long size));
 			int width = checked((int)(size >> 32));
 			int height = checked((int)(size & uint.MaxValue));
+			ClipboardVideoFrameLayout layout = ReadDisplayArea(reader, type, width, height);
 			Guid strideKey = new("644b4e48-1e02-4516-b0eb-c01ca9d49ac6");
 			if (type.GetUINT32(ref strideKey, out int stride) < 0) stride = checked(width * 4);
 			Marshal.ThrowExceptionForHR(sample.ConvertToContiguousBuffer(out buffer));
-			int rowSize = checked(width * 4);
-			byte[] pixels = new byte[checked(rowSize * height)];
+			int rowSize = checked(layout.Width * 4);
+			byte[] pixels;
 			if (buffer is IMF2DBuffer buffer2D)
 			{
 				Marshal.ThrowExceptionForHR(buffer2D.Lock2D(out IntPtr scanline, out int pitch));
 				try
 				{
-					for (int row = 0; row < height; row++)
-						Marshal.Copy(IntPtr.Add(scanline, checked(row * pitch)), pixels, row * rowSize, rowSize);
+					pixels = layout.CopyBgr32(scanline, pitch);
 				}
 				finally { buffer2D.Unlock2D(); }
 			}
@@ -197,16 +201,17 @@ internal sealed class ClipboardVideoFrameReader : IDisposable
 				Marshal.ThrowExceptionForHR(buffer.Lock(out IntPtr data, out _, out int length));
 				try
 				{
-					if (Math.Abs((long)stride) < rowSize || (height - 1L) * Math.Abs((long)stride) + rowSize > length)
-						throw new InvalidOperationException("動画の画像サイズが不正です。");
 					int origin = stride < 0 ? checked((height - 1) * -stride) : 0;
-					for (int row = 0; row < height; row++)
-						Marshal.Copy(IntPtr.Add(data, checked(origin + row * stride)), pixels, row * rowSize, rowSize);
+					long first = origin + (long)layout.Y * stride + (long)layout.X * 4;
+					long last = first + (layout.Height - 1L) * stride;
+					if (Math.Min(first, last) < 0 || Math.Max(first, last) + rowSize > length)
+						throw new InvalidOperationException("動画の画像バッファが不足しています。");
+					pixels = layout.CopyBgr32(IntPtr.Add(data, origin), stride);
 				}
 				finally { buffer.Unlock(); }
 			}
-			var source = BitmapSource.Create(width, height, 96, 96, PixelFormats.Bgr32, null, pixels, rowSize);
-			double scale = Math.Min(1, Math.Min(144.0 / width, 82.0 / height));
+			var source = BitmapSource.Create(layout.Width, layout.Height, 96, 96, PixelFormats.Bgr32, null, pixels, rowSize);
+			double scale = Math.Min(1, Math.Min(288.0 / layout.Width, 164.0 / layout.Height));
 			// 小さくした画素だけを保持し、元解像度のバッファをキャッシュに残さない。
 			var thumbnail = new WriteableBitmap(new TransformedBitmap(source, new ScaleTransform(scale, scale)));
 			thumbnail.Freeze();
@@ -217,6 +222,38 @@ internal sealed class ClipboardVideoFrameReader : IDisposable
 			Release(buffer);
 			Release(type);
 		}
+	}
+
+	private static ClipboardVideoFrameLayout ReadDisplayArea(IMFSourceReader reader, IMFMediaType type, int width, int height)
+	{
+		if (TryReadDisplayArea(type, width, height, out ClipboardVideoFrameLayout layout)) return layout;
+		// RGB変換後のメディアタイプに表示範囲が引き継がれない場合も確認する。
+		IMFMediaType? native = null;
+		try
+		{
+			if (reader.GetNativeMediaType(VideoStream, 0, out native) >= 0 &&
+				TryReadDisplayArea(native, width, height, out layout)) return layout;
+		}
+		finally { Release(native); }
+		return new ClipboardVideoFrameLayout(0, 0, width, height);
+	}
+
+	private static bool TryReadDisplayArea(IMFMediaType type, int width, int height, out ClipboardVideoFrameLayout layout)
+	{
+		Guid panScanEnabled = new("4b7f6bc3-8b13-40b2-a993-abf630b8204e");
+		if (type.GetUINT32(ref panScanEnabled, out int enabled) >= 0 && enabled != 0 &&
+			TryReadAperture(type, new Guid("79614dde-9187-48fb-b8c7-4d52689de649"), width, height, out layout)) return true;
+		// MF_MT_MINIMUM_DISPLAY_APERTURE、MF_MT_GEOMETRIC_APERTUREの順で使用する。
+		return TryReadAperture(type, new Guid("d7388766-18fe-48c6-a177-ee894867c8c4"), width, height, out layout) ||
+			TryReadAperture(type, new Guid("66758743-7e5f-400d-980a-aa8596c85696"), width, height, out layout);
+	}
+
+	private static bool TryReadAperture(IMFMediaType type, Guid key, int width, int height, out ClipboardVideoFrameLayout layout)
+	{
+		layout = default;
+		byte[] area = new byte[16];
+		return type.GetBlob(ref key, area, area.Length, out int length) >= 0 && length == area.Length &&
+			ClipboardVideoFrameLayout.TryReadAperture(area, width, height, out layout);
 	}
 
 	public void Dispose()
@@ -302,7 +339,7 @@ internal sealed class ClipboardVideoFrameReader : IDisposable
 		[PreserveSig] int GetString(ref Guid key, IntPtr value, int size, out int length);
 		[PreserveSig] int GetAllocatedString(ref Guid key, out IntPtr value, out int length);
 		[PreserveSig] int GetBlobSize(ref Guid key, out int size);
-		[PreserveSig] int GetBlob(ref Guid key, IntPtr buffer, int size, out int length);
+		[PreserveSig] int GetBlob(ref Guid key, [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 2)] byte[] buffer, int size, out int length);
 		[PreserveSig] int GetAllocatedBlob(ref Guid key, out IntPtr buffer, out int size);
 		[PreserveSig] int GetUnknown(ref Guid key, ref Guid id, out IntPtr value);
 		[PreserveSig] int SetItem(ref Guid key, IntPtr value);

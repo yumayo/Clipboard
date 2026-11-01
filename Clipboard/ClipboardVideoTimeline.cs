@@ -2,7 +2,7 @@ namespace Clipboard;
 
 internal static class ClipboardVideoTimeline
 {
-	public const double PreviewFrameWidth = 72;
+	public const double PreviewFrameWidth = 144;
 
 	public static TimeSpan?[] PreviewPositions(TimeSpan position, TimeSpan duration, double frameRate, double width)
 	{

@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Clipboard;
@@ -155,9 +157,9 @@ Run("FPSや長さが不明でも不正な位置を返さない", () =>
 	Equal(TimeSpan.Zero, ClipboardVideoTimeline.Step(TimeSpan.Zero, TimeSpan.Zero, 30, 1));
 });
 
-Run("標準幅では現在のコマを中央に前後4コマを表示する", () =>
+Run("9コマが収まる幅では現在のコマを中央に前後4コマを表示する", () =>
 {
-	TimeSpan?[] positions = ClipboardVideoTimeline.PreviewPositions(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(3), 30, 684);
+	TimeSpan?[] positions = ClipboardVideoTimeline.PreviewPositions(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(3), 30, 1368);
 	Equal(9, positions.Length);
 	Equal(TimeSpan.FromSeconds(1), positions[4]!.Value);
 	Equal(8666667L, positions[0]!.Value.Ticks);
@@ -166,7 +168,7 @@ Run("標準幅では現在のコマを中央に前後4コマを表示する", ()
 
 Run("横幅を広げると中央を維持したまま左右のコマ数が増える", () =>
 {
-	foreach (var (width, count) in new[] { (320.0, 3), (684.0, 9), (1000.0, 13), (1400.0, 19) })
+	foreach (var (width, count) in new[] { (320.0, 1), (684.0, 3), (1000.0, 5), (1400.0, 9), (2000.0, 13), (2800.0, 19) })
 	{
 		TimeSpan?[] positions = ClipboardVideoTimeline.PreviewPositions(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(3), 30, width);
 		Equal(count, positions.Length);
@@ -178,17 +180,17 @@ Run("横幅を広げると中央を維持したまま左右のコマ数が増え
 Run("先頭の前と末尾の後は空欄にし、現在位置を中央から動かさない", () =>
 {
 	TimeSpan duration = TimeSpan.FromSeconds(2);
-	TimeSpan?[] start = ClipboardVideoTimeline.PreviewPositions(TimeSpan.Zero, duration, 30, 684);
+	TimeSpan?[] start = ClipboardVideoTimeline.PreviewPositions(TimeSpan.Zero, duration, 30, 1368);
 	Equal(true, start.Take(4).All(value => value == null));
 	Equal(TimeSpan.Zero, start[4]!.Value);
-	TimeSpan?[] end = ClipboardVideoTimeline.PreviewPositions(duration, duration, 30, 684);
+	TimeSpan?[] end = ClipboardVideoTimeline.PreviewPositions(duration, duration, 30, 1368);
 	Equal(19666667L, end[4]!.Value.Ticks);
 	Equal(true, end.Skip(5).All(value => value == null));
 });
 
 Run("コマより短い動画でも中央の1コマだけを表示する", () =>
 {
-	TimeSpan?[] positions = ClipboardVideoTimeline.PreviewPositions(TimeSpan.Zero, TimeSpan.FromTicks(1), 30, 684);
+	TimeSpan?[] positions = ClipboardVideoTimeline.PreviewPositions(TimeSpan.Zero, TimeSpan.FromTicks(1), 30, 1368);
 	Equal(9, positions.Length);
 	Equal(1, positions.Count(value => value.HasValue));
 	Equal(TimeSpan.Zero, positions[4]!.Value);
@@ -196,7 +198,7 @@ Run("コマより短い動画でも中央の1コマだけを表示する", () =>
 
 Run("コマの途中をシークするとその位置を含むコマが中央に来る", () =>
 {
-	TimeSpan?[] positions = ClipboardVideoTimeline.PreviewPositions(TimeSpan.FromMilliseconds(50), TimeSpan.FromSeconds(2), 30, 684);
+	TimeSpan?[] positions = ClipboardVideoTimeline.PreviewPositions(TimeSpan.FromMilliseconds(50), TimeSpan.FromSeconds(2), 30, 1368);
 	Equal(333333L, positions[4]!.Value.Ticks);
 	Equal(666667L, positions[5]!.Value.Ticks);
 });
@@ -207,7 +209,7 @@ Run("小数FPSでコマ送りした位置も中央と前後のコマが一致す
 	{
 		TimeSpan duration = TimeSpan.FromSeconds(10);
 		TimeSpan center = TimeSpan.FromTicks((long)Math.Round(100 * TimeSpan.TicksPerSecond / fps));
-		TimeSpan?[] positions = ClipboardVideoTimeline.PreviewPositions(center, duration, fps, 684);
+		TimeSpan?[] positions = ClipboardVideoTimeline.PreviewPositions(center, duration, fps, 1368);
 		Equal(center, positions[4]!.Value);
 		Equal(ClipboardVideoTimeline.Step(center, duration, fps, -1), positions[3]!.Value);
 		Equal(ClipboardVideoTimeline.Step(center, duration, fps, 1), positions[5]!.Value);
@@ -223,6 +225,96 @@ Run("FPS・長さ・幅が不明なときはコマ画像を要求しない", () 
 	}
 	Equal(0, ClipboardVideoTimeline.PreviewPositions(TimeSpan.Zero, TimeSpan.Zero, 30, 684).Length);
 	Equal(1, ClipboardVideoTimeline.PreviewPositions(TimeSpan.Zero, TimeSpan.FromSeconds(1), 30, 20).Length);
+});
+
+Run("1088行にパディングされた動画から有効な1080行を選ぶ", () =>
+{
+	Equal(true, ClipboardVideoFrameLayout.TryReadAperture(Aperture(0, 0, 1920, 1080), 1920, 1088, out var layout));
+	Equal(new ClipboardVideoFrameLayout(0, 0, 1920, 1080), layout);
+});
+
+Run("表示範囲の外にある右端・下端の緑色画素をコピーしない", () =>
+{
+	const int pitch = 16 * 4;
+	byte[] buffer = new byte[pitch * 16];
+	for (int row = 0; row < 16; row++)
+	{
+		for (int column = 0; column < 16; column++)
+		{
+			int offset = row * pitch + column * 4;
+			bool visible = row < 9 && column < 13;
+			buffer[offset] = visible ? (byte)10 : (byte)0;
+			buffer[offset + 1] = visible ? (byte)20 : (byte)255;
+			buffer[offset + 2] = visible ? (byte)30 : (byte)0;
+		}
+	}
+	Equal(true, ClipboardVideoFrameLayout.TryReadAperture(Aperture(0, 0, 13, 9), 16, 16, out var layout));
+	IntPtr data = Marshal.AllocHGlobal(buffer.Length);
+	try
+	{
+		Marshal.Copy(buffer, 0, data, buffer.Length);
+		byte[] pixels = layout.CopyBgr32(data, pitch);
+		Equal(13 * 9 * 4, pixels.Length);
+		for (int offset = 0; offset < pixels.Length; offset += 4)
+		{
+			Equal((byte)10, pixels[offset]);
+			Equal((byte)20, pixels[offset + 1]);
+			Equal((byte)30, pixels[offset + 2]);
+		}
+	}
+	finally { Marshal.FreeHGlobal(data); }
+});
+
+Run("行幅の余白と上下反転がある画像でもオフセット付き表示範囲を正しく取り出す", () =>
+{
+	foreach (int pitch in new[] { 32, -32 })
+	{
+		byte[] buffer = new byte[32 * 5];
+		for (int row = 0; row < 5; row++)
+		{
+			int physicalRow = pitch > 0 ? row : 4 - row;
+			for (int column = 0; column < 6; column++)
+				buffer[physicalRow * 32 + column * 4] = (byte)(row * 10 + column);
+		}
+		Equal(true, ClipboardVideoFrameLayout.TryReadAperture(Aperture(1, 1, 3, 2), 6, 5, out var layout));
+		IntPtr data = Marshal.AllocHGlobal(buffer.Length);
+		try
+		{
+			Marshal.Copy(buffer, 0, data, buffer.Length);
+			byte[] pixels = layout.CopyBgr32(IntPtr.Add(data, pitch > 0 ? 0 : 4 * 32), pitch);
+			Equal("11,12,13,21,22,23", string.Join(',', Enumerable.Range(0, 6).Select(index => pixels[index * 4])));
+		}
+		finally { Marshal.FreeHGlobal(data); }
+	}
+});
+
+Run("不正な表示範囲と画像の外側を指す範囲は採用しない", () =>
+{
+	foreach (byte[] area in new[]
+	{
+		Array.Empty<byte>(), new byte[15], Aperture(-1, 0, 10, 10), Aperture(0, -1, 10, 10),
+		Aperture(0, 0, 0, 10), Aperture(0, 0, 10, -1), Aperture(1, 0, 16, 16), Aperture(0, 1, 16, 16)
+	})
+		Equal(false, ClipboardVideoFrameLayout.TryReadAperture(area, 16, 16, out _));
+});
+
+Run("小数の表示開始位置では範囲内に収まる画素だけを取り出す", () =>
+{
+	byte[] area = Aperture(1, 2, 5, 6);
+	BinaryPrimitives.WriteUInt16LittleEndian(area, 32768);
+	BinaryPrimitives.WriteUInt16LittleEndian(area.AsSpan(4), 32768);
+	Equal(true, ClipboardVideoFrameLayout.TryReadAperture(area, 16, 16, out var layout));
+	Equal(new ClipboardVideoFrameLayout(2, 3, 4, 5), layout);
+});
+
+Run("不正な行幅では画像バッファを読み込まない", () =>
+{
+	try
+	{
+		new ClipboardVideoFrameLayout(1, 0, 3, 2).CopyBgr32(new IntPtr(1), 12);
+		throw new Exception("不正な行幅が受理されました。");
+	}
+	catch (ArgumentException) { }
 });
 
 using var database = new SqliteConnection("Data Source=:memory:");
@@ -295,6 +387,16 @@ void Run(string name, Action test)
 		failed++;
 		Console.Error.WriteLine($"FAIL {name}: {ex.Message}");
 	}
+}
+
+static byte[] Aperture(short x, short y, int width, int height)
+{
+	byte[] area = new byte[16];
+	BinaryPrimitives.WriteInt16LittleEndian(area.AsSpan(2), x);
+	BinaryPrimitives.WriteInt16LittleEndian(area.AsSpan(6), y);
+	BinaryPrimitives.WriteInt32LittleEndian(area.AsSpan(8), width);
+	BinaryPrimitives.WriteInt32LittleEndian(area.AsSpan(12), height);
+	return area;
 }
 
 static void Equal<T>(T expected, T actual)

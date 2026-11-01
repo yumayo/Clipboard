@@ -9,6 +9,7 @@
     <Compile Include="../../Clipboard/ClipboardHistoryKind.cs" Link="ClipboardHistoryKind.cs" />
     <Compile Include="../../Clipboard/ClipboardVideoFiles.cs" Link="ClipboardVideoFiles.cs" />
     <Compile Include="../../Clipboard/ClipboardVideoTimeline.cs" Link="ClipboardVideoTimeline.cs" />
+    <Compile Include="../../Clipboard/ClipboardVideoFrameLayout.cs" Link="ClipboardVideoFrameLayout.cs" />
     <Compile Include="../../Clipboard/ClipboardGalleryHistoryQuery.cs" Link="ClipboardGalleryHistoryQuery.cs" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.9" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
