@@ -27,6 +27,32 @@ Shift + マウスホイールで横スクロールできます。
 Ctrl + マウスホイールでテキストや画像を拡大・縮小し、Ctrl + 0で100%に戻します。
 画像は最初はウィンドウに収めて表示し、100%では元のサイズで表示します。
 
+# 開発用コンテナ
+
+`docker-compose.yml` に .NET 10 SDK の開発コンテナを用意しています。
+ホスト側でリポジトリのルートから起動してください。
+
+```sh
+docker compose up -d dev
+```
+
+初回起動では `mcr.microsoft.com` からSDKイメージを取得します。
+初回ビルドでは開発コンテナからNuGetへ接続し、依存パッケージとWindows向けの参照パックを取得します。
+NuGetパッケージはDockerボリュームに保存されます。
+
+コンテナ名はComposeの既定の `clipboard-dev-1` を使用します。
+`.aicontainer` ではDockerプロキシ名 `dev`、実行先 `clipboard-dev-1`、許可コマンド `dotnet` を使用します。
+ホスト側でこの設定を許可してAIコンテナを再作成した後、AIコンテナ内から次のコマンドで確認・ビルドできます。
+開発コンテナ内のリポジトリは `/workspace` にあるため、`dp` には `-c /workspace` を指定してください。
+
+```sh
+dp -c /workspace dotnet --info
+dp -c /workspace dotnet build Clipboard/Clipboard.csproj --configuration Release --runtime win-x64 --no-self-contained
+```
+
+LinuxからWPFをビルドできるように、開発コンテナの環境変数で `EnableWindowsTargeting=true` を指定しています。
+アプリの起動や動画再生など、WPFのGUI動作確認にはWindows環境が必要です。
+
 # ビルド方法
 
 ```sh
