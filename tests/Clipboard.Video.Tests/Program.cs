@@ -155,6 +155,76 @@ Run("FPSや長さが不明でも不正な位置を返さない", () =>
 	Equal(TimeSpan.Zero, ClipboardVideoTimeline.Step(TimeSpan.Zero, TimeSpan.Zero, 30, 1));
 });
 
+Run("標準幅では現在のコマを中央に前後4コマを表示する", () =>
+{
+	TimeSpan?[] positions = ClipboardVideoTimeline.PreviewPositions(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(3), 30, 684);
+	Equal(9, positions.Length);
+	Equal(TimeSpan.FromSeconds(1), positions[4]!.Value);
+	Equal(8666667L, positions[0]!.Value.Ticks);
+	Equal(11333333L, positions[8]!.Value.Ticks);
+});
+
+Run("横幅を広げると中央を維持したまま左右のコマ数が増える", () =>
+{
+	foreach (var (width, count) in new[] { (320.0, 3), (684.0, 9), (1000.0, 13), (1400.0, 19) })
+	{
+		TimeSpan?[] positions = ClipboardVideoTimeline.PreviewPositions(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(3), 30, width);
+		Equal(count, positions.Length);
+		Equal(TimeSpan.FromSeconds(1), positions[count / 2]!.Value);
+		Equal(true, count * ClipboardVideoTimeline.PreviewFrameWidth <= width);
+	}
+});
+
+Run("先頭の前と末尾の後は空欄にし、現在位置を中央から動かさない", () =>
+{
+	TimeSpan duration = TimeSpan.FromSeconds(2);
+	TimeSpan?[] start = ClipboardVideoTimeline.PreviewPositions(TimeSpan.Zero, duration, 30, 684);
+	Equal(true, start.Take(4).All(value => value == null));
+	Equal(TimeSpan.Zero, start[4]!.Value);
+	TimeSpan?[] end = ClipboardVideoTimeline.PreviewPositions(duration, duration, 30, 684);
+	Equal(19666667L, end[4]!.Value.Ticks);
+	Equal(true, end.Skip(5).All(value => value == null));
+});
+
+Run("コマより短い動画でも中央の1コマだけを表示する", () =>
+{
+	TimeSpan?[] positions = ClipboardVideoTimeline.PreviewPositions(TimeSpan.Zero, TimeSpan.FromTicks(1), 30, 684);
+	Equal(9, positions.Length);
+	Equal(1, positions.Count(value => value.HasValue));
+	Equal(TimeSpan.Zero, positions[4]!.Value);
+});
+
+Run("コマの途中をシークするとその位置を含むコマが中央に来る", () =>
+{
+	TimeSpan?[] positions = ClipboardVideoTimeline.PreviewPositions(TimeSpan.FromMilliseconds(50), TimeSpan.FromSeconds(2), 30, 684);
+	Equal(333333L, positions[4]!.Value.Ticks);
+	Equal(666667L, positions[5]!.Value.Ticks);
+});
+
+Run("小数FPSでコマ送りした位置も中央と前後のコマが一致する", () =>
+{
+	foreach (double fps in new[] { 24, 29.97, 59.94 })
+	{
+		TimeSpan duration = TimeSpan.FromSeconds(10);
+		TimeSpan center = TimeSpan.FromTicks((long)Math.Round(100 * TimeSpan.TicksPerSecond / fps));
+		TimeSpan?[] positions = ClipboardVideoTimeline.PreviewPositions(center, duration, fps, 684);
+		Equal(center, positions[4]!.Value);
+		Equal(ClipboardVideoTimeline.Step(center, duration, fps, -1), positions[3]!.Value);
+		Equal(ClipboardVideoTimeline.Step(center, duration, fps, 1), positions[5]!.Value);
+	}
+});
+
+Run("FPS・長さ・幅が不明なときはコマ画像を要求しない", () =>
+{
+	foreach (double invalid in new[] { 0, -1, double.NaN, double.PositiveInfinity })
+	{
+		Equal(0, ClipboardVideoTimeline.PreviewPositions(TimeSpan.Zero, TimeSpan.FromSeconds(1), invalid, 684).Length);
+		Equal(0, ClipboardVideoTimeline.PreviewPositions(TimeSpan.Zero, TimeSpan.FromSeconds(1), 30, invalid).Length);
+	}
+	Equal(0, ClipboardVideoTimeline.PreviewPositions(TimeSpan.Zero, TimeSpan.Zero, 30, 684).Length);
+	Equal(1, ClipboardVideoTimeline.PreviewPositions(TimeSpan.Zero, TimeSpan.FromSeconds(1), 30, 20).Length);
+});
+
 using var database = new SqliteConnection("Data Source=:memory:");
 database.Open();
 using (var command = database.CreateCommand())

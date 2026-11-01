@@ -20,6 +20,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 	private readonly TextBlock _time;
 	private readonly TextBlock _message;
 	private readonly TextBlock _frameRateText;
+	private readonly ClipboardVideoFrameStrip _frameStrip;
 	private readonly string _path;
 	private TimeSpan _duration;
 	private TimeSpan _position;
@@ -39,6 +40,13 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		var footer = new StackPanel { Margin = new Thickness(10) };
 		DockPanel.SetDock(footer, Dock.Bottom);
 		panel.Children.Add(footer);
+		_frameStrip = new ClipboardVideoFrameStrip(path, position =>
+		{
+			if (!_opened || _disposed) return;
+			Pause();
+			SeekTo(position);
+		});
+		footer.Children.Add(_frameStrip);
 
 		var name = new TextBlock
 		{
@@ -222,6 +230,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 			? $"動画のFPS: {_frameRate.ToString("0.###", CultureInfo.InvariantCulture)}"
 			: "動画のFPSを取得できません（コマ送り不可）";
 		SetControlsEnabled(_opened);
+		UpdatePosition();
 	}
 
 	private void MediaOpened()
@@ -367,6 +376,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		_seek.Value = _position.TotalSeconds;
 		_updatingPosition = false;
 		_time.Text = $"{FormatTime(_position)} / {FormatTime(_duration)}";
+		_frameStrip.UpdatePosition(_position, _duration, _opened ? _frameRate : 0);
 	}
 
 	private static string FormatTime(TimeSpan time) => $"{(int)time.TotalHours:00}:{time.Minutes:00}:{time.Seconds:00}.{time.Milliseconds:000}";
@@ -383,6 +393,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		_timer.Stop();
 		_media.Close();
 		SetControlsEnabled(false);
+		_frameStrip.UpdatePosition(TimeSpan.Zero, TimeSpan.Zero, 0);
 		_message.Text = message;
 		_message.Visibility = Visibility.Visible;
 		Logger.Error(exception, $"ClipboardVideoPlayer: {message} Path={_path}");
@@ -423,6 +434,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		EndSeek();
 		_playing = false;
 		_timer.Stop();
+		_frameStrip.Dispose();
 		_media.Close();
 		_media.Source = null;
 	}
