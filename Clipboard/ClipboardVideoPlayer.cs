@@ -24,6 +24,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 	private readonly TextBlock _message;
 	private readonly TextBlock _frameRateText;
 	private readonly ClipboardVideoFrameStrip _frameStrip;
+	private readonly ContentControl _editorHost;
 	private readonly string _path;
 	private TimeSpan _duration;
 	private TimeSpan _position;
@@ -106,8 +107,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 				TimeSpan? position = ClipboardVideoTimeline.PreviewPositions(_position, _duration, _frameRate, 1).FirstOrDefault();
 				if (position.HasValue)
 				{
-					SeekTo(position.Value);
-					editFrame(position.Value);
+					if (SeekTo(position.Value)) editFrame(position.Value);
 				}
 			});
 			buttons.Children.Add(_editButton);
@@ -164,6 +164,13 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 			IsHitTestVisible = false
 		};
 		viewport.Children.Add(_message);
+		_editorHost = new ContentControl
+		{
+			HorizontalContentAlignment = HorizontalAlignment.Stretch,
+			VerticalContentAlignment = VerticalAlignment.Stretch,
+			Visibility = Visibility.Collapsed
+		};
+		viewport.Children.Add(_editorHost);
 		panel.Children.Add(viewport);
 		Content = panel;
 		SetControlsEnabled(false);
@@ -183,11 +190,29 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 
 	public double FrameRate => _frameRate;
 
+	public Func<bool>? BeforeNavigate { get; set; }
+
+	public void ShowFrameEditor(FrameworkElement? editor)
+	{
+		if (editor != null) PausePlayback();
+		_editorHost.Content = editor;
+		_editorHost.Visibility = editor == null ? Visibility.Collapsed : Visibility.Visible;
+		_media.Visibility = editor == null ? Visibility.Visible : Visibility.Hidden;
+		SetControlsEnabled(_opened);
+	}
+
 	public void SetEditedFrames(IReadOnlyDictionary<long, BitmapSource> frames) => _frameStrip.SetEditedFrames(frames);
 
 	public void PausePlayback()
 	{
 		if (_opened && !_disposed) Pause();
+	}
+
+	public void SelectFrame(TimeSpan position)
+	{
+		if (!_opened || _disposed) return;
+		Pause();
+		SeekTo(position);
 	}
 
 	public bool HandleKeyDown(KeyEventArgs e)
@@ -294,6 +319,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		}
 		else
 		{
+			if (BeforeNavigate?.Invoke() == false) return;
 			if (_position >= _duration)
 			{
 				SeekTo(TimeSpan.Zero);
@@ -326,16 +352,18 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		SeekTo(ClipboardVideoTimeline.Step(_position, _duration, _frameRate, direction));
 	}
 
-	private void SeekTo(TimeSpan position)
+	private bool SeekTo(TimeSpan position)
 	{
+		if (BeforeNavigate?.Invoke() == false) return false;
 		_position = ClipboardVideoTimeline.ClampPosition(position, _duration);
 		_media.Position = _position;
 		UpdatePosition();
+		return true;
 	}
 
 	private void BeginSeek(object sender, MouseButtonEventArgs e)
 	{
-		if (!_opened || _disposed || _dragging || !_seek.CaptureMouse())
+		if (!_opened || _disposed || _dragging || BeforeNavigate?.Invoke() == false || !_seek.CaptureMouse())
 		{
 			return;
 		}
@@ -432,7 +460,7 @@ internal sealed class ClipboardVideoPlayer : UserControl, IDisposable
 		_playButton.IsEnabled = enabled;
 		_previousButton.IsEnabled = enabled && _frameRate > 0;
 		_nextButton.IsEnabled = enabled && _frameRate > 0;
-		if (_editButton != null) _editButton.IsEnabled = enabled && _frameRate > 0;
+		if (_editButton != null) _editButton.IsEnabled = enabled && _frameRate > 0 && _editorHost.Content == null;
 		_seek.IsEnabled = enabled;
 	}
 

@@ -198,10 +198,10 @@ public static class ClipboardManager
 		Logger.Info($"ClipboardManager: 元の画像履歴の編集内容を更新しました。Id={historyId} Size={bytes.Length}");
 	}
 
-	internal static void CopyPaintedVideoFrameToClipboard(long historyId, TimeSpan position, BitmapSource image, string paintStateJson)
+	internal static void SavePaintedVideoFrame(long historyId, TimeSpan position, BitmapSource image, string paintStateJson, bool copyToClipboard)
 	{
 		ClipboardDatabase.SaveVideoFrameEdit(historyId, position, ImagePaintImageFactory.EncodePng(image), paintStateJson);
-		CopyImageToClipboard(image);
+		if (copyToClipboard) CopyImageToClipboard(image);
 		Logger.Info($"ClipboardManager: 動画のコマを画像として保存しました。Id={historyId} Position={position}");
 	}
 

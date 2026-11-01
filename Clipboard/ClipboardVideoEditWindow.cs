@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -14,9 +15,13 @@ internal sealed class ClipboardVideoEditWindow : Window
 	private readonly ClipboardVideoPlayer _player;
 	private readonly StackPanel _savedFrames;
 	private readonly StackPanel _savedFramesHost;
+	private readonly WrapPanel _editorToolbar;
+	private readonly TextBlock _editingTime;
 	private readonly CancellationTokenSource _cancellation = new();
 	private ClipboardVideoFrameReader? _reader;
-	private bool _editing;
+	private ImagePaintEditor? _frameEditor;
+	private TimeSpan? _editingPosition;
+	private bool _loadingFrame;
 	private bool _closed;
 
 	public ClipboardVideoEditWindow(long historyId, string path)
@@ -36,13 +41,22 @@ internal sealed class ClipboardVideoEditWindow : Window
 		var root = new DockPanel();
 		var guide = new TextBlock
 		{
-			Text = "コマを選び「このコマを編集」で赤枠などを追加できます。画像の編集画面で Ctrl+S / Ctrl+C を押すと保存してコピーします。",
+			Text = "「このコマを編集」で動画の表示領域に赤枠などを追加できます。Ctrl+S / Ctrl+C で保存して画像をコピーします。コマの切り替え・再生・終了時にも編集内容を保存します。",
 			TextWrapping = TextWrapping.Wrap,
 			Margin = new Thickness(10)
 		};
 		guide.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
 		DockPanel.SetDock(guide, Dock.Top);
 		root.Children.Add(guide);
+
+		_editorToolbar = new WrapPanel { Margin = new Thickness(10, 0, 10, 6), Visibility = Visibility.Collapsed };
+		_editingTime = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
+		_editingTime.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
+		_editorToolbar.Children.Add(_editingTime);
+		_editorToolbar.Children.Add(CreateButton("保存して画像をコピー", () => TrySaveCurrentFrame()));
+		_editorToolbar.Children.Add(CreateButton("再生に戻る", () => TryEndFrameEditing()));
+		DockPanel.SetDock(_editorToolbar, Dock.Top);
+		root.Children.Add(_editorToolbar);
 
 		_savedFramesHost = new StackPanel { Margin = new Thickness(10, 0, 10, 6) };
 		var label = new TextBlock
@@ -63,6 +77,7 @@ internal sealed class ClipboardVideoEditWindow : Window
 		root.Children.Add(_savedFramesHost);
 
 		_player = new ClipboardVideoPlayer(path, autoPlay: false, editFrame: OpenFrameEditor);
+		_player.BeforeNavigate = TryEndFrameEditing;
 		root.Children.Add(_player);
 		Content = root;
 		RefreshSavedFrames();
@@ -71,6 +86,7 @@ internal sealed class ClipboardVideoEditWindow : Window
 			_closed = true;
 			_cancellation.Cancel();
 			_reader?.Dispose();
+			_frameEditor?.Dispose();
 			_player.Dispose();
 			_cancellation.Dispose();
 		};
@@ -78,13 +94,29 @@ internal sealed class ClipboardVideoEditWindow : Window
 
 	protected override void OnPreviewKeyDown(KeyEventArgs e)
 	{
-		if (!_editing && _player.HandleKeyDown(e)) e.Handled = true;
-		else if (e.Key == Key.Escape)
+		if (_frameEditor != null && !_frameEditor.IsKeyboardFocusWithin &&
+			(Keyboard.Modifiers & ModifierKeys.Control) != 0 && e.Key is Key.S or Key.C)
 		{
-			Close();
+			TrySaveCurrentFrame();
 			e.Handled = true;
 		}
+		else if (_frameEditor?.IsTextInputFocused != true && !_loadingFrame)
+		{
+			if (_player.HandleKeyDown(e)) e.Handled = true;
+			else if (e.Key == Key.Escape)
+			{
+				if (_frameEditor != null) TryEndFrameEditing();
+				else Close();
+				e.Handled = true;
+			}
+		}
 		base.OnPreviewKeyDown(e);
+	}
+
+	protected override void OnClosing(CancelEventArgs e)
+	{
+		if (!_loadingFrame && !TryEndFrameEditing()) e.Cancel = true;
+		base.OnClosing(e);
 	}
 
 	private void RefreshSavedFrames()
@@ -127,8 +159,10 @@ internal sealed class ClipboardVideoEditWindow : Window
 
 	private async void OpenFrameEditor(TimeSpan position)
 	{
-		if (_editing || _closed) return;
-		_editing = true;
+		if (_loadingFrame || _closed || _editingPosition == position) return;
+		if (!TryEndFrameEditing()) return;
+		_player.SelectFrame(position);
+		_loadingFrame = true;
 		_player.PausePlayback();
 		_player.IsEnabled = false;
 		_savedFrames.IsEnabled = false;
@@ -152,23 +186,27 @@ internal sealed class ClipboardVideoEditWindow : Window
 				imageBytes = ImagePaintImageFactory.EncodePng(image);
 			}
 
-			void Save(BitmapSource image, string state) =>
-				ClipboardManager.CopyPaintedVideoFrameToClipboard(_historyId, position, image, state);
+			void Save(BitmapSource image, string state, bool copyToClipboard)
+			{
+				ClipboardManager.SavePaintedVideoFrame(_historyId, position, image, state, copyToClipboard);
+				RefreshSavedFrames();
+			}
 
-			ImagePaintWindow? editor = null;
+			ImagePaintEditor? editor = null;
 			if (ImagePaintSerializedState.TryDeserialize(saved?.PaintStateJson, out ImagePaintSerializedState? savedState) && savedState != null)
 			{
-				try { editor = new ImagePaintWindow(_historyId, savedState, Save); }
+				try { editor = new ImagePaintEditor(savedState, Save); }
 				catch (Exception ex)
 				{
 					Logger.Warning($"ClipboardVideoEditWindow: 編集状態を復元できないため保存画像を開きます。Error={ex.Message}");
 				}
 			}
-			editor ??= new ImagePaintWindow(_historyId, imageBytes, Save);
-			editor.Owner = this;
-			editor.Title = $"コマの画像を編集 - {FormatTime(position)}";
-			editor.ShowDialog();
-			if (!_closed) RefreshSavedFrames();
+			editor ??= new ImagePaintEditor(imageBytes, Save);
+			_frameEditor = editor;
+			_editingPosition = position;
+			_editingTime.Text = $"編集中: {FormatTime(position)}";
+			_editorToolbar.Visibility = Visibility.Visible;
+			_player.ShowFrameEditor(editor);
 		}
 		catch (OperationCanceledException) { }
 		catch (Exception ex)
@@ -179,13 +217,55 @@ internal sealed class ClipboardVideoEditWindow : Window
 		}
 		finally
 		{
-			_editing = false;
+			_loadingFrame = false;
 			if (!_closed)
 			{
 				_player.IsEnabled = true;
 				_savedFrames.IsEnabled = true;
 			}
 		}
+	}
+
+	private bool TrySaveCurrentFrame(bool requireChanges = false, bool copyToClipboard = true)
+	{
+		try
+		{
+			_frameEditor?.Save(requireChanges, copyToClipboard);
+			return true;
+		}
+		catch (Exception ex)
+		{
+			Logger.Error(ex, $"ClipboardVideoEditWindow: コマの編集を保存できませんでした。Id={_historyId}");
+			MessageBox.Show(this, "コマの編集を保存できませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
+			return false;
+		}
+	}
+
+	private bool TryEndFrameEditing()
+	{
+		if (_loadingFrame) return false;
+		if (_frameEditor == null) return true;
+		if (!TrySaveCurrentFrame(requireChanges: true, copyToClipboard: false)) return false;
+		_player.ShowFrameEditor(null);
+		_frameEditor.Dispose();
+		_frameEditor = null;
+		_editingPosition = null;
+		_editorToolbar.Visibility = Visibility.Collapsed;
+		return true;
+	}
+
+	private static Button CreateButton(string text, Action action)
+	{
+		var button = new Button
+		{
+			Content = text,
+			Padding = new Thickness(8, 4, 8, 4),
+			Margin = new Thickness(0, 0, 6, 0),
+			Focusable = false
+		};
+		AppTheme.ApplyButton(button);
+		button.Click += (_, _) => action();
+		return button;
 	}
 
 	private static string FormatTime(TimeSpan time) => $"{(int)time.TotalHours:00}:{time.Minutes:00}:{time.Seconds:00}.{time.Milliseconds:000}";
