@@ -9,7 +9,7 @@ namespace Clipboard;
 internal sealed class ClipboardStackCountWindow : Window
 {
 	private const double BadgeDiameter = 24;
-	private const double CursorHorizontalOffset = -44;
+	private const double CursorHorizontalOffset = 4;
 	private const double CursorVerticalGap = 4;
 	private readonly TextBlock _countText;
 	private readonly NativeMethods.LowLevelMouseProc _mouseProc;
@@ -195,8 +195,9 @@ internal sealed class ClipboardStackCountWindow : Window
 		};
 		if (NativeMethods.GetMonitorInfo(monitor, ref info))
 		{
-			x = Math.Max(info.RcWork.Left, Math.Min(x, info.RcWork.Right - width));
-			y = Math.Max(info.RcWork.Top, Math.Min(y, info.RcWork.Bottom - height));
+			// 右上の表示が画面からはみ出す右端・上端だけ補正し、タスクバーの領域も使う。
+			x = Math.Min(x, info.RcMonitor.Right - width);
+			y = Math.Max(y, info.RcMonitor.Top);
 		}
 
 		if (_lastPosition is { } lastPosition && lastPosition.X == x && lastPosition.Y == y)
