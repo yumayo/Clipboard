@@ -9,14 +9,16 @@ namespace Clipboard;
 internal sealed class ClipboardStackCountWindow : Window
 {
 	private const double BadgeDiameter = 24;
-	private const double CursorHorizontalOffset = 4;
+	private const double CursorHorizontalOffset = -32;
 	private const double CursorVerticalGap = 4;
 	private readonly TextBlock _countText;
+	private readonly Border _badgeBorder;
 	private readonly NativeMethods.LowLevelMouseProc _mouseProc;
 	private IntPtr _handle;
 	private IntPtr _mouseHook;
 	private bool _isTrackingPosition;
 	private NativeMethods.NativePoint? _lastPosition;
+	private Point? _cursorBadgeOffset;
 
 	public ClipboardStackCountWindow()
 	{
@@ -43,7 +45,7 @@ internal sealed class ClipboardStackCountWindow : Window
 		_countText.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
 		TextOptions.SetTextFormattingMode(_countText, TextFormattingMode.Ideal);
 		TextOptions.SetTextRenderingMode(_countText, TextRenderingMode.Grayscale);
-		var border = new Border
+		_badgeBorder = new Border
 		{
 			Width = BadgeDiameter,
 			Height = BadgeDiameter,
@@ -66,10 +68,10 @@ internal sealed class ClipboardStackCountWindow : Window
 				Child = _countText
 			}
 		};
-		border.SetResourceReference(Border.BackgroundProperty, AppTheme.SurfaceBrushKey);
-		border.SetResourceReference(Border.BorderBrushProperty, AppTheme.TextBrushKey);
-		RenderOptions.SetBitmapScalingMode(border, BitmapScalingMode.HighQuality);
-		Content = border;
+		_badgeBorder.SetResourceReference(Border.BackgroundProperty, AppTheme.SurfaceBrushKey);
+		_badgeBorder.SetResourceReference(Border.BorderBrushProperty, AppTheme.TextBrushKey);
+		RenderOptions.SetBitmapScalingMode(_badgeBorder, BitmapScalingMode.HighQuality);
+		Content = _badgeBorder;
 
 		IsVisibleChanged += (_, _) =>
 		{
@@ -93,7 +95,28 @@ internal sealed class ClipboardStackCountWindow : Window
 			Show();
 		}
 		UpdateLayout();
+		FitWindowToBadge();
 		PositionNearCursor();
+	}
+
+	private void FitWindowToBadge()
+	{
+		if (_cursorBadgeOffset != null)
+		{
+			return;
+		}
+
+		// 余白を取り除く前の描画位置を保存し、マウスとの相対位置を保つ。
+		Rect badgeBounds = _badgeBorder.TransformToAncestor(this).TransformBounds(new Rect(_badgeBorder.RenderSize));
+		_cursorBadgeOffset = new Point(
+			CursorHorizontalOffset + badgeBounds.Left,
+			badgeBounds.Top - ActualHeight - CursorVerticalGap);
+
+		SizeToContent = SizeToContent.Manual;
+		// OSの最小ウィンドウサイズで余白が増えないよう、上限も丸数字と同じ大きさにする。
+		MinWidth = MaxWidth = Width = BadgeDiameter;
+		MinHeight = MaxHeight = Height = BadgeDiameter;
+		UpdateLayout();
 	}
 
 	protected override void OnSourceInitialized(EventArgs e)
@@ -177,17 +200,15 @@ internal sealed class ClipboardStackCountWindow : Window
 
 	private void PositionNearCursor(NativeMethods.NativePoint cursor)
 	{
-		if (_handle == IntPtr.Zero)
+		if (_handle == IntPtr.Zero || _cursorBadgeOffset is not { } offset)
 		{
 			return;
 		}
 
 		// Win32の画面座標で配置し、負の座標や異なるDPIのモニターにも追従する。
 		Matrix transform = HwndSource.FromHwnd(_handle)?.CompositionTarget?.TransformToDevice ?? Matrix.Identity;
-		int width = (int)Math.Ceiling(ActualWidth * transform.M11);
-		int height = (int)Math.Ceiling(ActualHeight * transform.M22);
-		int x = cursor.X + (int)Math.Round(CursorHorizontalOffset * transform.M11);
-		int y = cursor.Y - height - (int)Math.Round(CursorVerticalGap * transform.M22);
+		int x = cursor.X + (int)Math.Round(offset.X * transform.M11);
+		int y = cursor.Y + (int)Math.Round(offset.Y * transform.M22);
 		IntPtr monitor = NativeMethods.MonitorFromPoint(cursor, NativeMethods.MONITOR_DEFAULTTONEAREST);
 		var info = new NativeMethods.MonitorInfo
 		{
@@ -195,9 +216,12 @@ internal sealed class ClipboardStackCountWindow : Window
 		};
 		if (NativeMethods.GetMonitorInfo(monitor, ref info))
 		{
-			// 右上の表示が画面からはみ出す右端・上端だけ補正し、タスクバーの領域も使う。
-			x = Math.Min(x, info.RcMonitor.Right - width);
-			y = Math.Max(y, info.RcMonitor.Top);
+			// 透明な余白を除き、丸数字の描画範囲だけで右端・上端を補正する。
+			Rect badgeBounds = _badgeBorder.TransformToAncestor(this).TransformBounds(new Rect(_badgeBorder.RenderSize));
+			int badgeRightOffset = (int)Math.Ceiling(badgeBounds.Right * transform.M11);
+			int badgeTopOffset = (int)Math.Floor(badgeBounds.Top * transform.M22);
+			x = Math.Min(x, info.RcMonitor.Right - badgeRightOffset);
+			y = Math.Max(y, info.RcMonitor.Top - badgeTopOffset);
 		}
 
 		if (_lastPosition is { } lastPosition && lastPosition.X == x && lastPosition.Y == y)
