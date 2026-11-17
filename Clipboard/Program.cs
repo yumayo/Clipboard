@@ -179,10 +179,31 @@ internal sealed class TrayNotifyIcon : IDisposable
 		menu.Items.Add("履歴を開く", null, (_, _) => InvokeMenuAction("履歴を開く", HistoryRequested));
 		menu.Items.Add("保存先を開く", null, (_, _) => InvokeMenuAction("保存先を開く", OpenSaveDirectoryRequested));
 		menu.Items.Add("設定", null, (_, _) => InvokeMenuAction("設定", SettingsRequested));
+
+		var startupItem = new WinForms.ToolStripMenuItem("ログイン時に起動");
+		startupItem.Click += (_, _) => ToggleStartupRegistration(startupItem);
+		menu.Items.Add(startupItem);
+		menu.Opening += (_, _) => startupItem.Checked = StartupRegistration.IsEnabled();
+
 		menu.Items.Add(new WinForms.ToolStripSeparator());
 		menu.Items.Add("終了", null, (_, _) => InvokeMenuAction("終了", ExitRequested));
 
 		return menu;
+	}
+
+	private static void ToggleStartupRegistration(WinForms.ToolStripMenuItem item)
+	{
+		bool enabled = !StartupRegistration.IsEnabled();
+		try
+		{
+			StartupRegistration.SetEnabled(enabled);
+			item.Checked = enabled;
+		}
+		catch (Exception ex)
+		{
+			Logger.Error(ex, $"Program: ログイン時起動の設定を変更できませんでした。Enabled={enabled}");
+			MessageBox.Show("ログイン時に起動の設定を変更できませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
+		}
 	}
 
 	private void InvokeMenuAction(string actionName, EventHandler? handler)
