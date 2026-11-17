@@ -38,6 +38,7 @@ internal static class Program
 			_notifyIcon.HistoryRequested += (_, _) => ClipboardManager.ShowHistoryWindow();
 			_notifyIcon.OpenSaveDirectoryRequested += (_, _) => OpenSaveDirectory();
 			_notifyIcon.SettingsRequested += (_, _) => OpenSettings();
+			_notifyIcon.HelpRequested += (_, _) => OpenHelp();
 			_notifyIcon.ExitRequested += (_, _) => application.Shutdown();
 
 			Logger.Debug("Clipboardを起動しました。");
@@ -101,6 +102,21 @@ internal static class Program
 		}
 	}
 
+	private static void OpenHelp()
+	{
+		try
+		{
+			var helpWindow = new HelpWindow();
+			helpWindow.Show();
+			helpWindow.Activate();
+		}
+		catch (Exception ex)
+		{
+			Logger.Error(ex, "ヘルプ画面を開けませんでした。");
+			MessageBox.Show("ヘルプ画面を開けませんでした。", "Clipboard", MessageBoxButton.OK, MessageBoxImage.Error);
+		}
+	}
+
 	private static void OpenSaveDirectory()
 	{
 		try
@@ -133,6 +149,7 @@ internal sealed class TrayNotifyIcon : IDisposable
 	public event EventHandler? HistoryRequested;
 	public event EventHandler? OpenSaveDirectoryRequested;
 	public event EventHandler? SettingsRequested;
+	public event EventHandler? HelpRequested;
 	public event EventHandler? ExitRequested;
 
 	public TrayNotifyIcon()
@@ -184,6 +201,8 @@ internal sealed class TrayNotifyIcon : IDisposable
 		startupItem.Click += (_, _) => ToggleStartupRegistration(startupItem);
 		menu.Items.Add(startupItem);
 		menu.Opening += (_, _) => startupItem.Checked = StartupRegistration.IsEnabled();
+
+		menu.Items.Add("ヘルプ", null, (_, _) => InvokeMenuAction("ヘルプ", HelpRequested));
 
 		menu.Items.Add(new WinForms.ToolStripSeparator());
 		menu.Items.Add("終了", null, (_, _) => InvokeMenuAction("終了", ExitRequested));
