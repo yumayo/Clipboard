@@ -88,3 +88,14 @@ dp -c /workspace dotnet run --project tests/Clipboard.Video.Tests --configuratio
 wsl
 make artifact
 ```
+
+`make artifact` はビルドしてアプリを起動します。
+
+# リリース方法
+
+```sh
+wsl
+make github
+```
+
+`make github` はビルドしてzipを作成し、タグをつけて `git push` し、GitHubのリリース作成ページを開きます。
