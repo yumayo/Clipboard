@@ -26,6 +26,7 @@ public static class ClipboardManager
 {
 	private const int ForegroundRestoreTimeoutMilliseconds = 500;
 	private const int ForegroundRestorePollIntervalMilliseconds = 20;
+	private const int FocusRestoreTimeoutMilliseconds = 200;
 	private const int WindowClassNameCapacity = 256;
 	private const int ClipboardSetRetryCount = 20;
 	private const int ClipboardSetRetryDelayMilliseconds = 25;
@@ -65,6 +66,10 @@ public static class ClipboardManager
 	private static volatile bool _imageGalleryWindowVisible = false;
 
 	private static string _lastSavedContent = string.Empty;
+
+	// ホットキー押下時に貼り付け先でフォーカスを持っていた子ウィンドウ。
+	// 前面化だけではアプリによって別のペイン（ターミナル等）へフォーカスが戻るため、貼り付け前に復元する。
+	private static IntPtr _targetFocusWindow = IntPtr.Zero;
 
 	public static void Start()
 	{
@@ -684,6 +689,7 @@ public static class ClipboardManager
 	private static void ShowHistoryFromHotKey()
 	{
 		IntPtr targetWindow = NativeMethods.GetForegroundWindow();
+		_targetFocusWindow = GetFocusedWindow(targetWindow);
 		Logger.Debug($"ClipboardManager: Win+V 対象ウィンドウを取得しました。TargetWindow={FormatHandle(targetWindow)}");
 		DispatchToUi(() => ShowHistoryWindow(targetWindow));
 	}
@@ -709,6 +715,7 @@ public static class ClipboardManager
 	private static void HandleWinVFromHotKey()
 	{
 		IntPtr targetWindow = NativeMethods.GetForegroundWindow();
+		_targetFocusWindow = GetFocusedWindow(targetWindow);
 		DispatchToUi(() =>
 		{
 			if (!_isStacking)
@@ -799,6 +806,7 @@ public static class ClipboardManager
 	private static void ShowImageGalleryFromHotKey()
 	{
 		IntPtr targetWindow = NativeMethods.GetForegroundWindow();
+		_targetFocusWindow = GetFocusedWindow(targetWindow);
 		Logger.Debug($"ClipboardManager: Win+B 対象ウィンドウを取得しました。TargetWindow={FormatHandle(targetWindow)}");
 		DispatchToUi(() => ShowImageGalleryWindow(targetWindow));
 	}
@@ -1144,7 +1152,78 @@ public static class ClipboardManager
 			Logger.Warning($"ClipboardManager: 貼り付け先ウィンドウの前面化を確認できませんでした。TargetWindow={FormatHandle(targetWindow)} ForegroundWindow={FormatHandle(NativeMethods.GetForegroundWindow())}");
 		}
 
+		RestoreTargetFocus(targetWindow);
 		SendPasteShortcut(targetWindow, useConsolePaste);
+	}
+
+	private static IntPtr GetFocusedWindow(IntPtr targetWindow)
+	{
+		if (targetWindow == IntPtr.Zero)
+		{
+			return IntPtr.Zero;
+		}
+
+		uint threadId = NativeMethods.GetWindowThreadProcessId(targetWindow, out _);
+		var info = new NativeMethods.GuiThreadInfo { CbSize = (uint)Marshal.SizeOf<NativeMethods.GuiThreadInfo>() };
+		if (threadId == 0 || !NativeMethods.GetGUIThreadInfo(threadId, ref info))
+		{
+			return IntPtr.Zero;
+		}
+
+		return info.HWndFocus;
+	}
+
+	private static void RestoreTargetFocus(IntPtr targetWindow)
+	{
+		IntPtr focusWindow = _targetFocusWindow;
+		if (focusWindow == IntPtr.Zero || focusWindow == targetWindow || !NativeMethods.IsWindow(focusWindow) ||
+			NativeMethods.GetAncestor(focusWindow, NativeMethods.GA_ROOT) != targetWindow)
+		{
+			return;
+		}
+
+		// 貼り付け先が前面化の処理（フォーカスの自前復元を含む）を終えるまで待ってから比較する。
+		IntPtr currentFocus = IntPtr.Zero;
+		long startTicks = Environment.TickCount64;
+		do
+		{
+			currentFocus = GetFocusedWindow(targetWindow);
+			if (currentFocus == focusWindow)
+			{
+				return;
+			}
+			if (currentFocus != IntPtr.Zero)
+			{
+				break;
+			}
+
+			Thread.Sleep(ForegroundRestorePollIntervalMilliseconds);
+		}
+		while (Environment.TickCount64 - startTicks < FocusRestoreTimeoutMilliseconds);
+
+		uint currentThreadId = NativeMethods.GetCurrentThreadId();
+		uint targetThreadId = NativeMethods.GetWindowThreadProcessId(targetWindow, out _);
+		if (targetThreadId == 0 || targetThreadId == currentThreadId)
+		{
+			return;
+		}
+
+		if (!NativeMethods.AttachThreadInput(currentThreadId, targetThreadId, true))
+		{
+			Logger.Warning($"ClipboardManager: 貼り付け先スレッドへの入力接続に失敗しました。TargetWindow={FormatHandle(targetWindow)} Win32Error={Marshal.GetLastWin32Error()}");
+			return;
+		}
+
+		try
+		{
+			NativeMethods.SetFocus(focusWindow);
+		}
+		finally
+		{
+			NativeMethods.AttachThreadInput(currentThreadId, targetThreadId, false);
+		}
+
+		Logger.Debug($"ClipboardManager: 貼り付け先のフォーカスを復元しました。TargetWindow={FormatHandle(targetWindow)} Focus={FormatHandle(currentFocus)} -> {FormatHandle(focusWindow)} Result={FormatHandle(GetFocusedWindow(targetWindow))}");
 	}
 
 	private static void SendPasteShortcut(IntPtr targetWindow, bool useConsolePaste)

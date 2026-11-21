@@ -329,6 +329,13 @@ internal static class NativeMethods
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static extern bool GetGUIThreadInfo(uint idThread, ref GuiThreadInfo lpgui);
 
+	[DllImport("user32.dll", SetLastError = true)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, [MarshalAs(UnmanagedType.Bool)] bool fAttach);
+
+	[DllImport("user32.dll", SetLastError = true)]
+	public static extern IntPtr SetFocus(IntPtr hWnd);
+
 	[DllImport("user32.dll")]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static extern bool ClientToScreen(IntPtr hWnd, ref NativePoint lpPoint);
