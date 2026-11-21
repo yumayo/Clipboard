@@ -2000,16 +2000,42 @@ internal sealed class ClipboardHistoryWindow : Window
 	private static ClipboardHistoryEntry CreateHistoryEntry(ClipboardHistorySummary summary)
 	{
 		(string previewText, bool isTableText) = CreateTextEntryInfo(summary);
+		string? videoPath = summary.Kind == ClipboardHistoryKind.Video ? LoadVideoPath(summary.Id) : null;
 		return new ClipboardHistoryEntry
 		{
 			Id = summary.Id,
 			Kind = summary.Kind,
 			CreatedAt = summary.CreatedAt,
 			PreviewText = previewText,
-			Thumbnail = CreateThumbnail(summary),
+			Thumbnail = summary.Kind == ClipboardHistoryKind.Video
+				? CreateVideoThumbnail(summary, videoPath)
+				: CreateThumbnail(summary),
 			IsEdited = summary.HasPaintState,
-			IsTableText = isTableText
+			IsTableText = isTableText,
+			VideoPath = videoPath
 		};
+	}
+
+	private static string? LoadVideoPath(long historyId)
+	{
+		try
+		{
+			ClipboardStoredContent? content = ClipboardDatabase.LoadContent(historyId);
+			return content == null || content.Kind != ClipboardHistoryKind.Video
+				? null
+				: ClipboardVideoFiles.Decode(content.Bytes).FirstOrDefault();
+		}
+		catch (Exception ex)
+		{
+			Logger.Debug($"ClipboardHistoryWindow: 動画履歴のパスを取得できませんでした。Id={historyId} Error={ex.Message}");
+			return null;
+		}
+	}
+
+	private static ImageSource? CreateVideoThumbnail(ClipboardHistorySummary summary, string? videoPath)
+	{
+		return CreateThumbnail(summary.ThumbnailBytes) ??
+			(videoPath == null ? null : ClipboardVideoMetadata.ReadThumbnail(videoPath));
 	}
 
 	private static (string PreviewText, bool IsTableText) CreateTextEntryInfo(ClipboardHistorySummary summary)
@@ -2122,6 +2148,17 @@ internal sealed class ClipboardHistoryWindow : Window
 				{
 					Kind = entry.Kind,
 					Text = entry.PreviewText
+				};
+			}
+
+			if (content.Kind == ClipboardHistoryKind.Video)
+			{
+				return new HistoryHoverPreview
+				{
+					Kind = content.Kind,
+					Text = ClipboardHistoryMetadata.CreateDisplayText(content.Bytes, content.Kind, content.PlainText),
+					Image = entry.Thumbnail,
+					VideoPath = ClipboardVideoFiles.Decode(content.Bytes).FirstOrDefault() ?? entry.VideoPath
 				};
 			}
 
@@ -2254,6 +2291,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		public ImageSource? Thumbnail { get; init; }
 		public bool IsEdited { get; init; }
 		public bool IsTableText { get; init; }
+		public string? VideoPath { get; init; }
 	}
 
 	private sealed class HistoryHoverPreview
@@ -2261,6 +2299,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		public required ClipboardHistoryKind Kind { get; init; }
 		public string? Text { get; init; }
 		public ImageSource? Image { get; init; }
+		public string? VideoPath { get; init; }
 	}
 
 	private sealed class HistoryDateSeparatorControl : Border
@@ -2355,6 +2394,7 @@ internal sealed class ClipboardHistoryWindow : Window
 		private int _previewHideVersion;
 		private ClipboardTableTextFormat? _hoveredTableTextFormat;
 		private ClipboardTableTextFormat? _displayedTableTextFormat;
+		private ClipboardVideoHoverPlayer? _previewVideoPlayer;
 
 		public event EventHandler? Activated;
 		public event EventHandler? PaintRequested;
@@ -2396,7 +2436,7 @@ internal sealed class ClipboardHistoryWindow : Window
 			Padding = new Thickness(10);
 			BorderThickness = new Thickness(1);
 			Cursor = Cursors.Hand;
-			Height = entry.Kind == ClipboardHistoryKind.Image
+			Height = entry.Kind is ClipboardHistoryKind.Image or ClipboardHistoryKind.Video
 				? ClipboardHistoryMetadata.ThumbnailLogicalHeight + 22
 				: 78;
 			HorizontalAlignment = HorizontalAlignment.Stretch;
@@ -2577,6 +2617,8 @@ internal sealed class ClipboardHistoryWindow : Window
 			_displayedTableTextFormat = null;
 			_previewPopup.IsOpen = false;
 			_previewPopup.Child = null;
+			_previewVideoPlayer?.Dispose();
+			_previewVideoPlayer = null;
 		}
 
 		private void CancelPreviewLoad()
@@ -2601,7 +2643,28 @@ internal sealed class ClipboardHistoryWindow : Window
 				_isMouseOverPreview = false;
 				BeginHidePreview();
 			};
+			_previewVideoPlayer?.Dispose();
+			_previewVideoPlayer = FindVideoPlayer(content);
 			_previewPopup.Child = content;
+			_previewVideoPlayer?.Start();
+		}
+
+		private static ClipboardVideoHoverPlayer? FindVideoPlayer(DependencyObject root)
+		{
+			if (root is ClipboardVideoHoverPlayer player)
+			{
+				return player;
+			}
+
+			foreach (object child in LogicalTreeHelper.GetChildren(root))
+			{
+				if (child is DependencyObject element && FindVideoPlayer(element) is { } found)
+				{
+					return found;
+				}
+			}
+
+			return null;
 		}
 
 		private FrameworkElement CreatePreviewContent(HistoryHoverPreview preview)
@@ -2609,6 +2672,11 @@ internal sealed class ClipboardHistoryWindow : Window
 			if (preview.Kind == ClipboardHistoryKind.Image)
 			{
 				return CreateImagePreviewContent(preview);
+			}
+
+			if (preview.Kind == ClipboardHistoryKind.Video)
+			{
+				return CreateVideoPreviewContent(preview);
 			}
 
 			return CreateTextPreviewContent(preview.Text);
@@ -2645,6 +2713,40 @@ internal sealed class ClipboardHistoryWindow : Window
 			if (stackPanel.Children.Count == 0)
 			{
 				stackPanel.Children.Add(CreatePreviewTextBlock("プレビューを表示できません"));
+			}
+
+			return CreatePreviewContainer(stackPanel);
+		}
+
+		private FrameworkElement CreateVideoPreviewContent(HistoryHoverPreview preview)
+		{
+			var stackPanel = new StackPanel
+			{
+				MaxWidth = HoverPreviewWidth
+			};
+
+			var player = new ClipboardVideoHoverPlayer(
+				preview.VideoPath,
+				preview.Image,
+				HoverPreviewImageMaxWidth,
+				HoverPreviewImageMaxHeight)
+			{
+				HorizontalAlignment = HorizontalAlignment.Left,
+				Background = Brushes.Black
+			};
+			if (preview.Image == null)
+			{
+				// サムネイルがない場合も再生領域を確保する。
+				player.Width = HoverPreviewImageMaxWidth;
+				player.Height = Math.Round(HoverPreviewImageMaxWidth * 9 / 16);
+			}
+			stackPanel.Children.Add(player);
+
+			if (!string.IsNullOrWhiteSpace(preview.Text))
+			{
+				var textBlock = CreatePreviewTextBlock(preview.Text);
+				textBlock.Margin = new Thickness(0, 8, 0, 0);
+				stackPanel.Children.Add(textBlock);
 			}
 
 			return CreatePreviewContainer(stackPanel);
@@ -2741,7 +2843,8 @@ internal sealed class ClipboardHistoryWindow : Window
 			var grid = new Grid();
 			bool supportsTableTextPaste = entry.IsTableText &&
 				(entry.Kind is ClipboardHistoryKind.Text or ClipboardHistoryKind.Html or ClipboardHistoryKind.Rtf);
-			if (entry.Kind == ClipboardHistoryKind.Image)
+			bool hasThumbnail = entry.Kind is ClipboardHistoryKind.Image or ClipboardHistoryKind.Video;
+			if (hasThumbnail)
 			{
 				grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(ClipboardHistoryMetadata.ThumbnailLogicalWidth + 12) });
 				grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -2781,9 +2884,12 @@ internal sealed class ClipboardHistoryWindow : Window
 				Grid.SetColumn(thumbnailContainer, 0);
 				grid.Children.Add(thumbnailContainer);
 
-				var paintButton = CreatePaintButton();
-				Grid.SetColumn(paintButton, 2);
-				grid.Children.Add(paintButton);
+				if (entry.Kind == ClipboardHistoryKind.Image)
+				{
+					var paintButton = CreatePaintButton();
+					Grid.SetColumn(paintButton, 2);
+					grid.Children.Add(paintButton);
+				}
 			}
 			else
 			{
@@ -2804,13 +2910,13 @@ internal sealed class ClipboardHistoryWindow : Window
 				TextWrapping = TextWrapping.Wrap,
 				TextTrimming = TextTrimming.CharacterEllipsis,
 				VerticalAlignment = VerticalAlignment.Stretch,
-				Margin = entry.Kind == ClipboardHistoryKind.Image || supportsTableTextPaste
+				Margin = hasThumbnail || supportsTableTextPaste
 					? new Thickness(0, 0, 8, 0)
 					: new Thickness(0)
 			};
 			previewLabel.SetResourceReference(TextBlock.ForegroundProperty, AppTheme.TextBrushKey);
 
-			Grid.SetColumn(previewLabel, entry.Kind == ClipboardHistoryKind.Image ? 1 : 0);
+			Grid.SetColumn(previewLabel, hasThumbnail ? 1 : 0);
 			grid.Children.Add(previewLabel);
 			return grid;
 		}

@@ -1123,7 +1123,8 @@ internal sealed class ClipboardImageGalleryWindow : Window
 			Thumbnail = summary.Kind == ClipboardHistoryKind.Video
 				? CreateThumbnail(summary.ThumbnailBytes) ?? (videoPath == null ? null : ClipboardVideoMetadata.ReadThumbnail(videoPath))
 				: CreateGalleryThumbnail(summary),
-			IsEdited = summary.HasPaintState
+			IsEdited = summary.HasPaintState,
+			VideoPath = videoPath
 		};
 	}
 
@@ -1284,6 +1285,7 @@ internal sealed class ClipboardImageGalleryWindow : Window
 		public required string PreviewText { get; init; }
 		public ImageSource? Thumbnail { get; init; }
 		public bool IsEdited { get; init; }
+		public string? VideoPath { get; init; }
 	}
 
 	private sealed class GalleryMessageControl : TextBlock
@@ -1295,6 +1297,8 @@ internal sealed class ClipboardImageGalleryWindow : Window
 		private readonly ImageGalleryEntry _entry;
 		private readonly CheckBox _selectionCheckBox;
 		private readonly Func<bool> _isSelectionModeActive;
+		private ClipboardVideoHoverPlayer? _videoPlayer;
+		private Border? _videoCaption;
 		private bool _isMouseInside;
 
 		public ImageGalleryItemControl(
@@ -1318,12 +1322,15 @@ internal sealed class ClipboardImageGalleryWindow : Window
 			{
 				_isMouseInside = true;
 				UpdateVisualState();
+				StartVideoPreview();
 			};
 			MouseLeave += (_, _) =>
 			{
 				_isMouseInside = false;
 				UpdateVisualState();
+				StopVideoPreview();
 			};
+			Unloaded += (_, _) => StopVideoPreview();
 			MouseLeftButtonUp += (_, e) => OnItemClicked(e);
 		}
 
@@ -1360,12 +1367,45 @@ internal sealed class ClipboardImageGalleryWindow : Window
 			e.Handled = true;
 		}
 
+		private void StartVideoPreview()
+		{
+			if (_videoPlayer == null)
+			{
+				return;
+			}
+
+			_videoPlayer.Start();
+			if (_videoCaption != null)
+			{
+				_videoCaption.Visibility = Visibility.Collapsed;
+			}
+		}
+
+		private void StopVideoPreview()
+		{
+			if (_videoPlayer == null)
+			{
+				return;
+			}
+
+			_videoPlayer.Stop();
+			if (_videoCaption != null)
+			{
+				_videoCaption.Visibility = Visibility.Visible;
+			}
+		}
+
 		private Grid CreateContent(ImageGalleryEntry entry)
 		{
 			var grid = new Grid();
+			if (entry.Kind == ClipboardHistoryKind.Video)
+			{
+				_videoPlayer = new ClipboardVideoHoverPlayer(entry.VideoPath, entry.Thumbnail);
+			}
+
 			var imageHost = new Border
 			{
-				Child = CreateImage(entry.Thumbnail),
+				Child = _videoPlayer ?? (UIElement?)CreateImage(entry.Thumbnail),
 				SnapsToDevicePixels = true
 			};
 			imageHost.SetResourceReference(Border.BackgroundProperty, AppTheme.ThumbnailBackgroundBrushKey);
@@ -1392,14 +1432,14 @@ internal sealed class ClipboardImageGalleryWindow : Window
 					Margin = new Thickness(5, 3, 5, 3),
 					IsHitTestVisible = false
 				};
-				var captionHost = new Border
+				_videoCaption = new Border
 				{
 					Child = caption,
 					Background = Brushes.Black,
 					VerticalAlignment = VerticalAlignment.Bottom,
 					IsHitTestVisible = false
 				};
-				grid.Children.Add(captionHost);
+				grid.Children.Add(_videoCaption);
 			}
 
 			Button actionButton = CreatePaintButton();
